@@ -20,11 +20,15 @@
   --amber-soft: #33291c;
   --blue-gray: #73849c;
   --danger: #c87665;
-  --shadow: 0 18px 48px rgba(0, 0, 0, 0.28);
-  --radius-xs: 6px;
-  --radius-sm: 9px;
-  --radius-md: 12px;
-  --radius-lg: 16px;
+  --shadow: 0 24px 64px rgba(0, 0, 0, 0.34);
+  --shadow-soft:
+    0 1px 0 rgba(255, 255, 255, 0.035) inset,
+    0 14px 34px rgba(0, 0, 0, 0.18);
+  --radius-xs: 8px;
+  --radius-sm: 12px;
+  --radius-md: 18px;
+  --radius-lg: 24px;
+  --radius-xl: 30px;
 }
 
 * {
@@ -2452,6 +2456,290 @@ textarea {
   margin-top: 16px;
 }
 
+/* Rounded surface system */
+
+.app-frame {
+  gap: 10px;
+  padding: 10px;
+  background:
+    radial-gradient(circle at 80% -12%, rgba(111, 140, 255, 0.07), transparent 34%),
+    #070a0f;
+}
+
+.chat-rail {
+  height: 100%;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.018), transparent 22%),
+    #10151d;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xl);
+  box-shadow: var(--shadow-soft);
+}
+
+.chat-rail-header {
+  min-height: 68px;
+  padding: 0 17px;
+}
+
+.assistant-mark {
+  border-radius: 11px;
+}
+
+.icon-button {
+  border-radius: 11px;
+}
+
+.message-list {
+  padding: 8px;
+}
+
+.chat-message {
+  margin-bottom: 8px;
+  padding: 14px;
+  background: rgba(255, 255, 255, 0.014);
+  border: 1px solid rgba(86, 103, 129, 0.36);
+  border-radius: var(--radius-md);
+}
+
+.chat-message.assistant {
+  background:
+    linear-gradient(135deg, rgba(111, 140, 255, 0.055), transparent 46%),
+    var(--panel);
+  border-color: rgba(111, 140, 255, 0.16);
+}
+
+.citation-row button {
+  border-radius: 999px;
+}
+
+.chat-composer {
+  border-radius: 20px;
+}
+
+.send-button {
+  border-radius: 50%;
+}
+
+.workspace {
+  height: 100%;
+  gap: 10px;
+  overflow: hidden;
+}
+
+.topbar {
+  min-height: 64px;
+  padding: 0 14px 0 18px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.018), transparent),
+    rgba(15, 19, 26, 0.94);
+  border: 1px solid var(--border);
+  border-radius: 22px;
+  box-shadow: var(--shadow-soft);
+}
+
+.brand-mark {
+  border-radius: 10px;
+}
+
+.workspace-menu-trigger,
+.profile-trigger,
+.shadow-badge {
+  border-radius: 999px;
+}
+
+.dropdown-menu {
+  padding: 9px;
+  border-radius: 20px;
+}
+
+.dropdown-menu > button {
+  border-radius: 11px;
+}
+
+.workspace-content {
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.009), transparent 18%),
+    rgba(10, 13, 18, 0.68);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-soft);
+}
+
+.safety-footer {
+  min-height: 26px;
+  background: rgba(15, 19, 26, 0.88);
+  border: 1px solid var(--border);
+  border-radius: 13px;
+}
+
+.page-stack {
+  gap: 12px;
+  padding: 12px;
+}
+
+.control-row {
+  padding: 7px;
+  background: rgba(17, 23, 32, 0.9);
+  border-radius: 19px;
+  box-shadow: var(--shadow-soft);
+}
+
+.active-source-readout,
+.select-control,
+.search-control {
+  border-radius: 13px;
+}
+
+.quiet-button,
+.secondary-button {
+  border-radius: 12px;
+}
+
+.primary-button,
+.briefing-button {
+  padding-right: 16px;
+  padding-left: 16px;
+  border-radius: 999px;
+}
+
+.monitor-grid,
+.graph-workspace {
+  border-radius: 22px;
+  box-shadow: var(--shadow-soft);
+}
+
+.track-box {
+  border-radius: 10px;
+}
+
+.track-label {
+  border-radius: 8px 8px 0 0;
+}
+
+.camera-id,
+.camera-state,
+.camera-timecode {
+  border-radius: 9px;
+}
+
+.timeline-track,
+.timeline-block {
+  border-radius: 999px;
+}
+
+.filmstrip span {
+  border-radius: 8px;
+}
+
+.camera-dock {
+  padding: 10px;
+  border-radius: 22px;
+  box-shadow: var(--shadow-soft);
+}
+
+.camera-card,
+.camera-card-active {
+  border-radius: 15px;
+}
+
+.camera-card-preview {
+  border-radius: 10px;
+}
+
+.plain-status,
+.table-status {
+  min-height: 26px;
+  padding-right: 10px;
+  padding-left: 10px;
+}
+
+.drawer-rule,
+.rule-audit,
+.drawer-note {
+  border-radius: 14px;
+}
+
+.drawer-note {
+  padding: 11px;
+  background: rgba(255, 255, 255, 0.018);
+  border: 1px solid var(--border);
+}
+
+.graph-zoom-controls {
+  padding: 5px;
+  background: rgba(18, 24, 33, 0.94);
+  border-radius: 999px;
+}
+
+.graph-zoom-controls button {
+  border-radius: 50%;
+}
+
+.graph-inspector {
+  border-radius: 20px 0 0 20px;
+}
+
+.analysis-summary {
+  gap: 10px;
+  overflow: visible;
+  background: transparent;
+  border: 0;
+}
+
+.analysis-summary > div {
+  min-height: 66px;
+  padding: 11px 13px;
+  background:
+    linear-gradient(145deg, rgba(111, 140, 255, 0.035), transparent 48%),
+    var(--panel-soft);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-soft);
+}
+
+.analysis-summary > div:last-child,
+.analysis-summary > div:nth-child(2),
+.analysis-summary > div:nth-child(-n + 2) {
+  border: 1px solid var(--border);
+}
+
+.analysis-section {
+  border-radius: 20px;
+  box-shadow: var(--shadow-soft);
+}
+
+.activity-list {
+  padding: 6px;
+}
+
+.activity-row {
+  width: 100%;
+  margin-bottom: 3px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 12px;
+}
+
+.activity-row.selected {
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+
+.bar {
+  border-radius: 999px;
+}
+
+.clip-strip button {
+  border-radius: 11px;
+}
+
+.briefing-toast {
+  border-radius: 16px;
+}
+
+.settings-modal {
+  border-radius: 26px;
+}
+
 @container workspace (max-width: 1080px) {
   .analysis-layout {
     grid-template-columns: 1fr;
@@ -2505,11 +2793,11 @@ textarea {
   }
 
   .analysis-summary > div:nth-child(2) {
-    border-right: 0;
+    border: 1px solid var(--border);
   }
 
   .analysis-summary > div:nth-child(-n + 2) {
-    border-bottom: 1px solid var(--border);
+    border: 1px solid var(--border);
   }
 }
 
@@ -2619,11 +2907,11 @@ textarea {
   }
 
   .analysis-summary > div:nth-child(2) {
-    border-right: 0;
+    border: 1px solid var(--border);
   }
 
   .analysis-summary > div:nth-child(-n + 2) {
-    border-bottom: 1px solid var(--border);
+    border: 1px solid var(--border);
   }
 }
 
@@ -2659,10 +2947,11 @@ textarea {
 @media (max-width: 760px) {
   .chat-rail {
     position: absolute;
-    top: 0;
-    bottom: 0;
-    left: 0;
-    max-width: min(348px, calc(100vw - 48px));
+    top: 10px;
+    bottom: 10px;
+    left: 10px;
+    height: auto;
+    max-width: min(348px, calc(100vw - 58px));
   }
 
   .chat-rail[data-collapsed="true"] {
@@ -2670,7 +2959,7 @@ textarea {
   }
 
   .workspace {
-    padding-left: 58px;
+    padding-left: 68px;
   }
 
   .brand > span:last-child,
