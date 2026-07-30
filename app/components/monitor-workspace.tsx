@@ -1263,13 +1263,13 @@ export function MonitorWorkspace() {
                     <strong>{cameraSource.camera_id}</strong>
                     <small>
                       {cameraSource.enclosure_id} ·{" "}
-                      {cameraSource.animal_species.join(", ") || "Unassigned species"}
+                      {cameraSource.animal_species?.join(", ") || "Unassigned species"}
                     </small>
                   </span>
                   <span className="camera-card-metrics">
                     <span>
                       <Footprints size={13} />
-                      {cameraSource.animal_names.join(", ") || "Unassigned"}
+                      {cameraSource.animal_names?.join(", ") || "Unassigned"}
                     </span>
                     <span>
                       <Eye size={13} />
