@@ -46,6 +46,7 @@ const SEVERITY_ORDER: Record<Severity, number> = {
 const PROVIDER_LABELS: Record<string, string> = {
   openai: "OpenAI",
   twelvelabs: "TwelveLabs",
+  aws_storage: "AWS S3",
   neo4j: "Neo4j",
   slack: "Slack"
 };
@@ -371,6 +372,12 @@ function MonitorView({
                   loop
                   playsInline
                   preload="metadata"
+                  onLoadedMetadata={(media) => {
+                    media.currentTarget.currentTime = event.media_offset_seconds ?? 0;
+                  }}
+                  onSeeked={(media) => {
+                    void media.currentTarget.play();
+                  }}
                 />
               ) : (
                 <div className="camera-missing"><Camera size={22} /></div>
@@ -615,7 +622,19 @@ function EventDrawer({
 
         <div className="evidence-video">
           {source?.media_url ? (
-            <video src={source.media_url} controls muted autoPlay playsInline />
+            <video
+              src={source.media_url}
+              controls
+              muted
+              autoPlay
+              playsInline
+              onLoadedMetadata={(media) => {
+                media.currentTarget.currentTime = source.source_offset_seconds;
+              }}
+              onSeeked={(media) => {
+                void media.currentTarget.play();
+              }}
+            />
           ) : (
             <div className="camera-missing"><Camera size={24} /></div>
           )}

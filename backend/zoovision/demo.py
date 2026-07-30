@@ -137,7 +137,7 @@ def seed_demo(store: SQLiteStore, settings: Settings, *, now: datetime | None = 
             anchor + timedelta(hours=8),
             anchor + timedelta(hours=8, minutes=15),
             "enc03_trailcam_night_15m.mp4",
-            0,
+            15,
         ),
     )
     for chunk_id, enclosure_id, camera_id, start, end, filename, offset in chunks:

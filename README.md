@@ -1,108 +1,217 @@
 # ZooVision
 
-ZooVision is a night time animal monitoring system for zoo and sanctuary teams. It turns recorded enclosure video into timestamped behavior observations, compares those observations with each animal's own daytime baseline, and sends staff evidence-backed welfare-check prompts when deterministic rules find something unusual.
+ZooVision is an evidence-backed overnight animal-welfare monitoring console for
+zoo and sanctuary teams. It turns fixed-camera video into timestamped
+observations, applies deterministic Python triage, preserves provenance, and
+gives keepers a review and handoff workflow.
 
-> **Project status:** architecture and product design. This repository currently contains the design brief; no production service or model integration has been implemented yet.
+ZooVision is a welfare-support tool, not a medical device. It does not diagnose,
+recommend medication, dispense treatment, manipulate an enclosure, or expose
+actuator tools.
 
-## The Product
+## Implemented status
 
-ZooVision helps a keeper answer a practical overnight question: *which animals need a check, and why?* It is designed around an individual animal baseline rather than a generic anomaly score.
+The repository now contains a working fixture-mode product:
 
-The intended keeper flow is:
+- strict observation, baseline, event, alert, outcome, and data-gap domain types;
+- daytime-only per-animal baselines with learning, shadow, active, and paused states;
+- first-match deterministic triage with stable event IDs and `rule_fired`;
+- cross-chunk observation stitching and wall-clock timestamp provenance;
+- idempotent SQLite persistence and static, idempotent Neo4j `MERGE` writers;
+- a pinned Strands graph for bounded ingest, data-gap, day, night, triage, and
+  indexing routes with a per-node audit trail;
+- keeper dashboard, video evidence drawer, acknowledgement, outcome capture,
+  baseline activation, morning brief, system readiness, and responsive layouts;
+- checksum-pinned, freely licensed fixed-camera video fixtures;
+- schema-constrained TwelveLabs and OpenAI adapters behind opt-in gates;
+- explicit Slack delivery gates and configurable retention enforcement;
+- production static serving and CI.
 
-1. Cameras produce closed, roughly 15-minute enclosure-video segments.
-2. Video analysis extracts structured, timestamped observations.
-3. A deterministic rule engine compares observations with prior **daytime-only** behavior baselines.
-4. Meaningful night-time deviations create an alert with a short evidence clip.
-5. The next shift receives a briefing that lists every animal, data gaps, notable events, and recorded outcomes.
+Fixture observations are synthetic scenarios, visibly labeled in the UI. The
+footage is real, freely licensed evaluation media, but it is not labeled behavior
+ground truth. No production behavior-recognition accuracy claim is made.
 
-For example, an unusual 14-minute pacing event can become a `MODERATE` welfare-check prompt if it exceeds that animal's normal pattern. The alert must explain the observed evidence and link to the clip; it must not diagnose an animal or prescribe treatment.
+## Quick start
 
-## Design Principles
+Prerequisites: Python 3.13, [uv](https://docs.astral.sh/uv/), Node 26, npm, and
+FFmpeg 8.
 
-- **Individual baselines:** calculate behavior frequency and duration per animal, using a rolling 7-14 day daytime-only history. Never feed night events into that night's baseline.
-- **Deterministic urgency:** models extract and organize evidence, while Python rules alone assign severity and preserve a `rule_fired` audit trail.
-- **Human decision-making:** the product observes, logs, and notifies. It never diagnoses, dispenses medication, controls equipment, or takes physical action.
-- **Evidence first:** retain event timestamps, source clips, confidence, baseline deltas, care context, and outcomes so staff can inspect every recommendation.
-- **Shadow before paging:** new baselines must run in staff-reviewed shadow mode before real alert delivery is enabled.
-- **Explicit uncertainty:** animal behavior and non-speech animal-audio recognition are unverified extensions of the proposed video models and require empirical validation before trust is claimed.
-
-## Intended Architecture
-
-| Layer | Intended responsibility |
-| --- | --- |
-| Camera segmentation | Convert RTSP/ONVIF camera feeds into timestamped MP4 segments. |
-| TwelveLabs Pegasus 1.5 | Produce schema-constrained behavior observations per video chunk. |
-| TwelveLabs Marengo 3.0 | Create video embeddings and retrieve visually similar clips from an individual animal's history. |
-| Strands Agents | Orchestrate the fixed, auditable day/night pipeline. |
-| OpenAI GPT-5.6 Luna | Merge structured evidence with graph context and phrase staff-facing messages; never decide severity. |
-| Deterministic Python | Compute baseline deltas, apply triage rules, and enforce escalation behavior. |
-| Neo4j Aura | Store the animal context graph, event history, baselines, outcomes, and vector-searchable clips. |
-| S3-compatible object storage | Retain raw segments, analysis JSON, and extracted alert clips under explicit lifecycle policies. |
-
-The planned orchestration is:
-
-```text
-camera segment -> ingest -> structured observations + embeddings
-               -> context enrichment -> deterministic triage
-               -> graph write -> night alert or baseline update
-               -> scheduled morning briefing
+```bash
+cp .env.example .env
+uv sync --frozen --dev
+npm --prefix frontend ci
+uv run python scripts/prepare_fixture_videos.py
+npm --prefix frontend run build
+uv run uvicorn zoovision.api:app --app-dir backend --host 127.0.0.1 --port 8000
 ```
 
-## Triage Contract
+Open [http://127.0.0.1:8000](http://127.0.0.1:8000). The fixture preparation
+creates one 30-minute infrared badger feed and two 15-minute fixed-camera feeds
+under ignored `data/raw/fixtures/`.
 
-The rule engine is deliberately separate from model output. The initial policy is first-match-wins:
+For frontend development, run the API on port 8000 and:
 
-| Signal | Severity |
-| --- | --- |
-| Fighting or escape attempt | `CRITICAL` |
-| Vomiting | `HIGH` |
-| Pacing for more than 20 minutes with no water contact for 6 hours | `HIGH` |
-| Pacing for more than 10 minutes | `MODERATE` |
-| Inactivity more than two standard deviations above baseline | `MODERATE` |
-| Baseline delta greater than 2.5 | `MODERATE` |
-| Water bowl tipped | `LOW` |
-| Anything else | `NONE` |
-
-Only non-`NONE` events occurring during the configured night shift can trigger a page. Day-shift events are retained for staff context and baseline refinement.
-
-## Data Model
-
-The planned Neo4j graph centers on `Animal`, `Enclosure`, `Shift`, `Event`, `BaselineProfile`, `CareRecord`, `Alert`, `Outcome`, `Clip`, and `DataGap` nodes. Event writes are idempotent and keyed by a stable hash of the animal, chunk, timestamp, and behavior.
-
-Important relationships include:
-
-```text
-(Animal)-[:PERFORMED]->(Event)-[:OCCURRED_DURING]->(Shift)
-(Event)-[:DEVIATES_FROM { z }]->(BaselineProfile)
-(Event)-[:TRIGGERED]->(Alert)
-(Event)-[:RESOLVED_BY]->(Outcome)
-(Animal)-[:HAS_BASELINE]->(BaselineProfile)
-(Event)-[:HAS_CLIP]->(Clip)
+```bash
+npm --prefix frontend run dev -- --host 127.0.0.1
 ```
 
-## Safety and Validation
+Then open [http://127.0.0.1:5173](http://127.0.0.1:5173).
 
-ZooVision is a welfare-support tool, not a medical device. It is not a diagnostic or treatment system, and it must never be represented as one.
+## Video sources
 
-Before a demo or deployment, validate these assumptions against labeled animal footage and actual provider behavior:
+| Fixture | Original | License | Prepared duration |
+| --- | --- | --- | --- |
+| European badger infrared garden camera | Wikimedia Commons | CC BY-SA 4.0 | 30 minutes |
+| Powerextra outdoor trail-camera test | Wikimedia Commons | CC BY 3.0 | 15 minutes |
+| California condor nest camera | Wikimedia Commons | Public domain | 15 minutes |
 
-- whether structured video analysis recognizes the chosen animal-behavior vocabulary;
-- whether animal sounds can be detected reliably enough to influence review;
-- clip-to-event timestamp accuracy;
-- actual model identifiers, quotas, pricing, embedding dimensions, and platform limits;
-- false-positive and false-negative rates in shadow mode.
+Exact source pages, creators, download URLs, byte sizes, SHA-256 checksums, and
+timeline notes are in [`fixtures/video_sources.json`](fixtures/video_sources.json).
+The badger container advertises roughly 5h15m because its first packet starts near
+that timestamp; it contains about 30 seconds of actual footage. The preparation
+script normalizes timestamps and repeats each source to make long evaluation
+feeds. It never represents them as continuous original recordings.
 
-The initial demo design uses pre-analyzed footage so the experience remains reliable within limited video-analysis quotas. Any live claim should identify exactly which portion of the pipeline ran live.
+## Architecture
 
-## Roadmap
+```text
+camera chunk
+  -> strict provider response validation
+  -> wall-clock observation normalization
+  -> cross-chunk stitching
+  -> daytime baseline lookup
+  -> deterministic first-match triage
+  -> idempotent SQLite / Neo4j write
+  -> shadow record or gated night alert
+  -> acknowledgement, keeper outcome, morning brief
+```
 
-1. Start from the `jpadams/video-context-graph` ingestion, agent, vector, and graph plumbing.
-2. Replace its generic video ontology with the ZooVision animal, event, and baseline model.
-3. Implement and test the deterministic triage engine and daytime-only baseline computation.
-4. Add night alerting, acknowledgement/escalation, morning briefings, and keeper outcome capture.
-5. Validate on labeled animal footage, run a shadow period, and document measured accuracy before enabling real pages.
+Models may extract, normalize, merge, or phrase facts. They cannot assign or
+override severity. A provider failure or invalid schema becomes a `DataGap`.
+Only night events can page, and delivery additionally requires an active
+human-reviewed baseline, a configured webhook, and
+`ZOOVISION_ALERT_DELIVERY_ENABLED=true`. Fixture mode always blocks delivery.
 
-## Source Brief
+The implemented triage order is:
 
-The full technical architecture, provider references, data schema, product journey, and hackathon plan are in [the original design brief](./compass_artifact_wf-8953096d-23a5-5284-a231-458dcee08d71_text_markdown.md).
+| Rule | Signal | Severity |
+| --- | --- | --- |
+| `R001_FIGHTING` | Fighting | `CRITICAL` |
+| `R002_ESCAPE_ATTEMPT` | Escape attempt | `CRITICAL` |
+| `R003_VOMITING` | Vomiting | `HIGH` |
+| `R004_PACING_20M_NO_WATER_6H` | Pacing >20m and no water contact >=6h | `HIGH` |
+| `R005_PACING_10M` | Pacing >10m | `MODERATE` |
+| `R006_INACTIVITY_2SD` | Inactivity z-score >2 | `MODERATE` |
+| `R007_BASELINE_DELTA_2_5` | Baseline delta z-score >2.5 | `MODERATE` |
+| `R008_WATER_BOWL_TIPPED` | Water bowl tipped | `LOW` |
+
+## Integrations
+
+The local `.env` is ignored. Keep all credentials there and commit only sanitized
+examples.
+
+- **OpenAI:** `gpt-5.6-luna` phrases evidence and `gpt-5.6-terra` phrases reports
+  through strict Pydantic Structured Outputs. `store=false` is used. Both paths
+  are non-authoritative and opt-in.
+- **TwelveLabs:** Pegasus 1.5 accepts a direct public raw-media URL and returns a
+  strict relative-timestamp schema. Live use is opt-in and should remain in
+  shadow mode until measured against labeled animal footage.
+- **AWS:** raw chunks, analysis JSON, and evidence clips use separate private S3
+  buckets with 7, 30, and 90 day lifecycle policies. Marengo 3.0 is the Bedrock
+  embedding model with response-derived vector dimensions. Synchronous text
+  embedding and S3 archival are live-proven; the implemented asynchronous S3
+  video job remains opt-in until its cross-account execution role is verified.
+  Pegasus 1.5 remains on the direct TwelveLabs API.
+- **Neo4j:** application-owned writes use static `MERGE` queries. Read access has
+  separate credential fields and no arbitrary Cypher endpoint exists. If an
+  Aura tier cannot create a dedicated reader, keep agent graph access disabled
+  rather than reusing the writer identity.
+- **Slack:** fixture mode, day shift, shadow/learning baselines, missing rules,
+  disabled delivery, or a missing webhook each block the send.
+
+Probe non-mutating integrations without printing secrets:
+
+```bash
+uv run python scripts/probe_integrations.py
+```
+
+The probe lists OpenAI model visibility and verifies Neo4j connectivity. It does
+not probe TwelveLabs without a media request or Slack by sending a message.
+
+Provision the three configured AWS buckets and their retention policies:
+
+```bash
+uv run python scripts/provision_aws.py
+```
+
+The operation is idempotent, blocks all public access, and uses S3-managed
+encryption so it does not create a billable customer-managed KMS key.
+
+Run the explicit, billable Bedrock Marengo text-embedding smoke test separately:
+
+```bash
+uv run python scripts/probe_bedrock.py
+```
+
+`AWS_BEDROCK_PROFILE` can select a workshop account locally when an organization
+policy blocks Bedrock in the storage account. Explicit
+`AWS_BEDROCK_*ACCESS_KEY*` temporary credentials take precedence when supplied.
+On AWS compute, leave both mechanisms unset and use the runtime's attached role.
+
+Initialize Aura constraints, create the clip vector index with the dimension
+measured by the provider probe, and sync fixture evidence twice to verify
+idempotency:
+
+```bash
+uv run python scripts/provision_neo4j.py --vector-dimension 512
+```
+
+The example dimension above is the value measured in the configured account;
+do not reuse it for another model without probing that model's response first.
+
+Run one raw chunk through the bounded Strands execution graph with an explicit
+timezone-aware start and shift:
+
+```bash
+uv run python scripts/run_segment.py \
+  --source data/raw/fixtures/badger-provider-probe-30s.mp4 \
+  --animal-id animal-nox --animal-name Nox \
+  --species "European badger" --enclosure-id ENC-07 --camera-id CAM-07A \
+  --start 2026-07-30T02:00:00-07:00 --duration-seconds 30 --shift night
+```
+
+The command accepts only existing files below the configured raw-video root,
+uses the schema-constrained provider adapter, and routes failures to a persisted
+`DataGap`. Fixture mode keeps all alert delivery in shadow.
+
+## Operations
+
+Retention defaults are configurable: raw chunks 7 days, analysis JSON 30 days,
+and evidence clips 90 days.
+
+```bash
+uv run python scripts/enforce_retention.py
+uv run python scripts/enforce_retention.py --apply
+```
+
+The first command is a dry run. The second deletes only expired files below the
+configured raw, analysis, and clips directories.
+
+## Verification
+
+```bash
+uv run ruff check backend scripts
+uv run ruff format --check backend scripts
+uv run pytest --cov=zoovision --cov-fail-under=90
+npm --prefix frontend run lint
+npm --prefix frontend run build
+npm --prefix frontend audit --audit-level=high
+```
+
+Live provider checks are separate from deterministic tests. Before real paging,
+collect labeled footage, measure timestamp and behavior precision/recall, review
+false negatives with animal-care staff, run an approved shadow period, verify
+production retention and access controls, and activate each baseline manually.
+
+The original architecture brief remains available in
+[`compass_artifact_wf-8953096d-23a5-5284-a231-458dcee08d71_text_markdown.md`](compass_artifact_wf-8953096d-23a5-5284-a231-458dcee08d71_text_markdown.md).

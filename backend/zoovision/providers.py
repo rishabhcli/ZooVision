@@ -1,12 +1,15 @@
 from __future__ import annotations
 
+import base64
 import json
 from datetime import datetime, timedelta
+from pathlib import Path
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
-from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
+from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponential
 from twelvelabs import TwelveLabs
+from twelvelabs.core import ApiError
 
 from .domain import Behavior, DataGap, EvidenceKind, Observation
 from .ids import observation_id, stable_id
@@ -79,11 +82,13 @@ def normalize_batch(
     *,
     provider: str,
     provider_model: str,
+    timestamp_tolerance_seconds: float = 0.5,
 ) -> list[Observation]:
     normalized = []
     for ordinal, item in enumerate(batch.observations):
-        if item.relative_end_seconds > chunk.duration_seconds:
+        if item.relative_end_seconds > chunk.duration_seconds + timestamp_tolerance_seconds:
             raise ValueError("provider observation exceeds the source chunk")
+        relative_end = min(item.relative_end_seconds, chunk.duration_seconds)
         stable_observation_id = observation_id(
             chunk.chunk_id,
             item.behavior,
@@ -98,7 +103,7 @@ def normalize_batch(
                 chunk_id=chunk.chunk_id,
                 behavior=item.behavior,
                 start_ts=chunk.start_ts + timedelta(seconds=item.relative_start_seconds),
-                end_ts=chunk.start_ts + timedelta(seconds=item.relative_end_seconds),
+                end_ts=chunk.start_ts + timedelta(seconds=relative_end),
                 confidence=item.confidence,
                 evidence=item.evidence,
                 provider=provider,
@@ -108,6 +113,12 @@ def normalize_batch(
             )
         )
     return normalized
+
+
+def _is_retryable_provider_error(error: BaseException) -> bool:
+    if isinstance(error, (OSError, TimeoutError)):
+        return True
+    return isinstance(error, ApiError) and int(getattr(error, "status_code", 0) or 0) >= 500
 
 
 class TwelveLabsAnalyzer:
@@ -124,18 +135,18 @@ class TwelveLabsAnalyzer:
     @retry(
         stop=stop_after_attempt(2),
         wait=wait_exponential(multiplier=0.5, min=0.5, max=2),
-        retry=retry_if_exception_type((OSError, TimeoutError)),
+        retry=retry_if_exception(_is_retryable_provider_error),
         reraise=True,
     )
-    def analyze_url(self, video_url: str, chunk: VideoChunkContext) -> ProviderBatch:
+    def _analyze(self, video: dict[str, str]) -> ProviderBatch:
         response = self.client.analyze(
             model_name=self.model,
-            video={"url": video_url},
+            video=video,
             prompt=PROVIDER_PROMPT,
             temperature=0,
             response_format={
                 "type": "json_schema",
-                "json_schema": ProviderBatch.model_json_schema(),
+                "json_schema": provider_response_schema(),
             },
             max_tokens=3000,
         )
@@ -146,9 +157,35 @@ class TwelveLabsAnalyzer:
             raise ValueError("provider returned no structured analysis")
         return ProviderBatch.model_validate_json(data)
 
+    def analyze_url(self, video_url: str, chunk: VideoChunkContext) -> ProviderBatch:
+        del chunk
+        return self._analyze({"type": "url", "url": video_url})
+
+    def analyze_file(self, path: str | Path, chunk: VideoChunkContext) -> ProviderBatch:
+        del chunk
+        source = Path(path)
+        if source.stat().st_size > 22 * 1024 * 1024:
+            raise ValueError("local video is too large for the provider base64 limit")
+        encoded = base64.b64encode(source.read_bytes()).decode("ascii")
+        return self._analyze({"type": "base64_string", "base64_string": encoded})
+
     def safe_analyze_url(self, video_url: str, chunk: VideoChunkContext) -> ProviderAnalysis:
+        return self._safe_analyze(lambda: self.analyze_url(video_url, chunk), chunk)
+
+    def safe_analyze_file(
+        self,
+        path: str | Path,
+        chunk: VideoChunkContext,
+    ) -> ProviderAnalysis:
+        return self._safe_analyze(lambda: self.analyze_file(path, chunk), chunk)
+
+    def _safe_analyze(
+        self,
+        analyze: Any,
+        chunk: VideoChunkContext,
+    ) -> ProviderAnalysis:
         try:
-            batch = self.analyze_url(video_url, chunk)
+            batch = analyze()
             return ProviderAnalysis(
                 observations=normalize_batch(
                     batch,
@@ -195,3 +232,31 @@ def fixture_batch(payload: str | bytes | dict[str, object]) -> ProviderBatch:
     if isinstance(payload, bytes):
         payload = payload.decode("utf-8")
     return ProviderBatch.model_validate(json.loads(payload))
+
+
+def provider_response_schema() -> dict[str, object]:
+    schema = ProviderBatch.model_json_schema()
+    unsupported_constraint_keywords = {
+        "minimum",
+        "maximum",
+        "exclusiveMinimum",
+        "exclusiveMaximum",
+        "multipleOf",
+        "minLength",
+        "maxLength",
+        "minItems",
+        "maxItems",
+    }
+
+    def clean(value: object) -> object:
+        if isinstance(value, dict):
+            return {
+                key: clean(item)
+                for key, item in value.items()
+                if key not in unsupported_constraint_keywords
+            }
+        if isinstance(value, list):
+            return [clean(item) for item in value]
+        return value
+
+    return clean(schema)

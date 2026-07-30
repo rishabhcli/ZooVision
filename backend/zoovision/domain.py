@@ -171,12 +171,18 @@ class EventRecord(BaseModel):
     action: AlertAction | None
     confidence: float
     baseline_delta_z: float | None = None
-    source_observation_ids: list[str]
+    source_observation_ids: list[str] = Field(min_length=1)
     explanation_facts: list[str]
     rule_version: str
     shift_mode: ShiftMode
     review_state: ReviewState = ReviewState.UNREVIEWED
     created_at: datetime
+
+    @model_validator(mode="after")
+    def validate_auditable_severity(self) -> EventRecord:
+        if self.severity is not Severity.NONE and not self.rule_fired:
+            raise ValueError("non-NONE events require rule_fired")
+        return self
 
 
 class DataGap(BaseModel):

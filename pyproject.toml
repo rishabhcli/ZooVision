@@ -5,6 +5,7 @@ description = "Evidence-backed overnight animal-welfare monitoring"
 readme = "README.md"
 requires-python = ">=3.12,<3.14"
 dependencies = [
+    "boto3>=1.40,<2",
     "fastapi>=0.116,<1",
     "httpx>=0.28,<1",
     "neo4j>=6,<7",
@@ -12,6 +13,7 @@ dependencies = [
     "pydantic>=2.11,<3",
     "pydantic-settings>=2.10,<3",
     "python-multipart>=0.0.20,<1",
+    "strands-agents==1.50.2",
     "tenacity>=9,<10",
     "twelvelabs>=1.2,<2",
     "uvicorn[standard]>=0.35,<1",

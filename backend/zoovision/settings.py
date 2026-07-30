@@ -28,6 +28,35 @@ class Settings(BaseSettings):
     openai_report_model: str = Field(default="gpt-5.6-terra", alias="OPENAI_REPORT_MODEL")
     twelvelabs_api_key: str | None = Field(default=None, alias="TWELVELABS_API_KEY")
     twelvelabs_model: str = Field(default="pegasus1.5", alias="TWELVELABS_MODEL")
+    aws_access_key_id: str | None = Field(default=None, alias="AWS_ACCESS_KEY_ID")
+    aws_secret_access_key: str | None = Field(default=None, alias="AWS_SECRET_ACCESS_KEY")
+    aws_session_token: str | None = Field(default=None, alias="AWS_SESSION_TOKEN")
+    aws_region: str = Field(default="us-east-1", alias="AWS_REGION")
+    aws_account_id: str | None = Field(default=None, alias="AWS_ACCOUNT_ID")
+    aws_bedrock_profile: str | None = Field(default=None, alias="AWS_BEDROCK_PROFILE")
+    aws_bedrock_access_key_id: str | None = Field(
+        default=None,
+        alias="AWS_BEDROCK_ACCESS_KEY_ID",
+    )
+    aws_bedrock_secret_access_key: str | None = Field(
+        default=None,
+        alias="AWS_BEDROCK_SECRET_ACCESS_KEY",
+    )
+    aws_bedrock_session_token: str | None = Field(
+        default=None,
+        alias="AWS_BEDROCK_SESSION_TOKEN",
+    )
+    aws_storage_enabled: bool = Field(default=False, alias="ZOOVISION_AWS_STORAGE_ENABLED")
+    s3_raw_bucket: str | None = Field(default=None, alias="ZOOVISION_S3_RAW_BUCKET")
+    s3_analysis_bucket: str | None = Field(
+        default=None,
+        alias="ZOOVISION_S3_ANALYSIS_BUCKET",
+    )
+    s3_clips_bucket: str | None = Field(default=None, alias="ZOOVISION_S3_CLIPS_BUCKET")
+    bedrock_marengo_model: str = Field(
+        default="twelvelabs.marengo-embed-3-0-v1:0",
+        alias="ZOOVISION_BEDROCK_MARENGO_MODEL",
+    )
     neo4j_uri: str | None = Field(default=None, alias="NEO4J_URI")
     neo4j_username: str | None = Field(default=None, alias="NEO4J_USERNAME")
     neo4j_password: str | None = Field(default=None, alias="NEO4J_PASSWORD")
@@ -46,6 +75,45 @@ class Settings(BaseSettings):
     @property
     def database_path(self) -> Path:
         return self.storage_root / "zoovision.db"
+
+    @property
+    def aws_storage_configured(self) -> bool:
+        return all(
+            (
+                self.s3_raw_bucket,
+                self.s3_analysis_bucket,
+                self.s3_clips_bucket,
+            )
+        )
+
+    @property
+    def aws_session_kwargs(self) -> dict[str, str]:
+        credentials = {}
+        if self.aws_access_key_id and self.aws_secret_access_key:
+            credentials = {
+                "aws_access_key_id": self.aws_access_key_id,
+                "aws_secret_access_key": self.aws_secret_access_key,
+            }
+            if self.aws_session_token:
+                credentials["aws_session_token"] = self.aws_session_token
+        return {"region_name": self.aws_region, **credentials}
+
+    @property
+    def bedrock_session_kwargs(self) -> dict[str, str]:
+        if self.aws_bedrock_access_key_id and self.aws_bedrock_secret_access_key:
+            credentials = {
+                "aws_access_key_id": self.aws_bedrock_access_key_id,
+                "aws_secret_access_key": self.aws_bedrock_secret_access_key,
+            }
+            if self.aws_bedrock_session_token:
+                credentials["aws_session_token"] = self.aws_bedrock_session_token
+            return {"region_name": self.aws_region, **credentials}
+        if self.aws_bedrock_profile:
+            return {
+                "profile_name": self.aws_bedrock_profile,
+                "region_name": self.aws_region,
+            }
+        return self.aws_session_kwargs
 
 
 def get_settings() -> Settings:

@@ -7,6 +7,7 @@ from typing import Literal
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -82,6 +83,10 @@ def create_app(
             "twelvelabs": _integration_state(
                 configured=bool(settings.twelvelabs_api_key),
                 enabled=not settings.fixture_mode,
+            ),
+            "aws_storage": _integration_state(
+                configured=settings.aws_storage_configured,
+                enabled=settings.aws_storage_enabled,
             ),
             "neo4j": _integration_state(
                 configured=bool(
@@ -202,6 +207,25 @@ def create_app(
             raise HTTPException(status_code=404, detail="fixture mode is disabled")
         seed_demo(store, settings)
         return {"status": "reset"}
+
+    frontend_dist = Path(__file__).resolve().parents[2] / "frontend" / "dist"
+    if frontend_dist.exists():
+        assets = frontend_dist / "assets"
+        if assets.exists():
+            app.mount("/assets", StaticFiles(directory=assets), name="frontend-assets")
+
+        @app.api_route("/{path:path}", methods=["GET", "HEAD"], include_in_schema=False)
+        def frontend(path: str) -> FileResponse:
+            if path.startswith("api/"):
+                raise HTTPException(status_code=404, detail="API route not found")
+            candidate = (frontend_dist / path).resolve()
+            if (
+                candidate.is_relative_to(frontend_dist.resolve())
+                and candidate.is_file()
+                and candidate.name != "index.html"
+            ):
+                return FileResponse(candidate)
+            return FileResponse(frontend_dist / "index.html")
 
     return app
 

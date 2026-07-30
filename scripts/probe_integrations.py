@@ -3,7 +3,9 @@ from __future__ import annotations
 import json
 from contextlib import suppress
 
+import boto3
 from openai import OpenAI
+from zoovision.aws_storage import S3Archive, S3BucketSet
 from zoovision.graph import Neo4jGraphWriter
 from zoovision.settings import get_settings
 
@@ -52,6 +54,36 @@ def main() -> int:
                 writer.close()
     else:
         result["neo4j"] = {"configured": False, "healthy": False}
+
+    if settings.aws_storage_configured:
+        aws_session = boto3.Session(**settings.aws_session_kwargs)
+        archive = S3Archive(
+            S3BucketSet(
+                raw=settings.s3_raw_bucket,
+                analysis=settings.s3_analysis_bucket,
+                clips=settings.s3_clips_bucket,
+            ),
+            region=settings.aws_region,
+            client=aws_session.client("s3"),
+        )
+        try:
+            identity = aws_session.client("sts").get_caller_identity()
+            archive.verify_connectivity()
+            result["aws_storage"] = {
+                "account": identity["Account"],
+                "configured": True,
+                "healthy": True,
+                "region": settings.aws_region,
+            }
+        except Exception as error:
+            result["aws_storage"] = {
+                "configured": True,
+                "healthy": False,
+                "error_type": type(error).__name__,
+                "region": settings.aws_region,
+            }
+    else:
+        result["aws_storage"] = {"configured": False, "healthy": False}
 
     result["twelvelabs"] = {
         "configured": bool(settings.twelvelabs_api_key),

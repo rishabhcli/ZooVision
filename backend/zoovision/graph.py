@@ -7,6 +7,18 @@ from pydantic import BaseModel, ConfigDict, model_validator
 
 from .domain import EventRecord, Observation
 
+SCHEMA_QUERIES = (
+    "CREATE CONSTRAINT animal_id_unique IF NOT EXISTS "
+    "FOR (animal:Animal) REQUIRE animal.animal_id IS UNIQUE",
+    "CREATE CONSTRAINT enclosure_id_unique IF NOT EXISTS "
+    "FOR (enclosure:Enclosure) REQUIRE enclosure.enclosure_id IS UNIQUE",
+    "CREATE CONSTRAINT welfare_event_id_unique IF NOT EXISTS "
+    "FOR (event:WelfareEvent) REQUIRE event.event_id IS UNIQUE",
+    "CREATE CONSTRAINT observation_id_unique IF NOT EXISTS "
+    "FOR (observation:Observation) REQUIRE observation.observation_id IS UNIQUE",
+    "CREATE CONSTRAINT clip_id_unique IF NOT EXISTS FOR (clip:Clip) REQUIRE clip.clip_id IS UNIQUE",
+)
+
 WRITE_EVENT_CYPHER = """
 MERGE (enclosure:Enclosure {enclosure_id: $enclosure_id})
 MERGE (animal:Animal {animal_id: $animal_id})
@@ -39,6 +51,13 @@ SET observation.chunk_id = source.chunk_id,
     observation.provider_model = source.provider_model
 MERGE (observation)-[:SOURCE_FOR]->(event)
 MERGE (observation)-[:OBSERVED_IN]->(enclosure)
+"""
+
+EVENT_CARDINALITY_CYPHER = """
+OPTIONAL MATCH (event:WelfareEvent {event_id: $event_id})
+OPTIONAL MATCH (observation:Observation)-[:SOURCE_FOR]->(event)
+RETURN count(DISTINCT event) AS events,
+       count(DISTINCT observation) AS observations
 """
 
 READ_TIMELINE_CYPHER = """
@@ -111,12 +130,36 @@ class Neo4jGraphWriter:
     def verify_connectivity(self) -> None:
         self.driver.verify_connectivity()
 
+    def initialize_schema(self, *, vector_dimension: int | None = None) -> None:
+        if vector_dimension is not None and not 1 <= vector_dimension <= 4096:
+            raise ValueError("vector dimension must be between 1 and 4096")
+
+        def write(tx: Any) -> None:
+            for query in SCHEMA_QUERIES:
+                tx.run(query).consume()
+            if vector_dimension is not None:
+                tx.run(_clip_vector_index_cypher(vector_dimension)).consume()
+
+        with self.driver.session() as session:
+            session.execute_write(write)
+
     def write_event(self, bundle: GraphEventBundle) -> None:
         def write(tx: Any) -> None:
             tx.run(WRITE_EVENT_CYPHER, **bundle.parameters()).consume()
 
         with self.driver.session() as session:
             session.execute_write(write)
+
+    def event_cardinality(self, event_id: str) -> dict[str, int]:
+        def read(tx: Any) -> dict[str, int]:
+            record = tx.run(EVENT_CARDINALITY_CYPHER, event_id=event_id).single(strict=True)
+            return {
+                "events": int(record["events"]),
+                "observations": int(record["observations"]),
+            }
+
+        with self.driver.session() as session:
+            return session.execute_read(read)
 
     def close(self) -> None:
         self.driver.close()
@@ -151,3 +194,14 @@ class Neo4jGraphReader:
 
     def close(self) -> None:
         self.driver.close()
+
+
+def _clip_vector_index_cypher(dimension: int) -> str:
+    return f"""
+CREATE VECTOR INDEX clip_embedding IF NOT EXISTS
+FOR (clip:Clip) ON (clip.embedding)
+OPTIONS {{indexConfig: {{
+  `vector.dimensions`: {dimension},
+  `vector.similarity_function`: 'cosine'
+}}}}
+""".strip()
