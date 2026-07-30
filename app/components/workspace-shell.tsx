@@ -3,6 +3,7 @@
 import { AnimatePresence, MotionConfig, motion } from "motion/react";
 import {
   BarChart3,
+  Bell,
   Bot,
   ChevronDown,
   ChevronLeft,
@@ -39,6 +40,7 @@ type ChatMessage = {
   role: "user" | "assistant";
   body: string;
   citations?: string[];
+  time?: string;
 };
 
 const routeOptions = [
@@ -64,28 +66,34 @@ const initialChats: Record<string, ChatMessage[]> = {
   ],
   "/graph": [
     {
-      id: "graph-user",
-      role: "user",
-      body: "What changed for Rex tonight?",
+      id: "graph-evidence-one",
+      role: "assistant",
+      time: "01:15:42",
+      body: "Pacing detected for 14 minutes in Savannah Overlook on CAM 07. Exceeds the 10-minute rule threshold.",
+      citations: ["View evidence"],
     },
     {
-      id: "graph-assistant",
+      id: "graph-evidence-two",
       role: "assistant",
-      body: "The graph connects a 14-minute pacing observation to the deterministic pacing > 10 min rule and its source clip.",
-      citations: ["EVT-1842", "Rule 10.1"],
+      time: "01:33:05",
+      body: "Pattern is consistent with this animal's night-shift baseline. Confidence is moderate.",
+      citations: ["View evidence"],
     },
   ],
   "/analysis": [
     {
-      id: "analysis-user",
-      role: "user",
-      body: "Summarize the enclosure tonight.",
+      id: "analysis-evidence-one",
+      role: "assistant",
+      time: "02:00:00",
+      body: "Pacing started for Rex in Savannah Overlook (CAM 07). Duration exceeded the 10-minute rule threshold.",
+      citations: ["View evidence"],
     },
     {
-      id: "analysis-assistant",
+      id: "analysis-evidence-two",
       role: "assistant",
-      body: "Coverage is complete. Rex has one acknowledged review item; Zuri has no notable events in the monitored window.",
-      citations: ["Overnight review", "Coverage"],
+      time: "02:18:05",
+      body: "Human review completed. Event acknowledged by Maria Chen with outcome noted.",
+      citations: ["View evidence"],
     },
   ],
   "/settings": [
@@ -110,6 +118,8 @@ export function WorkspaceShell({
 }: WorkspaceShellProps) {
   const pathname = usePathname();
   const router = useRouter();
+  const isEvidenceLayout =
+    pathname === "/graph" || pathname === "/analysis";
   const profileRef = useRef<HTMLDivElement>(null);
   const [chatCollapsed, setChatCollapsed] = useState(false);
   const [profileOpen, setProfileOpen] = useState(false);
@@ -162,7 +172,9 @@ export function WorkspaceShell({
       reducedMotion="user"
       transition={{ type: "spring", visualDuration: 0.32, bounce: 0.05 }}
     >
-      <main className="app-frame">
+      <main
+        className={`app-frame ${isEvidenceLayout ? "evidence-layout" : ""}`}
+      >
         <motion.aside
           className="chat-rail"
           animate={{ width: chatCollapsed ? 64 : 326 }}
@@ -181,8 +193,10 @@ export function WorkspaceShell({
                   animate={{ opacity: 1, x: 0 }}
                   exit={{ opacity: 0, x: -8 }}
                 >
-                  <strong>ZooVision Assistant</strong>
-                  <span>Evidence on this page</span>
+                  <strong>
+                    {isEvidenceLayout ? "AI Assistant" : "ZooVision Assistant"}
+                  </strong>
+                  {!isEvidenceLayout && <span>Evidence on this page</span>}
                 </motion.div>
               )}
             </AnimatePresence>
@@ -220,7 +234,7 @@ export function WorkspaceShell({
               animate={{ opacity: 1 }}
             >
               <div className="chat-context">
-                <span className="status-dot" />
+                {!isEvidenceLayout && <span className="status-dot" />}
                 <span>{eyebrow}</span>
               </div>
               <div className="message-list" aria-live="polite">
@@ -239,9 +253,13 @@ export function WorkspaceShell({
                     <div>
                       <div className="message-meta">
                         <strong>
-                          {message.role === "assistant" ? "ZooVision" : "You"}
+                          {isEvidenceLayout && message.role === "assistant"
+                            ? "Evidence"
+                            : message.role === "assistant"
+                              ? "ZooVision"
+                              : "You"}
                         </strong>
-                        <span>05:41</span>
+                        <span>{message.time ?? "05:41"}</span>
                       </div>
                       <p className="message-copy">{message.body}</p>
                       {message.citations && (
@@ -299,20 +317,32 @@ export function WorkspaceShell({
                 onClick={() => router.push("/monitor")}
                 aria-label="Open ZooVision monitor"
               >
-                <span className="brand-mark" aria-hidden="true">
-                  <ScanLine size={18} />
-                </span>
+                {!isEvidenceLayout && (
+                  <span className="brand-mark" aria-hidden="true">
+                    <ScanLine size={18} />
+                  </span>
+                )}
                 <span>ZooVision</span>
               </button>
               <span className="topbar-divider" />
-              <div className="page-context">
-                <span>{eyebrow}</span>
-                <strong>{title}</strong>
-              </div>
+              {isEvidenceLayout ? (
+                <strong className="evidence-workspace-title">
+                  Overnight evidence workspace
+                </strong>
+              ) : (
+                <div className="page-context">
+                  <span>{eyebrow}</span>
+                  <strong>{title}</strong>
+                </div>
+              )}
             </div>
 
             <nav className="route-tabs" aria-label="Workspace pages">
-              {routeOptions.map((option) => {
+              {routeOptions
+                .filter(
+                  (option) => !isEvidenceLayout || option.href !== "/settings",
+                )
+                .map((option) => {
                 const Icon = option.icon;
                 const isActive = pathname === option.href;
                 return (
@@ -324,7 +354,7 @@ export function WorkspaceShell({
                     aria-current={isActive ? "page" : undefined}
                     onClick={() => router.push(option.href)}
                   >
-                    <Icon size={15} />
+                    {!isEvidenceLayout && <Icon size={15} />}
                     <span>{option.label}</span>
                     {isActive && (
                       <motion.i
@@ -338,15 +368,36 @@ export function WorkspaceShell({
             </nav>
 
             <div className="topbar-right">
-              <div className="shadow-badge">
-                <ShieldCheck size={14} />
-                Shadow mode
-              </div>
-              <div className="shift-status">
-                <Moon size={15} />
-                <span>Night shift</span>
-                <strong>05:42</strong>
-              </div>
+              {isEvidenceLayout ? (
+                <>
+                  <button
+                    type="button"
+                    className="evidence-header-icon"
+                    aria-label="Switch appearance"
+                  >
+                    <Moon size={17} />
+                  </button>
+                  <button
+                    type="button"
+                    className="evidence-header-icon"
+                    aria-label="Notifications"
+                  >
+                    <Bell size={17} />
+                  </button>
+                </>
+              ) : (
+                <>
+                  <div className="shadow-badge">
+                    <ShieldCheck size={14} />
+                    Shadow mode
+                  </div>
+                  <div className="shift-status">
+                    <Moon size={15} />
+                    <span>Night shift</span>
+                    <strong>05:42</strong>
+                  </div>
+                </>
+              )}
               <div className="profile-menu" ref={profileRef}>
                 <button
                   type="button"
@@ -355,12 +406,22 @@ export function WorkspaceShell({
                   aria-expanded={profileOpen}
                   aria-haspopup="menu"
                 >
-                  <span className="profile-avatar">MC</span>
-                  <span className="profile-copy">
-                    <strong>Maria Chen</strong>
-                    <small>Night keeper</small>
+                  <span className="profile-avatar">
+                    {isEvidenceLayout ? (
+                      <CircleUserRound size={17} />
+                    ) : (
+                      "MC"
+                    )}
                   </span>
-                  <ChevronDown size={15} />
+                  {!isEvidenceLayout && (
+                    <>
+                      <span className="profile-copy">
+                        <strong>Maria Chen</strong>
+                        <small>Night keeper</small>
+                      </span>
+                      <ChevronDown size={15} />
+                    </>
+                  )}
                 </button>
                 <AnimatePresence>
                   {profileOpen && (

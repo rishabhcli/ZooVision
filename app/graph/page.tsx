@@ -8,7 +8,7 @@ export const metadata: Metadata = {
 
 export default function GraphPage() {
   return (
-    <WorkspaceShell title="Evidence graph" eyebrow="ENC-07 · Rex">
+    <WorkspaceShell title="Evidence graph" eyebrow="May 12, 2025">
       <GraphWorkspace />
     </WorkspaceShell>
   );

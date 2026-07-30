@@ -1,278 +1,325 @@
 "use client";
 
 import {
+  CalendarDays,
   Check,
-  Clock3,
+  CheckCircle2,
+  ChevronDown,
+  ChevronLeft,
+  ChevronRight,
+  CircleAlert,
   ExternalLink,
   FileText,
+  List,
+  MoreVertical,
+  PawPrint,
+  Pencil,
   Play,
   ShieldCheck,
   Sparkles,
+  Target,
+  UserRound,
+  Video,
 } from "lucide-react";
 import { useMemo, useState } from "react";
 
-type Activity = {
+type ReviewEvent = {
   id: string;
   time: string;
   title: string;
   meta: string;
-  type: "source" | "rule" | "human";
+  type: "camera" | "rule" | "human";
+  eventId: string;
   source: string;
 };
 
-const activities: Activity[] = [
+const reviewEvents: ReviewEvent[] = [
   {
-    id: "water",
+    id: "baseline",
     time: "20:30",
-    title: "Last water contact",
-    meta: "Rex · ENC-07 Camera 2",
-    type: "source",
-    source: "Camera observation",
+    title: "Night shift baseline established",
+    meta: "Camera evidence",
+    type: "camera",
+    eventId: "EVT-1831",
+    source: "CAM 07",
   },
   {
-    id: "pacing-start",
+    id: "pacing",
     time: "02:00",
     title: "Pacing started",
-    meta: "Rex · continuous motion",
-    type: "source",
-    source: "Validated segment",
-  },
-  {
-    id: "pacing-end",
-    time: "02:14",
-    title: "Pacing ended · 14 min",
-    meta: "Rex · confidence 0.91",
-    type: "source",
-    source: "Validated segment",
+    meta: "Camera evidence",
+    type: "camera",
+    eventId: "EVT-1842",
+    source: "CAM 07 · Savannah Overlook",
   },
   {
     id: "rule",
-    time: "02:15",
-    title: "Rule fired · pacing > 10 min",
-    meta: "Severity fixed as MODERATE",
+    time: "02:14",
+    title: "Rule triggered",
+    meta: "Deterministic rule",
     type: "rule",
-    source: "Deterministic rule engine",
+    eventId: "RULE-10.1",
+    source: "Rule set v1.3",
   },
   {
-    id: "ack",
+    id: "clip",
+    time: "02:15",
+    title: "Clip created",
+    meta: "Camera evidence",
+    type: "camera",
+    eventId: "CLIP-1842",
+    source: "CAM 07",
+  },
+  {
+    id: "reviewed",
     time: "02:18",
-    title: "Acknowledged",
-    meta: "Maria Chen · welfare check",
+    title: "Reviewed",
+    meta: "Human review",
     type: "human",
-    source: "Human review",
+    eventId: "NOTE-512",
+    source: "Maria Chen",
   },
 ];
 
+const metrics = [
+  {
+    label: "Coverage",
+    value: "100%",
+    detail: "Expected 23:00–05:00",
+    icon: Target,
+  },
+  {
+    label: "Animals",
+    value: "2",
+    detail: "Monitored",
+    icon: PawPrint,
+  },
+  {
+    label: "Review items",
+    value: "1",
+    detail: "Requires review",
+    icon: List,
+  },
+  {
+    label: "Data gaps",
+    value: "0",
+    detail: "Detected",
+    icon: CircleAlert,
+  },
+] as const;
+
+const comparisonRows = [
+  { label: "Pacing", tonight: 72, baseline: 18, tonightValue: "14.0 min", baselineValue: "2.0 min" },
+  { label: "Resting", tonight: 92, baseline: 106, tonightValue: "30.0 min", baselineValue: "42.0 min" },
+  { label: "Water contact", tonight: 9, baseline: 14, tonightValue: "1.0", baselineValue: "2.0" },
+] as const;
+
+function TimelineIcon({ type }: { type: ReviewEvent["type"] }) {
+  if (type === "human") return <UserRound size={13} />;
+  if (type === "rule") return <ShieldCheck size={13} />;
+  return <Video size={13} />;
+}
+
 export function AnalysisWorkspace() {
-  const [selectedId, setSelectedId] = useState("pacing-start");
+  const [selectedId, setSelectedId] = useState("pacing");
   const [briefingReady, setBriefingReady] = useState(false);
   const selected = useMemo(
-    () => activities.find((activity) => activity.id === selectedId)!,
+    () =>
+      reviewEvents.find((event) => event.id === selectedId) ?? reviewEvents[1],
     [selectedId],
   );
 
   return (
-    <div className="page-stack analysis-page">
-      <div className="control-row">
-        <div className="analysis-scope-readout">
-          <Clock3 size={15} />
-          <span>
-            <small>ENC-07 · All monitored animals</small>
-            <strong>Tonight · 22:00–06:00</strong>
-          </span>
-        </div>
+    <div className="review-analysis-page">
+      <div className="review-toolbar">
+        <button type="button" className="review-filter">
+          <span>ENC-07 · Painted dogs</span>
+          <ChevronDown size={14} />
+        </button>
+        <button type="button" className="review-filter">
+          <span>All monitored animals</span>
+          <ChevronDown size={14} />
+        </button>
+        <button type="button" className="review-filter review-date-filter">
+          <CalendarDays size={14} />
+          <span>May 12 · 23:00–05:00</span>
+        </button>
         <button
-          className="primary-button briefing-button"
           type="button"
+          className="primary-button review-briefing-button"
           onClick={() => setBriefingReady(true)}
         >
-          {briefingReady ? <Check size={15} /> : <Sparkles size={15} />}
+          {briefingReady ? <Check size={14} /> : <FileText size={14} />}
           {briefingReady ? "Briefing prepared" : "Prepare morning briefing"}
         </button>
       </div>
 
-      <div className="analysis-heading">
-        <div>
-          <span className="section-kicker">July 30 · Night shift</span>
-          <h1>Overnight evidence review</h1>
-          <p>Observed evidence, deterministic rules, and human outcomes.</p>
-        </div>
-        <div className="analysis-summary">
-          <div>
-            <span>Coverage</span>
-            <strong>100%</strong>
-            <small>22:00–06:00</small>
-          </div>
-          <div>
-            <span>Animals</span>
-            <strong>2</strong>
-            <small>monitored</small>
-          </div>
-          <div>
-            <span>Review items</span>
-            <strong>1</strong>
-            <small>acknowledged</small>
-          </div>
-          <div>
-            <span>Data gaps</span>
-            <strong>0</strong>
-            <small>detected</small>
-          </div>
-        </div>
-      </div>
+      <header className="review-page-heading">
+        <h1>Overnight evidence review</h1>
+      </header>
 
-      <section className="analysis-layout">
-        <div className="analysis-primary-column">
-          <article className="analysis-section activity-section">
-            <div className="section-heading-row">
-              <div>
-                <span className="section-kicker">Source-aligned history</span>
-                <h2>Activity timeline</h2>
-              </div>
-              <span className="quiet-meta">
-                <Clock3 size={14} />
-                Local time
-              </span>
-            </div>
-            <div className="activity-list">
-              {activities.map((activity) => (
-                <button
-                  type="button"
-                  className={`activity-row ${
-                    selectedId === activity.id ? "selected" : ""
-                  }`}
-                  onClick={() => setSelectedId(activity.id)}
-                  key={activity.id}
-                >
-                  <time>{activity.time}</time>
-                  <span className={`activity-marker ${activity.type}`} />
-                  <span className="activity-copy">
-                    <strong>{activity.title}</strong>
-                    <small>{activity.meta}</small>
-                  </span>
-                  <span className="activity-source">{activity.source}</span>
-                </button>
-              ))}
+      <section className="review-metrics" aria-label="Overnight summary">
+        {metrics.map(({ label, value, detail, icon: Icon }) => (
+          <article key={label}>
+            <span className="review-metric-icon">
+              <Icon size={18} />
+            </span>
+            <div>
+              <small>{label}</small>
+              <strong>{value}</strong>
+              <span>{detail}</span>
             </div>
           </article>
+        ))}
+      </section>
 
-          <article className="analysis-section animal-table-section">
-            <div className="section-heading-row">
-              <div>
-                <span className="section-kicker">Every monitored animal</span>
-                <h2>Animal summary</h2>
-              </div>
-              <button className="text-button" type="button">
-                Full report <ExternalLink size={13} />
+      <section className="review-dashboard-grid">
+        <article className="review-panel review-activity-panel">
+          <header className="review-panel-header">
+            <h2>Activity timeline</h2>
+          </header>
+          <div className="review-event-list">
+            {reviewEvents.map((event) => (
+              <button
+                type="button"
+                className={selectedId === event.id ? "selected" : undefined}
+                onClick={() => setSelectedId(event.id)}
+                aria-pressed={selectedId === event.id}
+                key={event.id}
+              >
+                <time>{event.time}</time>
+                <i className={`review-event-node ${event.type}`} />
+                <span className="review-event-copy">
+                  <strong>
+                    <TimelineIcon type={event.type} />
+                    {event.title}
+                  </strong>
+                  <small>{event.meta}</small>
+                </span>
               </button>
-            </div>
-            <div className="animal-table" role="table">
-              <div className="animal-table-head" role="row">
-                <span>Animal</span>
-                <span>Observed behavior</span>
-                <span>Baseline delta</span>
-                <span>Outcome</span>
-                <span>Coverage</span>
-              </div>
-              <div className="animal-table-row" role="row">
-                <span className="animal-cell">
-                  <span className="animal-avatar">R</span>
-                  <span>
-                    <strong>Rex</strong>
-                    <small>ENC-07</small>
-                  </span>
-                </span>
-                <span>Pacing · 14 min</span>
-                <span className="delta-value">3.1σ above</span>
-                <span>
-                  <span className="table-status review">Follow up</span>
-                </span>
-                <span>100%</span>
-              </div>
-              <div className="animal-table-row" role="row">
-                <span className="animal-cell">
-                  <span className="animal-avatar">Z</span>
-                  <span>
-                    <strong>Zuri</strong>
-                    <small>ENC-07</small>
-                  </span>
-                </span>
-                <span>No notable events</span>
-                <span>Within baseline</span>
-                <span>
-                  <span className="table-status normal">No action</span>
-                </span>
-                <span>100%</span>
-              </div>
-            </div>
-          </article>
-        </div>
+            ))}
+          </div>
+          <button type="button" className="review-full-timeline">
+            View full timeline
+            <ExternalLink size={12} />
+          </button>
+        </article>
 
-        <div className="analysis-secondary-column">
-          <article className="analysis-section comparison-section">
-            <div className="section-heading-row">
-              <div>
-                <span className="section-kicker">Deterministic comparison</span>
-                <h2>Behavior vs daytime baseline</h2>
-              </div>
-              <span className="comparison-value">3.1σ</span>
-            </div>
-            <div className="bar-chart">
-              <div className="chart-row">
-                <span>Pacing</span>
-                <div className="bar-pair">
-                  <span className="bar tonight" style={{ width: "86%" }}>
-                    <i>14 min</i>
-                  </span>
-                  <span className="bar baseline" style={{ width: "28%" }}>
-                    <i>4.5 min</i>
-                  </span>
-                </div>
-              </div>
-              <div className="chart-row">
-                <span>Resting</span>
-                <div className="bar-pair">
-                  <span className="bar tonight" style={{ width: "67%" }}>
-                    <i>62%</i>
-                  </span>
-                  <span className="bar baseline" style={{ width: "69%" }}>
-                    <i>64%</i>
-                  </span>
-                </div>
-              </div>
-              <div className="chart-row">
-                <span>Water contact</span>
-                <div className="bar-pair">
-                  <span className="bar tonight" style={{ width: "24%" }}>
-                    <i>1</i>
-                  </span>
-                  <span className="bar baseline" style={{ width: "35%" }}>
-                    <i>1.3</i>
-                  </span>
-                </div>
-              </div>
-              <div className="chart-legend">
+        <div className="review-center-column">
+          <article className="review-panel review-chart-panel">
+            <header className="review-panel-header">
+              <h2>Behavior vs daytime baseline</h2>
+              <div className="review-chart-legend">
                 <span>
                   <i className="tonight" />
                   Tonight
                 </span>
                 <span>
                   <i className="baseline" />
-                  Daytime-only baseline
+                  Daytime baseline
                 </span>
               </div>
+            </header>
+            <div
+              className="review-comparison-chart"
+              role="img"
+              aria-label="Pacing was fourteen minutes tonight compared with a two-minute daytime baseline. Resting was thirty minutes compared with forty-two minutes. Water contact was one compared with two."
+            >
+              <div className="review-chart-axis">
+                <span>0</span>
+                <span>15</span>
+                <span>30</span>
+                <span>45</span>
+                <span>60</span>
+              </div>
+              {comparisonRows.map((row) => (
+                <div className="review-chart-row" key={row.label}>
+                  <span>{row.label}</span>
+                  <div>
+                    <i
+                      className="review-bar tonight"
+                      style={{ width: `${row.tonight}%` }}
+                    >
+                      <b>{row.tonightValue}</b>
+                    </i>
+                    <i
+                      className="review-bar baseline"
+                      style={{ width: `${row.baseline}%` }}
+                    >
+                      <b>{row.baselineValue}</b>
+                    </i>
+                  </div>
+                </div>
+              ))}
+              <p>Pacing was 3.1σ above Rex&apos;s daytime-only baseline.</p>
             </div>
           </article>
 
-          <article className="analysis-section selected-evidence-section">
-            <div className="section-heading-row">
-              <div>
-                <span className="section-kicker">Selected evidence</span>
-                <h2>{selected.title}</h2>
+          <article className="review-panel review-animal-panel">
+            <header className="review-panel-header">
+              <h2>Animal summary</h2>
+            </header>
+            <div className="review-animal-table" role="table">
+              <div className="review-animal-row head" role="row">
+                <span role="columnheader">Animal</span>
+                <span role="columnheader">Observed behavior</span>
+                <span role="columnheader">Baseline</span>
+                <span role="columnheader">Outcome</span>
+                <span role="columnheader">Coverage</span>
               </div>
-              <span className={`activity-marker large ${selected.type}`} />
+              <div className="review-animal-row" role="row">
+                <span role="cell">R</span>
+                <span role="cell">Pacing 14.0 min</span>
+                <span role="cell">2.0 min</span>
+                <span role="cell">Acknowledged</span>
+                <span role="cell">100%</span>
+              </div>
+              <div className="review-animal-row" role="row">
+                <span role="cell">Z</span>
+                <span role="cell">Resting 31.0 min</span>
+                <span role="cell">38.0 min</span>
+                <span role="cell">No events</span>
+                <span role="cell">100%</span>
+              </div>
             </div>
-            <dl className="selected-evidence-grid">
+            <footer className="review-table-footer">
+              <button type="button">
+                Export summary
+                <ExternalLink size={12} />
+              </button>
+              <span>1–2 of 2</span>
+              <button type="button" aria-label="Previous animals">
+                <ChevronLeft size={13} />
+              </button>
+              <button type="button" aria-label="Next animals">
+                <ChevronRight size={13} />
+              </button>
+            </footer>
+          </article>
+        </div>
+
+        <aside className="review-right-column">
+          <article className="review-panel review-selected-panel">
+            <header className="review-panel-header">
+              <h2>Selected evidence</h2>
+              <button type="button" aria-label="More evidence actions">
+                <MoreVertical size={14} />
+              </button>
+            </header>
+
+            <div className="review-camera-preview" aria-label="CAM 07 evidence preview">
+              <span>CAM 07 · 02:06:42</span>
+              <i className="review-track-box one" />
+              <i className="review-track-box two" />
+              <i className="review-track-box three" />
+              <div className="review-preview-landscape" />
+            </div>
+
+            <dl className="review-evidence-list">
+              <div>
+                <dt>Event ID</dt>
+                <dd>{selected.eventId}</dd>
+              </div>
               <div>
                 <dt>Time</dt>
                 <dd>{selected.time}</dd>
@@ -282,55 +329,73 @@ export function AnalysisWorkspace() {
                 <dd>{selected.source}</dd>
               </div>
               <div>
-                <dt>Event ID</dt>
-                <dd>EVT-1842</dd>
+                <dt>Animal</dt>
+                <dd>Rex</dd>
               </div>
               <div>
-                <dt>Acknowledged</dt>
+                <dt>Confidence</dt>
+                <dd>0.91</dd>
+              </div>
+              <div>
+                <dt>Review</dt>
                 <dd>02:18 · Maria Chen</dd>
               </div>
             </dl>
-            <div className="rule-audit">
-              <ShieldCheck size={17} />
+
+            <section className="review-rule-block">
+              <ShieldCheck size={15} />
               <div>
-                <span>Rule provenance</span>
+                <span>Deterministic rule provenance</span>
                 <strong>pacing &gt; 10 min</strong>
-                <small>Severity was not assigned by the assistant.</small>
+                <small>v1.3 · fixed rule logic</small>
               </div>
-            </div>
-            <div className="clip-strip">
-              {["02:00", "02:06", "02:14"].map((time, index) => (
-                <button
-                  type="button"
-                  className={index === 1 ? "selected" : undefined}
-                  key={time}
-                >
-                  <span>
-                    <Play size={15} />
-                  </span>
-                  <small>{time}</small>
-                </button>
-              ))}
-            </div>
-            <div className="analysis-actions">
-              <button className="primary-button" type="button">
-                <Play size={15} />
+              <ExternalLink size={12} />
+            </section>
+
+            <div className="review-selected-actions">
+              <button type="button" className="primary-button">
+                <Play size={13} />
                 Review clip
+                <ExternalLink size={11} />
               </button>
-              <button className="secondary-button" type="button">
-                <FileText size={15} />
+              <button type="button" className="secondary-button">
+                <Pencil size={13} />
                 Record outcome
               </button>
             </div>
           </article>
-        </div>
+
+          <article className="review-panel review-status-panel">
+            <header>
+              <CheckCircle2 size={15} />
+              <strong>Review status · Acknowledged</strong>
+            </header>
+            <dl>
+              <div>
+                <dt>Reviewer</dt>
+                <dd>Maria Chen</dd>
+              </div>
+              <div>
+                <dt>Time</dt>
+                <dd>May 12, 2025 · 02:18:05</dd>
+              </div>
+              <div>
+                <dt>Outcome</dt>
+                <dd>Acknowledged</dd>
+              </div>
+              <div>
+                <dt>Notes</dt>
+                <dd>Animal monitored; no action required.</dd>
+              </div>
+            </dl>
+          </article>
+        </aside>
       </section>
 
       {briefingReady && (
-        <div className="briefing-toast" role="status">
-          <Check size={16} />
-          Morning briefing preview is ready. It includes Rex, Zuri, and camera
-          coverage.
+        <div className="settings-save-toast" role="status">
+          <Sparkles size={14} />
+          Morning briefing preview prepared.
         </div>
       )}
     </div>

@@ -8,7 +8,7 @@ export const metadata: Metadata = {
 
 export default function AnalysisPage() {
   return (
-    <WorkspaceShell title="Overnight analysis" eyebrow="ENC-07 · Painted dogs">
+    <WorkspaceShell title="Overnight analysis" eyebrow="May 12, 2025">
       <AnalysisWorkspace />
     </WorkspaceShell>
   );

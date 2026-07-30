@@ -2,12 +2,23 @@
 
 import Graph from "graphology";
 import {
-  Check,
+  Activity,
+  BarChart3,
+  Bookmark,
+  CalendarDays,
+  Camera,
+  CheckCircle2,
+  CircleUserRound,
+  Clock3,
   ExternalLink,
   Focus,
   Minus,
+  MoreVertical,
+  Play,
   Plus,
+  ShieldCheck,
   Video,
+  X,
 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import Sigma from "sigma";
@@ -25,210 +36,242 @@ type NodeAttributes = {
   title: string;
   detail: string;
   source: string;
+  eventId: string;
+  time: string;
+  duration: string;
+  confidence: string;
+  provenance: string;
+  icon: "activity" | "animal" | "camera" | "clip" | "baseline" | "rule" | "shift" | "review";
   forceLabel?: boolean;
 };
 
 const nodePalette: Record<NodeKind, string> = {
-  animal: "#6f8cff",
-  evidence: "#aeb6c2",
-  context: "#73849c",
-  review: "#d39b55",
+  animal: "#8d949d",
+  evidence: "#5f94ef",
+  context: "#737a84",
+  review: "#a3a9b2",
 };
 
 const graphNodes: Array<[string, NodeAttributes]> = [
   [
-    "rex",
+    "pacing",
     {
-      label: "Rex · African painted dog",
+      label: "Pacing · 14 min",
       x: 0,
       y: 0,
-      size: 18,
+      size: 22,
+      color: nodePalette.evidence,
+      kind: "evidence",
+      eyebrow: "Behavior event",
+      title: "Pacing · 14 min",
+      detail: "Continuous pacing detected in Savannah Overlook.",
+      source: "CAM 07 · Savannah Overlook",
+      eventId: "EVT-2025-05-12-011542",
+      time: "May 12, 2025 · 01:15:42",
+      duration: "00:14:00",
+      confidence: "Moderate · 0.62",
+      provenance: "pacing > 10 min",
+      icon: "activity",
+      forceLabel: true,
+    },
+  ],
+  [
+    "rex",
+    {
+      label: "Rex",
+      x: -3.1,
+      y: 2.2,
+      size: 15,
       color: nodePalette.animal,
       kind: "animal",
       eyebrow: "Animal",
       title: "Rex",
-      detail: "African painted dog · ENC-07",
-      source: "Animal record",
+      detail: "Animal record associated with the selected evidence.",
+      source: "ENC-07 animal registry",
+      eventId: "ANM-REX-07",
+      time: "Current record",
+      duration: "—",
+      confidence: "Verified identity",
+      provenance: "Animal → Event",
+      icon: "animal",
       forceLabel: true,
     },
   ],
   [
-    "pacing",
+    "camera",
     {
-      label: "Pacing · 14 min",
-      x: -2.7,
-      y: 1.65,
-      size: 13,
-      color: nodePalette.review,
-      kind: "review",
-      eyebrow: "Observed behavior",
-      title: "Pacing · 14 min",
-      detail: "02:00–02:14 · confidence 0.91",
-      source: "ENC-07 Camera 2",
-      forceLabel: true,
-    },
-  ],
-  [
-    "water",
-    {
-      label: "Water contact · none since 20:30",
+      label: "CAM 07",
       x: 0,
-      y: 2.75,
-      size: 10,
-      color: nodePalette.evidence,
-      kind: "evidence",
-      eyebrow: "Observed evidence",
-      title: "Water contact",
-      detail: "No contact observed since 20:30",
-      source: "ENC-07 Camera 2",
-      forceLabel: true,
-    },
-  ],
-  [
-    "baseline",
-    {
-      label: "Daytime baseline · 4.5 min",
-      x: 2.9,
-      y: 2.05,
-      size: 11,
+      y: 3.1,
+      size: 14,
       color: nodePalette.context,
       kind: "context",
-      eyebrow: "Daytime-only baseline",
-      title: "Pacing baseline",
-      detail: "Mean 4.5 min · 3.1σ delta",
-      source: "Prior daytime shifts",
-      forceLabel: true,
-    },
-  ],
-  [
-    "alert",
-    {
-      label: "MODERATE · review",
-      x: 3.25,
-      y: -0.3,
-      size: 13,
-      color: nodePalette.review,
-      kind: "review",
-      eyebrow: "Deterministic severity",
-      title: "MODERATE",
-      detail: "Rule fired: pacing > 10 min",
-      source: "Rule engine",
+      eyebrow: "Camera source",
+      title: "CAM 07",
+      detail: "North-facing enclosure camera covering Savannah Overlook.",
+      source: "Savannah Overlook",
+      eventId: "CAM-07",
+      time: "23:00–05:00",
+      duration: "06:00:00",
+      confidence: "Coverage complete",
+      provenance: "Camera → Clip → Event",
+      icon: "camera",
       forceLabel: true,
     },
   ],
   [
     "clip",
     {
-      label: "Clip · 02:06:40",
-      x: 1.7,
-      y: -2.3,
-      size: 10,
-      color: nodePalette.evidence,
-      kind: "evidence",
+      label: "Clip · 01:15:42",
+      x: 3.1,
+      y: 2.2,
+      size: 15,
+      color: nodePalette.context,
+      kind: "context",
       eyebrow: "Source clip",
-      title: "Clip · 02:06:40",
-      detail: "30-second evidence window",
-      source: "ENC-07 Camera 2",
+      title: "Clip · 01:15:42",
+      detail: "Source-aligned evidence window for the selected event.",
+      source: "CAM 07 · Savannah Overlook",
+      eventId: "CLIP-1842",
+      time: "01:15:42",
+      duration: "00:00:18",
+      confidence: "Source evidence",
+      provenance: "Clip → Event",
+      icon: "clip",
       forceLabel: true,
     },
   ],
   [
-    "shift",
+    "baseline",
     {
-      label: "Night shift · Jul 30",
-      x: -0.6,
-      y: -3,
-      size: 9,
+      label: "Daytime baseline",
+      x: 3.35,
+      y: 0.35,
+      size: 14,
       color: nodePalette.context,
       kind: "context",
-      eyebrow: "Shift",
-      title: "Night shift",
-      detail: "22:00–06:00 · July 30",
-      source: "Shift record",
-    },
-  ],
-  [
-    "care",
-    {
-      label: "Care note · anxious at dusk",
-      x: 3.8,
-      y: -2.65,
-      size: 9,
-      color: nodePalette.context,
-      kind: "context",
-      eyebrow: "Keeper context",
-      title: "Care note",
-      detail: "Anxious at dusk",
-      source: "Maria Chen · Jul 28",
-    },
-  ],
-  [
-    "observation",
-    {
-      label: "Observation · continuous motion",
-      x: -4.05,
-      y: 0,
-      size: 8,
-      color: nodePalette.evidence,
-      kind: "evidence",
-      eyebrow: "Normalized observation",
-      title: "Continuous motion",
-      detail: "Source-aligned behavior observation",
-      source: "Validated segment output",
+      eyebrow: "Baseline context",
+      title: "Daytime baseline",
+      detail: "Prior daytime-only pacing baseline for Rex.",
+      source: "Prior daytime shifts",
+      eventId: "BASE-REX-PACING",
+      time: "Rolling 14-day window",
+      duration: "Mean · 4.5 min",
+      confidence: "3.1σ delta",
+      provenance: "Baseline → Event",
+      icon: "baseline",
+      forceLabel: true,
     },
   ],
   [
     "rule",
     {
       label: "Rule · pacing > 10 min",
-      x: -3.45,
-      y: -1.75,
-      size: 9,
-      color: nodePalette.review,
-      kind: "review",
-      eyebrow: "Rule provenance",
+      x: 2.45,
+      y: -2,
+      size: 14,
+      color: nodePalette.context,
+      kind: "context",
+      eyebrow: "Deterministic rule",
       title: "pacing > 10 min",
-      detail: "First-match deterministic rule",
-      source: "Rule set v1",
+      detail: "First matching deterministic rule for the observation.",
+      source: "Rule set v1.3",
+      eventId: "RULE-10.1",
+      time: "Evaluated 01:29:42",
+      duration: "—",
+      confidence: "Deterministic",
+      provenance: "Rule → Review item",
+      icon: "rule",
+      forceLabel: true,
     },
   ],
   [
-    "outcome",
+    "severity",
     {
-      label: "Outcome · pending",
-      x: -2.05,
-      y: -3.15,
-      size: 8,
+      label: "MODERATE",
+      x: 0,
+      y: -2.8,
+      size: 14,
+      color: nodePalette.evidence,
+      kind: "evidence",
+      eyebrow: "Rule severity",
+      title: "MODERATE",
+      detail: "Severity assigned by deterministic rule logic.",
+      source: "Rule set v1.3",
+      eventId: "SEV-1842",
+      time: "01:29:42",
+      duration: "—",
+      confidence: "Deterministic",
+      provenance: "pacing > 10 min",
+      icon: "activity",
+      forceLabel: true,
+    },
+  ],
+  [
+    "shift",
+    {
+      label: "Night shift",
+      x: -2.55,
+      y: -1.95,
+      size: 14,
       color: nodePalette.context,
       kind: "context",
-      eyebrow: "Human outcome",
-      title: "Outcome pending",
-      detail: "Awaiting keeper review",
-      source: "Human review",
+      eyebrow: "Shift",
+      title: "Night shift",
+      detail: "Configured monitoring window for May 12.",
+      source: "Shift schedule",
+      eventId: "SHIFT-2025-05-12",
+      time: "23:00–05:00",
+      duration: "06:00:00",
+      confidence: "Configured",
+      provenance: "Shift → Event",
+      icon: "shift",
+      forceLabel: true,
+    },
+  ],
+  [
+    "acknowledged",
+    {
+      label: "Acknowledged",
+      x: -3.45,
+      y: 0.25,
+      size: 13,
+      color: nodePalette.context,
+      kind: "context",
+      eyebrow: "Human review",
+      title: "Acknowledged",
+      detail: "Review recorded by the night supervisor.",
+      source: "Maria Chen",
+      eventId: "NOTE-512",
+      time: "02:18:05",
+      duration: "—",
+      confidence: "Human outcome",
+      provenance: "Review item → Outcome",
+      icon: "review",
+      forceLabel: true,
     },
   ],
 ];
 
-const graphEdges: Array<[string, string]> = [
-  ["rex", "pacing"],
-  ["rex", "water"],
-  ["rex", "baseline"],
-  ["rex", "alert"],
-  ["rex", "clip"],
-  ["rex", "shift"],
-  ["rex", "care"],
-  ["pacing", "observation"],
-  ["pacing", "rule"],
-  ["pacing", "outcome"],
-  ["pacing", "baseline"],
-  ["pacing", "alert"],
-  ["alert", "clip"],
-];
+const graphEdges: Array<[string, string]> = graphNodes
+  .filter(([id]) => id !== "pacing")
+  .map(([id]) => ["pacing", id]);
+
+function NodeIcon({ icon }: { icon: NodeAttributes["icon"] }) {
+  const props = { size: 17, strokeWidth: 1.7 };
+  if (icon === "animal") return <CircleUserRound {...props} />;
+  if (icon === "camera") return <Camera {...props} />;
+  if (icon === "clip") return <Video {...props} />;
+  if (icon === "baseline") return <BarChart3 {...props} />;
+  if (icon === "rule") return <ShieldCheck {...props} />;
+  if (icon === "shift") return <CalendarDays {...props} />;
+  if (icon === "review") return <CheckCircle2 {...props} />;
+  return <Activity {...props} />;
+}
 
 export default function WebGLGraph() {
   const containerRef = useRef<HTMLDivElement>(null);
   const rendererRef = useRef<Sigma<NodeAttributes> | null>(null);
-  const graphRef = useRef<Graph<NodeAttributes> | null>(null);
   const selectedRef = useRef("pacing");
   const hoveredRef = useRef<string | null>(null);
   const [selectedNode, setSelectedNode] = useState("pacing");
@@ -240,39 +283,35 @@ export default function WebGLGraph() {
     graphNodes.forEach(([id, attributes]) => graph.addNode(id, attributes));
     graphEdges.forEach(([source, target], index) =>
       graph.addEdgeWithKey(`edge-${index}`, source, target, {
-        color: "#46536a",
-        size: 1.35,
+        color: "#5a616a",
+        size: 1.2,
       }),
     );
 
     const renderer = new Sigma(graph, containerRef.current, {
       renderEdgeLabels: false,
-      labelFont: "Segoe UI, sans-serif",
-      labelColor: { color: "#e0e5ee" },
-      labelSize: 13,
+      labelFont: "Inter, Segoe UI, sans-serif",
+      labelColor: { color: "#e8eaed" },
+      labelSize: 12,
       labelWeight: "500",
-      labelDensity: 0.8,
-      labelGridCellSize: 80,
-      labelRenderedSizeThreshold: 7,
-      defaultEdgeColor: "#46536a",
-      defaultNodeColor: "#6f8cff",
+      labelDensity: 1,
+      labelGridCellSize: 74,
+      labelRenderedSizeThreshold: 5,
+      defaultEdgeColor: "#5a616a",
+      defaultNodeColor: "#7c838c",
       defaultNodeType: "circle",
       hideEdgesOnMove: false,
       allowInvalidContainer: false,
-      enableEdgeEvents: true,
       minCameraRatio: 0.55,
-      maxCameraRatio: 2.4,
+      maxCameraRatio: 2.2,
       nodeReducer: (node, attributes) => {
-        const selected = selectedRef.current;
-        const hovered = hoveredRef.current;
-        const focus = hovered ?? selected;
-        const isNeighbor =
-          focus && (node === focus || graph.hasEdge(node, focus));
+        const focus = hoveredRef.current ?? selectedRef.current;
+        const connected = node === focus || graph.hasEdge(node, focus);
 
-        if (focus && !isNeighbor) {
+        if (focus && !connected) {
           return {
             ...attributes,
-            color: "#343c49",
+            color: "#333840",
             label: "",
             zIndex: 0,
           };
@@ -281,8 +320,8 @@ export default function WebGLGraph() {
         if (node === focus) {
           return {
             ...attributes,
-            size: attributes.size * 1.22,
-            color: attributes.kind === "review" ? "#d7b06c" : "#9eb6f3",
+            size: attributes.size * 1.14,
+            color: "#2878f0",
             forceLabel: true,
             zIndex: 2,
           };
@@ -290,18 +329,17 @@ export default function WebGLGraph() {
 
         return {
           ...attributes,
-          forceLabel: attributes.forceLabel || Boolean(isNeighbor),
+          forceLabel: attributes.forceLabel || connected,
           zIndex: 1,
         };
       },
       edgeReducer: (edge, attributes) => {
         const focus = hoveredRef.current ?? selectedRef.current;
-        const extremities = graph.extremities(edge);
-        const connected = focus && extremities.includes(focus);
+        const connected = graph.extremities(edge).includes(focus);
         return {
           ...attributes,
-          color: connected ? "#8b98aa" : "#303846",
-          size: connected ? 2.2 : 1.05,
+          color: connected ? "#2878f0" : "#555c65",
+          size: connected ? 1.7 : 1,
           zIndex: connected ? 1 : 0,
         };
       },
@@ -329,12 +367,9 @@ export default function WebGLGraph() {
     });
 
     rendererRef.current = renderer;
-    graphRef.current = graph;
-
     return () => {
       renderer.kill();
       rendererRef.current = null;
-      graphRef.current = null;
     };
   }, []);
 
@@ -342,89 +377,132 @@ export default function WebGLGraph() {
     graphNodes.find(([id]) => id === selectedNode)?.[1] ?? graphNodes[0][1];
 
   return (
-    <div className="webgl-graph-shell">
-      <div
-        ref={containerRef}
-        className="webgl-graph"
-        role="img"
-        aria-label="Interactive evidence graph for Rex"
-      />
-      <div className="graph-canvas-badge">
-        <span className="status-dot" />
-        WebGL renderer
-      </div>
-      <div className="graph-zoom-controls">
-        <button
-          type="button"
-          aria-label="Zoom out"
-          onClick={() =>
-            rendererRef.current?.getCamera().animatedUnzoom({
-              duration: 220,
-            })
-          }
-        >
-          <Minus size={16} />
-        </button>
-        <button
-          type="button"
-          aria-label="Zoom in"
-          onClick={() =>
-            rendererRef.current?.getCamera().animatedZoom({
-              duration: 220,
-            })
-          }
-        >
-          <Plus size={16} />
-        </button>
-        <button
-          type="button"
-          aria-label="Reset graph view"
-          onClick={() =>
-            rendererRef.current?.getCamera().animatedReset({
-              duration: 280,
-            })
-          }
-        >
-          <Focus size={16} />
-        </button>
-      </div>
-      <aside className="graph-inspector" aria-live="polite">
-        <div className="inspector-head">
-          <span
-            className={`inspector-kind ${selected.kind}`}
-            aria-hidden="true"
-          />
-          <div>
-            <span className="section-kicker">{selected.eyebrow}</span>
-            <h2>{selected.title}</h2>
-          </div>
+    <div className="node-stage-grid">
+      <div className="node-canvas-frame">
+        <div
+          ref={containerRef}
+          className="node-webgl-canvas"
+          role="img"
+          aria-label="Interactive evidence graph centered on a fourteen-minute pacing event"
+        />
+        <div className="node-zoom-controls">
+          <button
+            type="button"
+            aria-label="Zoom in"
+            onClick={() =>
+              rendererRef.current?.getCamera().animatedZoom({ duration: 180 })
+            }
+          >
+            <Plus size={15} />
+          </button>
+          <button
+            type="button"
+            aria-label="Zoom out"
+            onClick={() =>
+              rendererRef.current?.getCamera().animatedUnzoom({ duration: 180 })
+            }
+          >
+            <Minus size={15} />
+          </button>
+          <button
+            type="button"
+            aria-label="Reset graph view"
+            onClick={() =>
+              rendererRef.current?.getCamera().animatedReset({ duration: 220 })
+            }
+          >
+            <Focus size={15} />
+          </button>
         </div>
-        <p className="inspector-detail">{selected.detail}</p>
-        <dl>
+        <div className="node-legend" aria-label="Graph legend">
+          <span>
+            <i className="blue-line" /> Evidence link
+          </span>
+          <span>
+            <i className="gray-line" /> Context link
+          </span>
+          <span>
+            <i className="blue-node" /> Selected node
+          </span>
+          <span>
+            <i className="gray-node" /> Context node
+          </span>
+        </div>
+      </div>
+
+      <aside className="node-details-panel" aria-live="polite">
+        <header>
+          <strong>Node details</strong>
+          <button type="button" aria-label="Close node details">
+            <X size={15} />
+          </button>
+        </header>
+
+        <div className="node-selected-heading">
+          <span>
+            <NodeIcon icon={selected.icon} />
+          </span>
+          <div>
+            <strong>{selected.title}</strong>
+            <small>Selected</small>
+          </div>
+          <button type="button" aria-label="Bookmark selected node">
+            <Bookmark size={14} />
+          </button>
+          <button type="button" aria-label="More node actions">
+            <MoreVertical size={14} />
+          </button>
+        </div>
+
+        <dl className="node-detail-list">
+          <div>
+            <dt>Type</dt>
+            <dd>{selected.eyebrow}</dd>
+          </div>
           <div>
             <dt>Source</dt>
             <dd>{selected.source}</dd>
           </div>
           <div>
             <dt>Event ID</dt>
-            <dd>EVT-1842</dd>
+            <dd>{selected.eventId}</dd>
           </div>
           <div>
-            <dt>Review state</dt>
-            <dd>
-              <Check size={13} />
-              Acknowledged
-            </dd>
+            <dt>Time</dt>
+            <dd>{selected.time}</dd>
+          </div>
+          <div>
+            <dt>Duration</dt>
+            <dd>{selected.duration}</dd>
+          </div>
+          <div>
+            <dt>Confidence</dt>
+            <dd>{selected.confidence}</dd>
           </div>
         </dl>
-        <div className="inspector-actions">
-          <button className="primary-button" type="button">
-            <Video size={15} />
+
+        <section className="node-rule-section">
+          <span>Rule provenance</span>
+          <strong>{selected.provenance}</strong>
+          <small>v1.3 · deterministic first match</small>
+        </section>
+
+        <section className="node-review-section">
+          <span>Review state</span>
+          <strong>Acknowledged</strong>
+          <small>Maria Chen · May 12, 2025 · 02:18:05</small>
+        </section>
+
+        <div className="node-detail-actions">
+          <button type="button" className="primary-button">
+            <Play size={14} />
             Open source clip
+            <ExternalLink size={12} />
           </button>
-          <button className="secondary-button" type="button">
+          <button type="button" className="secondary-button">
+            <Clock3 size={14} />
             View audit
-            <ExternalLink size={14} />
+            <ExternalLink size={12} />
           </button>
         </div>
       </aside>
