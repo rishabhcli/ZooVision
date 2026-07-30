@@ -698,9 +698,9 @@ export function MonitorWorkspace() {
             <p>
               {selectedCamera.enclosure_id}
               <span>·</span>
-              {selectedCamera.animal_names.join(", ") || "Animal not assigned"}
+              {selectedCamera.animal_names?.join(", ") || "Animal not assigned"}
               <span>·</span>
-              {selectedCamera.animal_species.join(", ") || "Species not assigned"}
+              {selectedCamera.animal_species?.join(", ") || "Species not assigned"}
             </p>
           </div>
         </div>
