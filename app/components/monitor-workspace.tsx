@@ -754,6 +754,7 @@ export function MonitorWorkspace() {
                 src={selectedCamera.media_url}
                 poster={poster}
                 preload="auto"
+                autoPlay
                 muted
                 playsInline
                 onLoadedMetadata={(event) => {
@@ -778,6 +779,7 @@ export function MonitorWorkspace() {
                   setDurationSeconds(duration);
                   setProgress((initial / duration) * 100);
                   setMediaError(null);
+                  void video.play().catch(() => setPlaying(false));
                 }}
                 onTimeUpdate={(event) => {
                   const video = event.currentTarget;
