@@ -4,9 +4,10 @@ import json
 import sqlite3
 from collections.abc import Iterable
 from contextlib import contextmanager
+from datetime import datetime
 from pathlib import Path
 
-from .domain import BaselineProfile, DataGap, EventRecord, Observation
+from .domain import BaselineProfile, DataGap, Detection, EventRecord, Observation
 
 SCHEMA = """
 PRAGMA foreign_keys = ON;
@@ -117,6 +118,34 @@ CREATE TABLE IF NOT EXISTS data_gaps (
     detail TEXT
 );
 
+CREATE TABLE IF NOT EXISTS ingest_jobs (
+    job_id TEXT PRIMARY KEY,
+    status TEXT NOT NULL,
+    source_name TEXT NOT NULL,
+    animal_id TEXT NOT NULL,
+    enclosure_id TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    payload_json TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_ingest_jobs_created ON ingest_jobs(created_at DESC);
+
+CREATE TABLE IF NOT EXISTS detections (
+    detection_id TEXT PRIMARY KEY,
+    chunk_id TEXT NOT NULL REFERENCES video_chunks(chunk_id) ON DELETE CASCADE,
+    track_id TEXT NOT NULL,
+    relative_seconds REAL NOT NULL,
+    box_x REAL NOT NULL,
+    box_y REAL NOT NULL,
+    box_width REAL NOT NULL,
+    box_height REAL NOT NULL,
+    score REAL NOT NULL,
+    source TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_detections_chunk_time
+    ON detections(chunk_id, relative_seconds);
 CREATE INDEX IF NOT EXISTS idx_events_animal_start ON events(animal_id, start_ts);
 CREATE INDEX IF NOT EXISTS idx_events_severity ON events(severity);
 CREATE INDEX IF NOT EXISTS idx_observations_chunk ON observations(chunk_id);
@@ -287,6 +316,110 @@ class SQLiteStore:
                 ),
             )
 
+    def save_ingest_job(self, job: dict) -> None:
+        with self.connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO ingest_jobs(
+                    job_id, status, source_name, animal_id, enclosure_id,
+                    created_at, updated_at, payload_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(job_id) DO UPDATE SET
+                    status = excluded.status,
+                    updated_at = excluded.updated_at,
+                    payload_json = excluded.payload_json
+                """,
+                (
+                    job["job_id"],
+                    job["status"],
+                    job["source_name"],
+                    job["animal_id"],
+                    job["enclosure_id"],
+                    job["created_at"],
+                    job["updated_at"],
+                    json.dumps(job),
+                ),
+            )
+
+    def ingest_job(self, job_id: str) -> dict | None:
+        with self.connect() as connection:
+            row = connection.execute(
+                "SELECT payload_json FROM ingest_jobs WHERE job_id = ?",
+                (job_id,),
+            ).fetchone()
+            return json.loads(row["payload_json"]) if row else None
+
+    def recent_ingest_jobs(self, limit: int = 20) -> list[dict]:
+        bounded = max(1, min(limit, 200))
+        with self.connect() as connection:
+            return [
+                json.loads(row["payload_json"])
+                for row in connection.execute(
+                    "SELECT payload_json FROM ingest_jobs ORDER BY created_at DESC LIMIT ?",
+                    (bounded,),
+                )
+            ]
+
+    def save_detections(self, detections: Iterable[Detection]) -> int:
+        rows = [
+            (
+                detection.detection_id,
+                detection.chunk_id,
+                detection.track_id,
+                detection.relative_seconds,
+                detection.box.x,
+                detection.box.y,
+                detection.box.width,
+                detection.box.height,
+                detection.score,
+                detection.source.value,
+            )
+            for detection in detections
+        ]
+        if not rows:
+            return 0
+        with self.connect() as connection:
+            connection.executemany(
+                """
+                INSERT INTO detections(
+                    detection_id, chunk_id, track_id, relative_seconds,
+                    box_x, box_y, box_width, box_height, score, source
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(detection_id) DO UPDATE SET
+                    track_id = excluded.track_id,
+                    score = excluded.score
+                """,
+                rows,
+            )
+        return len(rows)
+
+    def detections_for_chunk(self, chunk_id: str) -> list[dict]:
+        with self.connect() as connection:
+            return [
+                {
+                    "detection_id": row["detection_id"],
+                    "chunk_id": row["chunk_id"],
+                    "track_id": row["track_id"],
+                    "relative_seconds": row["relative_seconds"],
+                    "box": {
+                        "x": row["box_x"],
+                        "y": row["box_y"],
+                        "width": row["box_width"],
+                        "height": row["box_height"],
+                    },
+                    "score": row["score"],
+                    "source": row["source"],
+                }
+                for row in connection.execute(
+                    """
+                    SELECT * FROM detections
+                    WHERE chunk_id = ?
+                    ORDER BY relative_seconds, box_x
+                    """,
+                    (chunk_id,),
+                )
+            ]
+
     def save_baseline(self, profile: BaselineProfile) -> None:
         with self.connect() as connection:
             connection.execute(
@@ -371,6 +504,7 @@ class SQLiteStore:
                 "event_sources",
                 "events",
                 "observations",
+                "detections",
                 "data_gaps",
                 "video_chunks",
                 "baseline_profiles",
@@ -512,6 +646,165 @@ class SQLiteStore:
             ]
             return result
 
+    def video_sources(self) -> list[dict]:
+        """One row per distinct media file, with what was recorded against it."""
+        with self.connect() as connection:
+            return [
+                dict(row)
+                for row in connection.execute(
+                    """
+                    SELECT vc.source_path,
+                           min(vc.enclosure_id) AS enclosure_id,
+                           min(vc.camera_id) AS camera_id,
+                           count(DISTINCT vc.chunk_id) AS chunk_count,
+                           min(vc.start_ts) AS first_start_ts,
+                           max(vc.end_ts) AS last_end_ts,
+                           count(DISTINCT d.detection_id) AS detection_count,
+                           count(DISTINCT o.observation_id) AS observation_count,
+                           count(DISTINCT e.event_id) AS event_count,
+                           group_concat(DISTINCT a.name) AS animal_names
+                    FROM video_chunks vc
+                    LEFT JOIN detections d ON d.chunk_id = vc.chunk_id
+                    LEFT JOIN observations o ON o.chunk_id = vc.chunk_id
+                    LEFT JOIN events e ON e.event_id IN (
+                        SELECT es.event_id FROM event_sources es
+                        JOIN observations o2 ON o2.observation_id = es.observation_id
+                        WHERE o2.chunk_id = vc.chunk_id
+                    )
+                    LEFT JOIN animals a ON a.animal_id = o.animal_id
+                    GROUP BY vc.source_path
+                    ORDER BY vc.source_path
+                    """
+                )
+            ]
+
+    def video_track(self, source_path: str) -> dict:
+        """Detections and events for one media file, placed on that file's timeline.
+
+        Chunk rows carry ``source_offset_seconds``, the point in the media file
+        where the chunk begins, and detections carry an offset within the chunk.
+        Composing the two yields a position in the file the player can seek to,
+        while wall-clock provenance stays intact on the underlying records.
+        """
+        with self.connect() as connection:
+            chunks = [
+                dict(row)
+                for row in connection.execute(
+                    """
+                    SELECT * FROM video_chunks
+                    WHERE source_path = ?
+                    ORDER BY source_offset_seconds
+                    """,
+                    (source_path,),
+                )
+            ]
+            if not chunks:
+                return {"source_path": source_path, "chunks": [], "detections": [], "events": []}
+            offsets = {chunk["chunk_id"]: chunk["source_offset_seconds"] for chunk in chunks}
+            starts = {chunk["chunk_id"]: chunk["start_ts"] for chunk in chunks}
+            placeholders = ",".join("?" for _ in chunks)
+            chunk_ids = [chunk["chunk_id"] for chunk in chunks]
+
+            detections = [
+                {
+                    "detection_id": row["detection_id"],
+                    "chunk_id": row["chunk_id"],
+                    "track_id": row["track_id"],
+                    "video_seconds": round(offsets[row["chunk_id"]] + row["relative_seconds"], 3),
+                    "box": {
+                        "x": row["box_x"],
+                        "y": row["box_y"],
+                        "width": row["box_width"],
+                        "height": row["box_height"],
+                    },
+                    "score": row["score"],
+                    "source": row["source"],
+                }
+                for row in connection.execute(
+                    f"""
+                    SELECT * FROM detections
+                    WHERE chunk_id IN ({placeholders})
+                    ORDER BY relative_seconds
+                    """,
+                    chunk_ids,
+                )
+            ]
+
+            events = []
+            for row in connection.execute(
+                f"""
+                SELECT DISTINCT e.*, a.name AS animal_name, o.chunk_id AS anchor_chunk_id,
+                       al.ack_state
+                FROM events e
+                JOIN animals a ON a.animal_id = e.animal_id
+                JOIN event_sources es ON es.event_id = e.event_id
+                JOIN observations o ON o.observation_id = es.observation_id
+                LEFT JOIN alerts al ON al.event_id = e.event_id
+                WHERE o.chunk_id IN ({placeholders}) AND e.severity != 'NONE'
+                ORDER BY e.start_ts
+                """,
+                chunk_ids,
+            ):
+                anchor = row["anchor_chunk_id"]
+                base = _seconds_between(starts[anchor], row["start_ts"])
+                end = _seconds_between(starts[anchor], row["end_ts"])
+                events.append(
+                    {
+                        "event_id": row["event_id"],
+                        "animal_name": row["animal_name"],
+                        "behavior": row["behavior"],
+                        "severity": row["severity"],
+                        "rule_fired": row["rule_fired"],
+                        "ack_state": row["ack_state"],
+                        "start_ts": row["start_ts"],
+                        "end_ts": row["end_ts"],
+                        "start_seconds": round(max(0.0, offsets[anchor] + base), 3),
+                        "end_seconds": round(max(0.0, offsets[anchor] + end), 3),
+                    }
+                )
+
+            observations = [
+                {
+                    "observation_id": row["observation_id"],
+                    "behavior": row["behavior"],
+                    "evidence": row["evidence"],
+                    "provider": row["provider"],
+                    "evidence_kind": row["evidence_kind"],
+                    "start_seconds": round(
+                        max(
+                            0.0,
+                            offsets[row["chunk_id"]]
+                            + _seconds_between(starts[row["chunk_id"]], row["start_ts"]),
+                        ),
+                        3,
+                    ),
+                    "end_seconds": round(
+                        max(
+                            0.0,
+                            offsets[row["chunk_id"]]
+                            + _seconds_between(starts[row["chunk_id"]], row["end_ts"]),
+                        ),
+                        3,
+                    ),
+                }
+                for row in connection.execute(
+                    f"""
+                    SELECT * FROM observations
+                    WHERE chunk_id IN ({placeholders})
+                    ORDER BY start_ts
+                    """,
+                    chunk_ids,
+                )
+            ]
+
+            return {
+                "source_path": source_path,
+                "chunks": chunks,
+                "detections": detections,
+                "events": events,
+                "observations": observations,
+            }
+
     def morning_report(self) -> dict:
         dashboard = self.dashboard()
         by_animal = {animal["animal_id"]: [] for animal in dashboard["animals"]}
@@ -555,6 +848,7 @@ class SQLiteStore:
             "animals",
             "video_chunks",
             "observations",
+            "detections",
             "events",
             "event_sources",
             "baseline_profiles",
@@ -567,3 +861,16 @@ class SQLiteStore:
         with self.connect() as connection:
             rows = connection.execute(f"SELECT * FROM {table}").fetchall()
             return [json.loads(json.dumps(dict(row))) for row in rows]
+
+
+def _seconds_between(start_iso: str, end_iso: str) -> float:
+    """Offset in seconds between two stored ISO timestamps.
+
+    Rows are written with ``datetime.isoformat`` so they round-trip through
+    ``fromisoformat``. A malformed row must not take down a whole video
+    timeline, so an unparseable pair collapses to the start of the media.
+    """
+    try:
+        return (datetime.fromisoformat(end_iso) - datetime.fromisoformat(start_iso)).total_seconds()
+    except (TypeError, ValueError):
+        return 0.0

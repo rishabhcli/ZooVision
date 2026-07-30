@@ -1,14 +1,15 @@
 import {
   Activity,
-  Bell,
+  BarChart3,
   Camera,
   Check,
   ChevronRight,
   CircleGauge,
-  ClipboardCheck,
+  CloudUpload,
   FileClock,
   HeartPulse,
   Moon,
+  Network,
   Radio,
   RefreshCw,
   ShieldCheck,
@@ -18,30 +19,40 @@ import {
 import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { api } from "./api";
+import AnalysisPanel from "./components/AnalysisPanel";
+import ChatRail from "./components/ChatRail";
+import EventDrawer from "./components/EventDrawer";
+import GraphPanel from "./components/GraphPanel";
+import IngestPanel from "./components/IngestPanel";
+import VideoPanel from "./components/VideoPanel";
+import { SEVERITY_COLOR, SEVERITY_RANK } from "./severity";
 import type {
-  Animal,
   Dashboard,
   EventDetail,
+  GraphPayload,
+  IngestJobState,
   MorningReport,
   Readiness,
-  Severity
+  Severity,
+  VideoSource,
+  VideoTrack
 } from "./types";
 
-type View = "monitor" | "report" | "system";
+type View = "workspace" | "report" | "system";
+type Workspace = "graph" | "video" | "analysis" | "ingest";
 
 const NAV_ITEMS = [
-  { id: "monitor" as const, label: "Shift monitor", icon: Activity },
+  { id: "workspace" as const, label: "Live workspace", icon: Activity },
   { id: "report" as const, label: "Morning brief", icon: FileClock },
   { id: "system" as const, label: "System", icon: CircleGauge }
 ];
 
-const SEVERITY_ORDER: Record<Severity, number> = {
-  CRITICAL: 4,
-  HIGH: 3,
-  MODERATE: 2,
-  LOW: 1,
-  NONE: 0
-};
+const WORKSPACE_TABS = [
+  { id: "graph" as const, label: "Knowledge graph", icon: Network },
+  { id: "video" as const, label: "Camera feed", icon: Camera },
+  { id: "analysis" as const, label: "Analysis", icon: BarChart3 },
+  { id: "ingest" as const, label: "Ingest", icon: CloudUpload }
+];
 
 const PROVIDER_LABELS: Record<string, string> = {
   openai: "OpenAI",
@@ -58,19 +69,16 @@ function formatTime(value: string) {
   }).format(new Date(value));
 }
 
-function formatDuration(start: string, end: string) {
-  const minutes = Math.round(
-    (new Date(end).getTime() - new Date(start).getTime()) / 60000
-  );
-  return `${minutes}m`;
-}
-
 function titleCase(value: string) {
-  return value.replaceAll("_", " ").replace(/\b\w/g, (letter) => letter.toUpperCase());
+  return value.replaceAll("_", " ").replace(/\b\w/g, (l) => l.toUpperCase());
 }
 
 function SeverityBadge({ value }: { value: Severity }) {
-  return <span className={`severity severity-${value.toLowerCase()}`}>{value}</span>;
+  return (
+    <span className="severity" style={{ background: SEVERITY_COLOR[value] }}>
+      {value}
+    </span>
+  );
 }
 
 function StatusDot({ online = true }: { online?: boolean }) {
@@ -78,10 +86,17 @@ function StatusDot({ online = true }: { online?: boolean }) {
 }
 
 function App() {
-  const [view, setView] = useState<View>("monitor");
+  const [view, setView] = useState<View>("workspace");
+  const [workspace, setWorkspace] = useState<Workspace>("graph");
   const [dashboard, setDashboard] = useState<Dashboard | null>(null);
   const [report, setReport] = useState<MorningReport | null>(null);
   const [readiness, setReadiness] = useState<Readiness | null>(null);
+  const [graph, setGraph] = useState<GraphPayload | null>(null);
+  const [videos, setVideos] = useState<VideoSource[]>([]);
+  const [track, setTrack] = useState<VideoTrack | null>(null);
+  const [jobs, setJobs] = useState<IngestJobState[]>([]);
+  const [scope, setScope] = useState<string | null>(null);
+  const [selectedVideo, setSelectedVideo] = useState<string | null>(null);
   const [selected, setSelected] = useState<EventDetail | null>(null);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
@@ -90,14 +105,19 @@ function App() {
   const load = useCallback(async () => {
     try {
       setError("");
-      const [nextDashboard, nextReport, nextReadiness] = await Promise.all([
-        api.dashboard(),
-        api.report(),
-        api.readiness()
-      ]);
+      const [nextDashboard, nextReport, nextReadiness, nextVideos, nextJobs] =
+        await Promise.all([
+          api.dashboard(),
+          api.report(),
+          api.readiness(),
+          api.videos(),
+          api.ingestJobs()
+        ]);
       setDashboard(nextDashboard);
       setReport(nextReport);
       setReadiness(nextReadiness);
+      setVideos(nextVideos.videos);
+      setJobs(nextJobs.jobs);
       if (selectedEventId) {
         setSelected(await api.event(selectedEventId));
       }
@@ -107,6 +127,50 @@ function App() {
   }, [selectedEventId]);
 
   useEffect(() => {
+    void load();
+  }, [load]);
+
+  // The graph reloads whenever the operator switches enclosure web.
+  useEffect(() => {
+    api
+      .graph(scope)
+      .then(setGraph)
+      .catch((caught: unknown) =>
+        setError(caught instanceof Error ? caught.message : "Unable to load the graph")
+      );
+  }, [scope, dashboard]);
+
+  // Keep a feed selected: prefer one inside the current enclosure scope.
+  useEffect(() => {
+    if (videos.length === 0) {
+      setSelectedVideo(null);
+      return;
+    }
+    const inScope = scope
+      ? videos.filter((item) => item.enclosure_id === scope)
+      : videos;
+    const pool = inScope.length > 0 ? inScope : videos;
+    if (!selectedVideo || !pool.some((item) => item.source_path === selectedVideo)) {
+      setSelectedVideo(pool[0].source_path);
+    }
+  }, [videos, scope, selectedVideo]);
+
+  useEffect(() => {
+    if (!selectedVideo) {
+      setTrack(null);
+      return;
+    }
+    api
+      .videoTrack(selectedVideo)
+      .then(setTrack)
+      .catch(() => setTrack(null));
+  }, [selectedVideo, dashboard]);
+
+  const refreshJobs = useCallback(() => {
+    api
+      .ingestJobs()
+      .then((payload) => setJobs(payload.jobs))
+      .catch(() => undefined);
     void load();
   }, [load]);
 
@@ -131,6 +195,24 @@ function App() {
     }
   }
 
+  const scopedVideos = useMemo(
+    () => (scope ? videos.filter((item) => item.enclosure_id === scope) : videos),
+    [videos, scope]
+  );
+
+  const pending = dashboard
+    ? dashboard.events.filter((event) => event.ack_state === "pending").length
+    : 0;
+  const highest = dashboard
+    ? dashboard.events.reduce<Severity>(
+        (current, event) =>
+          SEVERITY_RANK[event.severity] > SEVERITY_RANK[current]
+            ? event.severity
+            : current,
+        "NONE"
+      )
+    : "NONE";
+
   return (
     <div className="app-shell">
       <aside className="sidebar">
@@ -143,6 +225,7 @@ function App() {
             <span>Keeper console</span>
           </div>
         </div>
+
         <nav aria-label="Primary">
           {NAV_ITEMS.map((item) => {
             const Icon = item.icon;
@@ -158,6 +241,59 @@ function App() {
             );
           })}
         </nav>
+
+        {view === "workspace" && (
+          <>
+            <div className="side-menu">
+              <span className="side-menu-title">Enclosure web</span>
+              <button
+                className={scope === null ? "side-option active" : "side-option"}
+                onClick={() => setScope(null)}
+              >
+                All enclosures
+                <em>{videos.length}</em>
+              </button>
+              {(graph?.enclosures ?? []).map((enclosure) => (
+                <button
+                  key={enclosure}
+                  className={scope === enclosure ? "side-option active" : "side-option"}
+                  onClick={() => setScope(enclosure)}
+                >
+                  {enclosure}
+                  <em>
+                    {videos.filter((v) => v.enclosure_id === enclosure).length}
+                  </em>
+                </button>
+              ))}
+            </div>
+
+            <div className="side-menu">
+              <span className="side-menu-title">Camera feed</span>
+              {scopedVideos.length === 0 && (
+                <span className="side-empty">No analyzed feeds</span>
+              )}
+              {scopedVideos.map((item) => (
+                <button
+                  key={item.source_path}
+                  className={
+                    selectedVideo === item.source_path
+                      ? "side-option active"
+                      : "side-option"
+                  }
+                  onClick={() => {
+                    setSelectedVideo(item.source_path);
+                    setWorkspace("video");
+                  }}
+                  title={item.source_path}
+                >
+                  {item.camera_id}
+                  <em>{item.event_count}</em>
+                </button>
+              ))}
+            </div>
+          </>
+        )}
+
         <div className="shift-meta">
           <span className="eyebrow">Current watch</span>
           <strong>Overnight welfare</strong>
@@ -177,27 +313,29 @@ function App() {
       <main>
         <header className="topbar">
           <div>
-            <span className="breadcrumb">Operations / {NAV_ITEMS.find((i) => i.id === view)?.label}</span>
-            <h1>{NAV_ITEMS.find((i) => i.id === view)?.label}</h1>
+            <span className="breadcrumb">
+              Operations / {NAV_ITEMS.find((i) => i.id === view)?.label}
+              {view === "workspace" &&
+                ` / ${WORKSPACE_TABS.find((t) => t.id === workspace)?.label}`}
+            </span>
+            <h1>
+              {view === "workspace"
+                ? WORKSPACE_TABS.find((t) => t.id === workspace)?.label
+                : NAV_ITEMS.find((i) => i.id === view)?.label}
+            </h1>
           </div>
           <div className="topbar-actions">
             <span className="mode-pill">
               <StatusDot />
-              Fixture feed
+              {readiness?.fixture_mode ? "Fixture feed" : "Live feed"}
             </span>
-            <span className="date-label">
-              {new Intl.DateTimeFormat("en-US", {
-                weekday: "short",
-                month: "short",
-                day: "numeric"
-              }).format(new Date())}
+            <span className="mode-pill subtle">
+              {pending} awaiting review
             </span>
-            <button
-              className="icon-button"
-              aria-label="Refresh"
-              title="Refresh"
-              onClick={() => void load()}
-            >
+            <span className="mode-pill subtle">
+              Highest <SeverityBadge value={highest} />
+            </span>
+            <button className="icon-button" aria-label="Refresh" onClick={() => void load()}>
               <RefreshCw size={17} />
             </button>
           </div>
@@ -220,19 +358,64 @@ function App() {
           </div>
         ) : (
           <>
-            {view === "monitor" && (
-              <MonitorView
-                dashboard={dashboard}
-                onOpen={(id) => void openEvent(id)}
-                onBaseline={(animal) =>
-                  void mutate(() => api.baseline(animal.animal_id, "active"))
-                }
-                busy={busy}
-              />
+            {view === "workspace" && (
+              <div className="workspace">
+                <div className="workspace-tabs" role="tablist">
+                  {WORKSPACE_TABS.map((tab) => {
+                    const Icon = tab.icon;
+                    return (
+                      <button
+                        key={tab.id}
+                        role="tab"
+                        aria-selected={workspace === tab.id}
+                        className={
+                          workspace === tab.id ? "workspace-tab active" : "workspace-tab"
+                        }
+                        onClick={() => setWorkspace(tab.id)}
+                      >
+                        <Icon size={16} />
+                        {tab.label}
+                      </button>
+                    );
+                  })}
+                </div>
+
+                <div className="workspace-body">
+                  {workspace === "graph" && (
+                    <GraphPanel
+                      graph={graph}
+                      scope={scope}
+                      onScope={setScope}
+                      onOpenEvent={(id) => void openEvent(id)}
+                    />
+                  )}
+                  {workspace === "video" && (
+                    <VideoPanel
+                      sources={scopedVideos}
+                      selected={selectedVideo}
+                      track={track}
+                      onSelect={setSelectedVideo}
+                      onOpenEvent={(id) => void openEvent(id)}
+                    />
+                  )}
+                  {workspace === "analysis" && (
+                    <AnalysisPanel
+                      dashboard={dashboard}
+                      track={track}
+                      onOpenEvent={(id) => void openEvent(id)}
+                    />
+                  )}
+                  {workspace === "ingest" && (
+                    <IngestPanel jobs={jobs} onRefresh={refreshJobs} />
+                  )}
+                </div>
+              </div>
             )}
+
             {view === "report" && (
               <ReportView report={report} onOpen={(id) => void openEvent(id)} />
             )}
+
             {view === "system" && (
               <SystemView
                 readiness={readiness}
@@ -243,6 +426,11 @@ function App() {
           </>
         )}
       </main>
+
+      <ChatRail
+        scopeLabel={scope ?? "All enclosures"}
+        enclosureId={scope}
+      />
 
       {selected && (
         <EventDrawer
@@ -263,200 +451,6 @@ function App() {
   );
 }
 
-function MonitorView({
-  dashboard,
-  onOpen,
-  onBaseline,
-  busy
-}: {
-  dashboard: Dashboard;
-  onOpen: (id: string) => void;
-  onBaseline: (animal: Animal) => void;
-  busy: boolean;
-}) {
-  const highest = useMemo(
-    () =>
-      dashboard.events.reduce<Severity>(
-        (current, event) =>
-          SEVERITY_ORDER[event.severity] > SEVERITY_ORDER[current]
-            ? event.severity
-            : current,
-        "NONE"
-      ),
-    [dashboard.events]
-  );
-  const pending = dashboard.events.filter((event) => event.ack_state === "pending").length;
-
-  return (
-    <div className="page-content">
-      <div className="fixture-notice">
-        <ShieldCheck size={18} />
-        <div>
-          <strong>Shadow evaluation</strong>
-          <span>Synthetic observations · no staff pages sent</span>
-        </div>
-      </div>
-
-      <section className="metric-row" aria-label="Shift summary">
-        <Metric label="Animals monitored" value={String(dashboard.animals.length)} detail="3 cameras" />
-        <Metric label="Highest signal" value={highest} detail="deterministic triage" tone={highest} />
-        <Metric label="Awaiting review" value={String(pending)} detail="keeper console" />
-        <Metric label="Coverage gaps" value={String(dashboard.data_gaps.length)} detail="18 minutes total" />
-      </section>
-
-      <div className="monitor-grid">
-        <section className="work-section event-section">
-          <div className="section-heading">
-            <div>
-              <span className="eyebrow">Decision queue</span>
-              <h2>Overnight events</h2>
-            </div>
-            <span className="count-label">{dashboard.events.length} signals</span>
-          </div>
-          <div className="event-table" role="table">
-            <div className="table-row table-head" role="row">
-              <span>Severity</span>
-              <span>Animal</span>
-              <span>Evidence</span>
-              <span>Time</span>
-              <span>Status</span>
-              <span />
-            </div>
-            {dashboard.events.map((event) => (
-              <button
-                className="table-row event-row"
-                role="row"
-                key={event.event_id}
-                onClick={() => onOpen(event.event_id)}
-              >
-                <span><SeverityBadge value={event.severity} /></span>
-                <span className="animal-cell">
-                  <strong>{event.animal_name}</strong>
-                  <small>{event.enclosure_id}</small>
-                </span>
-                <span className="behavior-cell">
-                  <strong>{titleCase(event.behavior)}</strong>
-                  <small>{event.rule_fired}</small>
-                </span>
-                <span>
-                  <strong>{formatTime(event.start_ts)}</strong>
-                  <small>{formatDuration(event.start_ts, event.end_ts)}</small>
-                </span>
-                <span className={`ack-state ${event.ack_state}`}>
-                  {event.ack_state === "pending" ? "Needs review" : "Acknowledged"}
-                </span>
-                <ChevronRight size={17} />
-              </button>
-            ))}
-          </div>
-        </section>
-
-        <section className="camera-stack">
-          <div className="section-heading">
-            <div>
-              <span className="eyebrow">Camera rail</span>
-              <h2>Evidence feeds</h2>
-            </div>
-          </div>
-          {dashboard.events.map((event) => (
-            <button
-              className="camera-feed"
-              key={event.event_id}
-              onClick={() => onOpen(event.event_id)}
-            >
-              {event.media_url ? (
-                <video
-                  src={event.media_url}
-                  muted
-                  autoPlay
-                  loop
-                  playsInline
-                  preload="metadata"
-                  onLoadedMetadata={(media) => {
-                    media.currentTarget.currentTime = event.media_offset_seconds ?? 0;
-                  }}
-                  onSeeked={(media) => {
-                    void media.currentTarget.play();
-                  }}
-                />
-              ) : (
-                <div className="camera-missing"><Camera size={22} /></div>
-              )}
-              <span className="feed-live"><StatusDot /> FIXTURE</span>
-              <span className="feed-caption">
-                <strong>{event.enclosure_id}</strong>
-                <small>{event.animal_name} · {titleCase(event.behavior)}</small>
-              </span>
-            </button>
-          ))}
-        </section>
-      </div>
-
-      <section className="work-section animal-section">
-        <div className="section-heading">
-          <div>
-            <span className="eyebrow">Baseline registry</span>
-            <h2>Monitored animals</h2>
-          </div>
-        </div>
-        <div className="animal-grid">
-          {dashboard.animals.map((animal) => (
-            <article className="animal-item" key={animal.animal_id}>
-              <span className="animal-monogram">{animal.name.slice(0, 1)}</span>
-              <div className="animal-identity">
-                <strong>{animal.name}</strong>
-                <span>{animal.species}</span>
-              </div>
-              <div>
-                <span className="field-label">Enclosure</span>
-                <strong>{animal.enclosure_id}</strong>
-              </div>
-              <div>
-                <span className="field-label">Day shifts</span>
-                <strong>{animal.baseline_days}</strong>
-              </div>
-              <span className={`baseline-state ${animal.baseline_state}`}>
-                {titleCase(animal.baseline_state)}
-              </span>
-              {animal.baseline_state === "shadow" ? (
-                <button
-                  className="text-button"
-                  disabled={busy}
-                  onClick={() => onBaseline(animal)}
-                >
-                  <Check size={15} /> Activate
-                </button>
-              ) : (
-                <span className="event-total">{animal.event_count} events</span>
-              )}
-            </article>
-          ))}
-        </div>
-      </section>
-    </div>
-  );
-}
-
-function Metric({
-  label,
-  value,
-  detail,
-  tone
-}: {
-  label: string;
-  value: string;
-  detail: string;
-  tone?: Severity;
-}) {
-  return (
-    <div className={`metric ${tone ? `metric-${tone.toLowerCase()}` : ""}`}>
-      <span>{label}</span>
-      <strong>{value}</strong>
-      <small>{detail}</small>
-    </div>
-  );
-}
-
 function ReportView({
   report,
   onOpen
@@ -473,9 +467,15 @@ function ReportView({
           <p>{new Intl.DateTimeFormat("en-US", { dateStyle: "full" }).format(new Date())}</p>
         </div>
         <div className="report-stats">
-          <span><strong>{report.summary.animals_monitored}</strong> animals</span>
-          <span><strong>{report.summary.events}</strong> events</span>
-          <span><strong>{report.summary.data_gaps}</strong> gap</span>
+          <span>
+            <strong>{report.summary.animals_monitored}</strong> animals
+          </span>
+          <span>
+            <strong>{report.summary.events}</strong> events
+          </span>
+          <span>
+            <strong>{report.summary.data_gaps}</strong> gaps
+          </span>
         </div>
       </div>
       <section className="report-list">
@@ -485,7 +485,9 @@ function ReportView({
               <span className="animal-monogram">{animal.name.slice(0, 1)}</span>
               <div>
                 <h3>{animal.name}</h3>
-                <span>{animal.species} · {animal.enclosure_id}</span>
+                <span>
+                  {animal.species} · {animal.enclosure_id}
+                </span>
               </div>
               <span className={`baseline-state ${animal.baseline_state}`}>
                 {titleCase(animal.baseline_state)}
@@ -524,7 +526,9 @@ function ReportView({
           <div className="gap-row" key={gap.gap_id}>
             <TriangleAlert size={18} />
             <strong>{gap.enclosure_id}</strong>
-            <span>{formatTime(gap.start_ts)}–{formatTime(gap.end_ts)}</span>
+            <span>
+              {formatTime(gap.start_ts)}–{formatTime(gap.end_ts)}
+            </span>
             <span>{titleCase(gap.reason)}</span>
             <small>{gap.detail}</small>
           </div>
@@ -547,10 +551,15 @@ function SystemView({
     <div className="page-content system-page">
       <section className="system-band">
         <div className="system-status">
-          <span className="system-icon"><ShieldCheck size={28} /></span>
+          <span className="system-icon">
+            <ShieldCheck size={28} />
+          </span>
           <div>
             <span className="eyebrow">Runtime posture</span>
-            <h2>Fixture mode · shadow delivery</h2>
+            <h2>
+              {readiness.fixture_mode ? "Fixture mode" : "Live mode"} ·{" "}
+              {readiness.delivery_mode} delivery
+            </h2>
             <p>Deterministic rules active. External alert delivery inactive.</p>
           </div>
         </div>
@@ -581,146 +590,6 @@ function SystemView({
           ))}
         </div>
       </section>
-    </div>
-  );
-}
-
-function EventDrawer({
-  event,
-  busy,
-  onClose,
-  onAcknowledge,
-  onOutcome
-}: {
-  event: EventDetail;
-  busy: boolean;
-  onClose: () => void;
-  onAcknowledge: () => void;
-  onOutcome: (resolution: string, note: string) => void;
-}) {
-  const [resolution, setResolution] = useState("welfare_check_completed");
-  const [note, setNote] = useState("");
-  const source = event.sources[0];
-
-  return (
-    <div className="drawer-scrim" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
-      <aside className="event-drawer" aria-label="Event evidence">
-        <header>
-          <div>
-            <SeverityBadge value={event.severity} />
-            <span className="drawer-id">{event.event_id.slice(-8)}</span>
-          </div>
-          <button className="icon-button" aria-label="Close" title="Close" onClick={onClose}>
-            <X size={19} />
-          </button>
-        </header>
-        <div className="drawer-title">
-          <span className="eyebrow">{event.enclosure_id} · {formatTime(event.start_ts)}</span>
-          <h2>{event.animal_name} · {titleCase(event.behavior)}</h2>
-          <p>{formatDuration(event.start_ts, event.end_ts)} continuous observation</p>
-        </div>
-
-        <div className="evidence-video">
-          {source?.media_url ? (
-            <video
-              src={source.media_url}
-              controls
-              muted
-              autoPlay
-              playsInline
-              onLoadedMetadata={(media) => {
-                media.currentTarget.currentTime = source.source_offset_seconds;
-              }}
-              onSeeked={(media) => {
-                void media.currentTarget.play();
-              }}
-            />
-          ) : (
-            <div className="camera-missing"><Camera size={24} /></div>
-          )}
-          <span className="fixture-watermark">FIXTURE MEDIA</span>
-        </div>
-
-        <section className="drawer-section">
-          <div className="drawer-section-title">
-            <ClipboardCheck size={17} />
-            <h3>Deterministic decision</h3>
-          </div>
-          <div className="rule-line">
-            <span>{event.rule_fired}</span>
-            <small>{event.rule_version}</small>
-          </div>
-          <ul className="fact-list">
-            {event.explanation_facts.map((fact) => <li key={fact}>{fact}</li>)}
-          </ul>
-          <div className="confidence-line">
-            <span>Evidence confidence</span>
-            <strong>{Math.round(event.confidence * 100)}%</strong>
-          </div>
-        </section>
-
-        <section className="drawer-section">
-          <div className="drawer-section-title">
-            <Camera size={17} />
-            <h3>Source provenance</h3>
-          </div>
-          {event.sources.map((item) => (
-            <div className="source-row" key={item.observation_id}>
-              <div>
-                <strong>{item.camera_id} · {formatTime(item.start_ts)}–{formatTime(item.end_ts)}</strong>
-                <span>{item.evidence}</span>
-              </div>
-              <small>{titleCase(item.evidence_kind)} · {item.provider_model}</small>
-            </div>
-          ))}
-        </section>
-
-        {event.ack_state === "pending" ? (
-          <button className="primary-button" disabled={busy} onClick={onAcknowledge}>
-            <Bell size={17} /> Acknowledge for review
-          </button>
-        ) : (
-          <div className="acknowledged-band">
-            <Check size={17} />
-            <span>Acknowledged by {event.acknowledged_by}</span>
-          </div>
-        )}
-
-        <section className="drawer-section outcome-form">
-          <div className="drawer-section-title">
-            <ClipboardCheck size={17} />
-            <h3>Keeper outcome</h3>
-          </div>
-          <select value={resolution} onChange={(event) => setResolution(event.target.value)}>
-            <option value="welfare_check_completed">Welfare check completed</option>
-            <option value="water_available">Water available</option>
-            <option value="continued_observation">Continue observation</option>
-            <option value="false_positive">False positive</option>
-            <option value="camera_issue">Camera issue</option>
-          </select>
-          <textarea
-            rows={3}
-            value={note}
-            onChange={(event) => setNote(event.target.value)}
-            placeholder="Factual shift note"
-          />
-          <button
-            className="secondary-button"
-            disabled={busy}
-            onClick={() => onOutcome(resolution, note)}
-          >
-            <Check size={16} /> Record outcome
-          </button>
-        </section>
-
-        {event.outcomes.map((outcome) => (
-          <div className="outcome-record" key={outcome.outcome_id}>
-            <strong>{titleCase(outcome.resolution)}</strong>
-            <span>{outcome.note || "No note entered"}</span>
-            <small>{outcome.entered_by} · {formatTime(outcome.created_at)}</small>
-          </div>
-        ))}
-      </aside>
     </div>
   );
 }

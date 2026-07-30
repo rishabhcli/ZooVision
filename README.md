@@ -13,15 +13,21 @@ actuator tools.
 
 The repository now contains a working fixture-mode product:
 
-- strict observation, baseline, event, alert, outcome, and data-gap domain types;
+- strict observation, detection, baseline, event, alert, outcome, and data-gap
+  domain types;
 - daytime-only per-animal baselines with learning, shadow, active, and paused states;
 - first-match deterministic triage with stable event IDs and `rule_fired`;
 - cross-chunk observation stitching and wall-clock timestamp provenance;
+- a deterministic motion-region detector that localizes movement as normalized,
+  track-linked bounding boxes with no model weights and no network call;
+- an ingest path that accepts an arbitrary uploaded video, probes it, segments
+  it, and routes every segment through the same deterministic triage;
 - idempotent SQLite persistence and static, idempotent Neo4j `MERGE` writers;
 - a pinned Strands graph for bounded ingest, data-gap, day, night, triage, and
   indexing routes with a per-node audit trail;
-- keeper dashboard, video evidence drawer, acknowledgement, outcome capture,
-  baseline activation, morning brief, system readiness, and responsive layouts;
+- a keeper workspace with an interactive knowledge graph, a camera feed that
+  overlays measured motion boxes and an event timeline, an analysis pane, an
+  ingest console, and a grounded chat rail;
 - checksum-pinned, freely licensed fixed-camera video fixtures;
 - schema-constrained TwelveLabs and OpenAI adapters behind opt-in gates;
 - explicit Slack delivery gates and configurable retention enforcement;
@@ -77,6 +83,7 @@ feeds. It never represents them as continuous original recordings.
 ```text
 camera chunk
   -> strict provider response validation
+  -> motion-region measurement (bounding boxes)
   -> wall-clock observation normalization
   -> cross-chunk stitching
   -> daytime baseline lookup
@@ -85,6 +92,47 @@ camera chunk
   -> shadow record or gated night alert
   -> acknowledgement, keeper outcome, morning brief
 ```
+
+### What each layer may claim
+
+Three sources of evidence are kept separate and are labeled separately in the
+console, because they support different claims:
+
+| Source | Produces | May claim | May not claim |
+| --- | --- | --- | --- |
+| Motion-region detector (MOG2) | normalized boxes, tracks | *where* pixels changed | species, identity, behavior |
+| TwelveLabs Pegasus | timestamped behavior observations | *what a model read in the scene* | severity, diagnosis |
+| Triage rules | severity, `rule_fired`, action | *what policy says about the evidence* | anything not in the evidence |
+
+The detector needs no model weights, no network call, and no license beyond
+OpenCV's, and it returns the same boxes for the same frames on every run. It is
+suited to the product's actual deployment: fixed cameras and infrared night
+footage, where a learned background separates a moving body cleanly. It is not
+an animal classifier, and the console labels its output "motion regions"
+everywhere it appears.
+
+## Analyzing any video
+
+Upload footage in the console's **Ingest** tab, or drive the same path over HTTP:
+
+```bash
+curl -F file=@night-footage.mp4 http://127.0.0.1:8000/api/ingest/upload
+curl -X POST http://127.0.0.1:8000/api/ingest/jobs \
+  -H 'content-type: application/json' \
+  -d '{"source_name":"night-footage.mp4","animal_id":"animal-nox",
+       "animal_name":"Nox","enclosure_id":"ENC-07","shift_mode":"night"}'
+```
+
+The job probes the container with ffprobe, splits it with ffmpeg's segment
+muxer, re-probes each piece so wall-clock placement uses true durations rather
+than the nominal segment length, measures motion regions, asks the configured
+video provider for behavior semantics, and routes every segment through the same
+deterministic triage as fixture footage. Segments larger than the provider's
+base64 ceiling are transcoded to a reduced proxy so coverage is analyzed instead
+of being written off as a gap. Poll `GET /api/ingest/jobs/{job_id}` for progress.
+
+Only night segments can raise an event. Day segments refine context. A provider
+failure becomes a recorded `DataGap`, and the motion track survives it.
 
 Models may extract, normalize, merge, or phrase facts. They cannot assign or
 override severity. A provider failure or invalid schema becomes a `DataGap`.
@@ -128,6 +176,18 @@ examples.
   rather than reusing the writer identity.
 - **Slack:** fixture mode, day shift, shadow/learning baselines, missing rules,
   disabled delivery, or a missing webhook each block the send.
+- **Neo4j Visualization Library:** the console renders the knowledge graph with
+  `@neo4j-nvl/react`. NVL is proprietary: its licence permits use only with
+  Neo4j Aura or a commercial Neo4j product, which is how this project is
+  configured. A deployment that drops Aura must also drop NVL. NVL declares
+  `@segment/analytics-next` as a dependency; it is tree-shaken out of the
+  production bundle, and the built assets contain no telemetry endpoint. Its
+  vulnerable transitive `js-cookie` is pinned forward by an `overrides` entry in
+  `frontend/package.json`.
+
+The graph the console draws is projected from SQLite, so it renders whether or
+not Aura is reachable. Neo4j remains the system of record for application-owned
+graph writes, and both are keyed by the same stable identifiers.
 
 Probe non-mutating integrations without printing secrets:
 

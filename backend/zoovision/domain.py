@@ -57,12 +57,60 @@ class EvidenceKind(StrEnum):
     PROVIDER_STRUCTURED = "provider_structured"
     HUMAN_REVIEWED = "human_reviewed"
     SYNTHETIC_SCENARIO = "synthetic_scenario"
+    #: Derived from measured pixel motion, not from a model's reading of a scene.
+    MEASURED_MOTION = "measured_motion"
 
 
 class ReviewState(StrEnum):
     UNREVIEWED = "unreviewed"
     CONFIRMED = "confirmed"
     DISMISSED = "dismissed"
+
+
+class DetectionSource(StrEnum):
+    """Provenance of a spatial box.
+
+    ``MOTION_REGION`` is the only implemented source. It marks pixels that
+    changed against a learned fixed-camera background. It is not an animal
+    classifier and must never be presented as species or behavior recognition.
+    """
+
+    MOTION_REGION = "motion_region"
+
+
+class BoundingBox(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    x: float = Field(ge=0.0, le=1.0)
+    y: float = Field(ge=0.0, le=1.0)
+    width: float = Field(gt=0.0, le=1.0)
+    height: float = Field(gt=0.0, le=1.0)
+
+    @model_validator(mode="after")
+    def validate_within_frame(self) -> BoundingBox:
+        if self.x + self.width > 1.0 + 1e-6:
+            raise ValueError("bounding box exceeds the right frame edge")
+        if self.y + self.height > 1.0 + 1e-6:
+            raise ValueError("bounding box exceeds the bottom frame edge")
+        return self
+
+    @property
+    def area(self) -> float:
+        return self.width * self.height
+
+
+class Detection(BaseModel):
+    """One motion region measured in one sampled frame of a video chunk."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    detection_id: str
+    chunk_id: str
+    track_id: str
+    relative_seconds: float = Field(ge=0)
+    box: BoundingBox
+    score: float = Field(ge=0.0, le=1.0)
+    source: DetectionSource = DetectionSource.MOTION_REGION
 
 
 class Observation(BaseModel):
