@@ -43,11 +43,12 @@ import {
 const PLAYBACK_SPEEDS = [0.5, 1, 2] as const;
 const MOTION_BINS = 72;
 const POSTER_BY_CAMERA: Record<string, string> = {
-  "CAM-03Y": "/camera-posters/cam-03y-gorilla.jpg",
-  "CAM-05N": "/camera-posters/cam-05n-elephant.jpg",
-  "CAM-07A": "/camera-posters/cam-07a-lion.jpg",
-  "CAM-BY1": "/media/uploads/backyard-squirrel-staircase-poster.jpg",
-  "CAM-BY2": "/media/uploads/backyard-squirrels-and-birds-poster.jpg",
+  "CAM-03Y": "/camera-posters/cam-03y-gorilla.jpg?v=ad815f51",
+  "CAM-05N": "/camera-posters/cam-05n-elephant.jpg?v=dcdd8d17",
+  "CAM-07A": "/camera-posters/cam-07a-lion.jpg?v=46763447",
+  "CAM-BY1": "/media/uploads/backyard-squirrel-staircase-poster.jpg?v=7d576fa3",
+  "CAM-BY2":
+    "/media/uploads/backyard-squirrels-and-birds-poster.jpg?v=71ed3e94",
 };
 
 function clamp(value: number, minimum: number, maximum: number) {
