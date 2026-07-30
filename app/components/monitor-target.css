@@ -1408,7 +1408,7 @@
 
 .camera-grid {
   display: grid;
-  grid-template-columns: repeat(3, minmax(220px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
   gap: 10px;
   padding: 10px;
 }
@@ -1417,7 +1417,8 @@
   display: grid;
   min-width: 0;
   height: auto;
-  grid-template-columns: minmax(120px, 0.8fr) minmax(150px, 1fr);
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: auto 1fr;
   align-items: stretch;
   gap: 0;
   overflow: hidden;
@@ -1441,10 +1442,11 @@
 .camera-card-image {
   position: relative;
   display: block;
-  min-height: 118px;
+  min-height: 0;
+  aspect-ratio: 16 / 9;
   overflow: hidden;
   background: #020303;
-  border-right: 1px solid var(--monitor-border);
+  border-bottom: 1px solid var(--monitor-border);
 }
 
 .camera-card-image img {
@@ -1551,9 +1553,6 @@
     display: none;
   }
 
-  .camera-card {
-    grid-template-columns: minmax(100px, 0.7fr) minmax(130px, 1fr);
-  }
 }
 
 @media (max-width: 1080px) {
@@ -1582,12 +1581,7 @@
   }
 
   .camera-grid {
-    grid-template-columns: repeat(3, minmax(240px, 1fr));
-    overflow-x: auto;
-  }
-
-  .camera-card {
-    grid-template-columns: minmax(115px, 0.8fr) minmax(140px, 1fr);
+    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
   }
 }
 
@@ -1710,7 +1704,7 @@
   }
 
   .camera-grid {
-    grid-template-columns: repeat(3, minmax(270px, 1fr));
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
 
@@ -1921,12 +1915,7 @@
   }
 
   .camera-grid {
-    grid-template-columns: repeat(3, minmax(82vw, 1fr));
-    scroll-snap-type: x mandatory;
-  }
-
-  .camera-card {
-    scroll-snap-align: start;
+    grid-template-columns: minmax(0, 1fr);
   }
 }
 
@@ -1951,9 +1940,6 @@
     --timeline-label-width: 72px;
   }
 
-  .camera-grid {
-    grid-template-columns: repeat(3, minmax(88vw, 1fr));
-  }
 }
 
 @media (prefers-reduced-motion: reduce) {
