@@ -1,6 +1,6 @@
 # ZooVision
 
-ZooVision is a proposed overnight animal-welfare monitoring system for zoo and sanctuary teams. It turns recorded enclosure video into timestamped behavior observations, compares those observations with each animal's own daytime baseline, and sends staff evidence-backed welfare-check prompts when deterministic rules find something unusual.
+ZooVision is a night time animal monitoring system for zoo and sanctuary teams. It turns recorded enclosure video into timestamped behavior observations, compares those observations with each animal's own daytime baseline, and sends staff evidence-backed welfare-check prompts when deterministic rules find something unusual.
 
 > **Project status:** architecture and product design. This repository currently contains the design brief; no production service or model integration has been implemented yet.
 
