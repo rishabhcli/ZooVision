@@ -16,14 +16,39 @@ import {
   SlidersHorizontal,
   Video,
 } from "lucide-react";
+import { motion, useReducedMotion } from "motion/react";
 import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
 
 const cameraOptions = [
-  "ENC-07 · Camera 1",
-  "ENC-07 · Camera 2",
-  "ENC-03 · Camera 1",
-  "ENC-05 · Camera 1",
+  {
+    id: "enc-07-cam-1",
+    label: "ENC-07 · Camera 1",
+    enclosure: "Painted dogs",
+    view: "West habitat",
+    variant: "west",
+  },
+  {
+    id: "enc-07-cam-2",
+    label: "ENC-07 · Camera 2",
+    enclosure: "Painted dogs",
+    view: "North habitat",
+    variant: "north",
+  },
+  {
+    id: "enc-07-cam-3",
+    label: "ENC-07 · Camera 3",
+    enclosure: "Painted dogs",
+    view: "Shelter entrance",
+    variant: "ledge",
+  },
+  {
+    id: "enc-07-cam-4",
+    label: "ENC-07 · Camera 4",
+    enclosure: "Painted dogs",
+    view: "Water station",
+    variant: "pool",
+  },
 ];
 
 function formatTime(progress: number) {
@@ -38,9 +63,10 @@ function formatTime(progress: number) {
 
 export function MonitorWorkspace() {
   const router = useRouter();
+  const reduceMotion = useReducedMotion();
   const [playing, setPlaying] = useState(false);
   const [progress, setProgress] = useState(45);
-  const [camera, setCamera] = useState(cameraOptions[1]);
+  const [cameraId, setCameraId] = useState(cameraOptions[1].id);
   const [selectedTrack, setSelectedTrack] = useState<"rex" | "zuri">("rex");
   const [outcomeSaved, setOutcomeSaved] = useState(false);
 
@@ -75,24 +101,21 @@ export function MonitorWorkspace() {
           },
     [selectedTrack],
   );
+  const selectedCamera =
+    cameraOptions.find((option) => option.id === cameraId) ?? cameraOptions[1];
 
   return (
     <div className="page-stack monitor-page">
       <div className="control-row">
-        <label className="select-control">
-          <span>Camera</span>
-          <select
-            value={camera}
-            onChange={(event) => setCamera(event.target.value)}
-          >
-            {cameraOptions.map((option) => (
-              <option value={option} key={option}>
-                {option}
-              </option>
-            ))}
-          </select>
-          <ChevronDown size={14} />
-        </label>
+        <div className="active-source-readout">
+          <span className="active-source-icon">
+            <Camera size={15} />
+          </span>
+          <span>
+            <small>Active source</small>
+            <strong>{selectedCamera.label}</strong>
+          </span>
+        </div>
         <label className="select-control">
           <span>Segment</span>
           <select defaultValue="02:00–02:15">
@@ -118,12 +141,14 @@ export function MonitorWorkspace() {
           <div className="video-toolbar">
             <div>
               <span className="section-kicker">Recorded camera segment</span>
-              <h1>ENC-07 · North habitat</h1>
+              <h1>
+                {selectedCamera.enclosure} · {selectedCamera.view}
+              </h1>
             </div>
             <div className="video-toolbar-meta">
               <span>
                 <Camera size={14} />
-                Camera 2
+                {selectedCamera.label}
               </span>
               <span>
                 <Clock3 size={14} />
@@ -132,7 +157,11 @@ export function MonitorWorkspace() {
             </div>
           </div>
 
-          <div className="camera-stage" aria-label="Recorded enclosure footage">
+          <div
+            className="camera-stage"
+            data-camera={selectedCamera.variant}
+            aria-label={`Recorded footage from ${selectedCamera.label}`}
+          >
             <div className="camera-noise" aria-hidden="true" />
             <div className="camera-landscape" aria-hidden="true">
               <span className="tree-trunk one" />
@@ -162,7 +191,14 @@ export function MonitorWorkspace() {
               <span className="track-label">Zuri · resting</span>
               <Dog className="animal-shape zuri-shape" strokeWidth={1.15} />
             </button>
-            <span className="camera-id">ENC-07 CAM 2</span>
+            <motion.span
+              key={selectedCamera.id}
+              className="camera-id"
+              initial={reduceMotion ? false : { opacity: 0, y: -5 }}
+              animate={{ opacity: 1, y: 0 }}
+            >
+              {selectedCamera.label.toUpperCase()}
+            </motion.span>
             <span className="camera-state">
               <Check size={13} />
               Analysis complete
@@ -329,6 +365,67 @@ export function MonitorWorkspace() {
             </button>
           </div>
         </aside>
+      </section>
+
+      <section className="camera-dock" aria-labelledby="camera-dock-title">
+        <div className="camera-dock-heading">
+          <div>
+            <span className="section-kicker">Available sources</span>
+            <h2 id="camera-dock-title">Camera feeds</h2>
+          </div>
+          <span>{cameraOptions.length} recorded views</span>
+        </div>
+        <div
+          className="camera-card-strip"
+          role="radiogroup"
+          aria-label="Choose a camera feed"
+        >
+          {cameraOptions.map((option, index) => {
+            const active = option.id === selectedCamera.id;
+
+            return (
+              <motion.button
+                layout
+                type="button"
+                role="radio"
+                aria-checked={active}
+                className="camera-card"
+                data-active={active}
+                key={option.id}
+                onClick={() => setCameraId(option.id)}
+                whileHover={reduceMotion ? undefined : { y: -2 }}
+                whileTap={reduceMotion ? undefined : { scale: 0.985 }}
+              >
+                {active && (
+                  <motion.span
+                    className="camera-card-active"
+                    layoutId="active-camera-card"
+                    transition={{ type: "spring", bounce: 0.12, duration: 0.35 }}
+                  />
+                )}
+                <span
+                  className="camera-card-preview"
+                  data-camera={option.variant}
+                  aria-hidden="true"
+                >
+                  <Camera size={18} />
+                  <span className="preview-horizon" />
+                  <small>CAM {String(index + 1).padStart(2, "0")}</small>
+                </span>
+                <span className="camera-card-copy">
+                  <strong>{option.label}</strong>
+                  <small>
+                    {option.enclosure} · {option.view}
+                  </small>
+                </span>
+                <span className="camera-card-status">
+                  <span className="status-dot" />
+                  Ready
+                </span>
+              </motion.button>
+            );
+          })}
+        </div>
       </section>
     </div>
   );
