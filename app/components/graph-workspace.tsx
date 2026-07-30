@@ -1,37 +1,19 @@
 "use client";
 
-import {
-  ChevronDown,
-  Filter,
-  Info,
-  Search,
-  SlidersHorizontal,
-} from "lucide-react";
+import { Filter, Info, MapPin, Search } from "lucide-react";
 import { GraphStage } from "./graph-stage";
 
 export function GraphWorkspace() {
   return (
     <div className="page-stack graph-page">
       <div className="control-row graph-controls-row">
-        <label className="select-control">
-          <span>Enclosure</span>
-          <select defaultValue="ENC-07 · Painted dogs">
-            <option>ENC-01 · Elephants</option>
-            <option>ENC-03 · Snow leopard</option>
-            <option>ENC-05 · Otters</option>
-            <option>ENC-07 · Painted dogs</option>
-            <option>ENC-08 · Giraffes</option>
-          </select>
-          <ChevronDown size={14} />
-        </label>
-        <label className="select-control compact">
-          <span>Animal</span>
-          <select defaultValue="Rex">
-            <option>Rex</option>
-            <option>Zuri</option>
-          </select>
-          <ChevronDown size={14} />
-        </label>
+        <div className="graph-context-readout">
+          <MapPin size={15} />
+          <span>
+            <small>ENC-07 · North habitat</small>
+            <strong>Rex · current night shift</strong>
+          </span>
+        </div>
         <label className="search-control">
           <Search size={16} />
           <input
@@ -43,9 +25,6 @@ export function GraphWorkspace() {
         <button className="quiet-button" type="button">
           <Filter size={15} />
           Filters
-        </button>
-        <button className="icon-button bordered" type="button" aria-label="Graph settings">
-          <SlidersHorizontal size={16} />
         </button>
       </div>
 

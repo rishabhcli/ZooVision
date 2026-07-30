@@ -3,53 +3,62 @@
 import {
   Camera,
   Check,
-  ChevronDown,
+  ChevronLeft,
+  ChevronRight,
   CircleAlert,
   Clock3,
-  Dog,
   ExternalLink,
   Eye,
   Maximize2,
   Pause,
   Play,
   RotateCcw,
-  SlidersHorizontal,
+  ScanLine,
   Video,
 } from "lucide-react";
-import { motion, useReducedMotion } from "motion/react";
+import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import { useRouter } from "next/navigation";
-import { useEffect, useMemo, useState } from "react";
+import {
+  CSSProperties,
+  KeyboardEvent,
+  PointerEvent,
+  useEffect,
+  useMemo,
+  useState,
+} from "react";
 
 const cameraOptions = [
   {
     id: "enc-07-cam-1",
-    label: "ENC-07 · Camera 1",
-    enclosure: "Painted dogs",
+    label: "Camera 1",
+    enclosure: "ENC-07",
     view: "West habitat",
     variant: "west",
   },
   {
     id: "enc-07-cam-2",
-    label: "ENC-07 · Camera 2",
-    enclosure: "Painted dogs",
+    label: "Camera 2",
+    enclosure: "ENC-07",
     view: "North habitat",
     variant: "north",
   },
   {
     id: "enc-07-cam-3",
-    label: "ENC-07 · Camera 3",
-    enclosure: "Painted dogs",
+    label: "Camera 3",
+    enclosure: "ENC-07",
     view: "Shelter entrance",
     variant: "ledge",
   },
   {
     id: "enc-07-cam-4",
-    label: "ENC-07 · Camera 4",
-    enclosure: "Painted dogs",
+    label: "Camera 4",
+    enclosure: "ENC-07",
     view: "Water station",
     variant: "pool",
   },
 ];
+
+const scrubberTicks = Array.from({ length: 41 }, (_, index) => index);
 
 function formatTime(progress: number) {
   const totalSeconds = Math.round(15 * 60 * (progress / 100));
@@ -61,12 +70,105 @@ function formatTime(progress: number) {
   )}`;
 }
 
+function ChapterScrubber({
+  progress,
+  onChange,
+}: {
+  progress: number;
+  onChange: (value: number) => void;
+}) {
+  const reduceMotion = useReducedMotion();
+  const activeTick = Math.round(
+    (progress / 100) * Math.max(scrubberTicks.length - 1, 1),
+  );
+  const [hoveredTick, setHoveredTick] = useState<number | null>(null);
+  const focusTick = hoveredTick ?? activeTick;
+
+  function tickFromPointer(event: PointerEvent<HTMLDivElement>) {
+    const bounds = event.currentTarget.getBoundingClientRect();
+    const ratio = Math.min(
+      1,
+      Math.max(0, (event.clientX - bounds.left) / bounds.width),
+    );
+    return Math.round(ratio * (scrubberTicks.length - 1));
+  }
+
+  function commitTick(index: number) {
+    onChange((index / (scrubberTicks.length - 1)) * 100);
+  }
+
+  function handleKeyboard(event: KeyboardEvent<HTMLDivElement>) {
+    let next = activeTick;
+    if (event.key === "ArrowLeft") next = Math.max(0, activeTick - 1);
+    else if (event.key === "ArrowRight")
+      next = Math.min(scrubberTicks.length - 1, activeTick + 1);
+    else if (event.key === "Home") next = 0;
+    else if (event.key === "End") next = scrubberTicks.length - 1;
+    else return;
+
+    event.preventDefault();
+    commitTick(next);
+  }
+
+  return (
+    <div className="chapter-scrubber-wrap">
+      <span
+        className="scrubber-preview"
+        style={{ left: `${(focusTick / (scrubberTicks.length - 1)) * 100}%` }}
+      >
+        <small>{hoveredTick === null ? "Playhead" : "Preview"}</small>
+        <strong>
+          {formatTime((focusTick / (scrubberTicks.length - 1)) * 100)}
+        </strong>
+      </span>
+      <div
+        className="chapter-scrubber"
+        role="slider"
+        tabIndex={0}
+        aria-label="Recorded segment position"
+        aria-valuemin={0}
+        aria-valuemax={100}
+        aria-valuenow={Math.round(progress)}
+        onKeyDown={handleKeyboard}
+        onPointerMove={(event) => setHoveredTick(tickFromPointer(event))}
+        onPointerLeave={() => setHoveredTick(null)}
+        onPointerDown={(event) => commitTick(tickFromPointer(event))}
+      >
+        {scrubberTicks.map((tick) => {
+          const distance = Math.abs(tick - focusTick);
+          const height =
+            distance === 0 ? 26 : distance === 1 ? 20 : distance === 2 ? 14 : 8;
+          const isElapsed = tick <= activeTick;
+
+          return (
+            <motion.i
+              key={tick}
+              className={isElapsed ? "elapsed" : undefined}
+              animate={{ height }}
+              transition={
+                reduceMotion
+                  ? { duration: 0 }
+                  : { type: "spring", stiffness: 420, damping: 30 }
+              }
+            />
+          );
+        })}
+        <span
+          className="scrubber-position"
+          style={{ left: `${progress}%` }}
+          aria-hidden="true"
+        />
+      </div>
+    </div>
+  );
+}
+
 export function MonitorWorkspace() {
   const router = useRouter();
   const reduceMotion = useReducedMotion();
   const [playing, setPlaying] = useState(false);
   const [progress, setProgress] = useState(45);
-  const [cameraId, setCameraId] = useState(cameraOptions[1].id);
+  const [cameraIndex, setCameraIndex] = useState(1);
   const [selectedTrack, setSelectedTrack] = useState<"rex" | "zuri">("rex");
   const [outcomeSaved, setOutcomeSaved] = useState(false);
 
@@ -89,51 +191,63 @@ export function MonitorWorkspace() {
       selectedTrack === "rex"
         ? {
             name: "Rex",
+            track: "Track 14",
             behavior: "Pacing",
             status: "Review",
             confidence: "0.86 identity confidence",
           }
         : {
             name: "Zuri",
+            track: "Track 21",
             behavior: "Resting",
             status: "Within baseline",
             confidence: "0.94 identity confidence",
           },
     [selectedTrack],
   );
-  const selectedCamera =
-    cameraOptions.find((option) => option.id === cameraId) ?? cameraOptions[1];
+  const selectedCamera = cameraOptions[cameraIndex];
+  const galleryNeighbors = [1, 2].map(
+    (offset) => cameraOptions[(cameraIndex + offset) % cameraOptions.length],
+  );
+
+  function changeCamera(direction: number) {
+    setCameraIndex(
+      (current) =>
+        (current + direction + cameraOptions.length) % cameraOptions.length,
+    );
+  }
 
   return (
     <div className="page-stack monitor-page">
-      <div className="control-row">
+      <div className="monitor-context-bar">
         <div className="active-source-readout">
           <span className="active-source-icon">
             <Camera size={15} />
           </span>
           <span>
-            <small>Active source</small>
-            <strong>{selectedCamera.label}</strong>
+            <small>Recorded source</small>
+            <strong>
+              {selectedCamera.enclosure} · {selectedCamera.label}
+            </strong>
           </span>
         </div>
-        <label className="select-control">
-          <span>Segment</span>
-          <select defaultValue="02:00–02:15">
-            <option>01:45–02:00</option>
-            <option>02:00–02:15</option>
-            <option>02:15–02:30</option>
-          </select>
-          <ChevronDown size={14} />
-        </label>
+        <div className="segment-stepper" aria-label="Recorded segment">
+          <button type="button" aria-label="Previous segment">
+            <ChevronLeft size={15} />
+          </button>
+          <span>
+            <small>July 30</small>
+            <strong>02:00–02:15</strong>
+          </span>
+          <button type="button" aria-label="Next segment">
+            <ChevronRight size={15} />
+          </button>
+        </div>
         <div className="coverage-readout">
           <span className="status-dot" />
           <span>Coverage complete</span>
           <strong>15:00</strong>
         </div>
-        <button className="quiet-button" type="button">
-          <SlidersHorizontal size={15} />
-          Overlay settings
-        </button>
       </div>
 
       <section className="monitor-grid">
@@ -141,18 +255,16 @@ export function MonitorWorkspace() {
           <div className="video-toolbar">
             <div>
               <span className="section-kicker">Recorded camera segment</span>
-              <h1>
-                {selectedCamera.enclosure} · {selectedCamera.view}
-              </h1>
+              <h1>{selectedCamera.view}</h1>
             </div>
             <div className="video-toolbar-meta">
               <span>
                 <Camera size={14} />
-                {selectedCamera.label}
+                {selectedCamera.enclosure} · {selectedCamera.label}
               </span>
               <span>
                 <Clock3 size={14} />
-                July 30 · 02:00
+                02:00 start
               </span>
             </div>
           </div>
@@ -177,8 +289,13 @@ export function MonitorWorkspace() {
               onClick={() => setSelectedTrack("rex")}
               aria-label="Select Rex track"
             >
-              <span className="track-label">Rex · moving</span>
-              <Dog className="animal-shape rex-shape" strokeWidth={1.15} />
+              <span className="track-label">Track 14 · moving</span>
+              <span className="track-target-code">T14</span>
+              <span className="track-vector" aria-hidden="true">
+                <i />
+                <i />
+                <i />
+              </span>
             </button>
             <button
               type="button"
@@ -188,8 +305,12 @@ export function MonitorWorkspace() {
               onClick={() => setSelectedTrack("zuri")}
               aria-label="Select Zuri track"
             >
-              <span className="track-label">Zuri · resting</span>
-              <Dog className="animal-shape zuri-shape" strokeWidth={1.15} />
+              <span className="track-label">Track 21 · resting</span>
+              <span className="track-target-code">T21</span>
+              <span className="track-vector" aria-hidden="true">
+                <i />
+                <i />
+              </span>
             </button>
             <motion.span
               key={selectedCamera.id}
@@ -197,7 +318,7 @@ export function MonitorWorkspace() {
               initial={reduceMotion ? false : { opacity: 0, y: -5 }}
               animate={{ opacity: 1, y: 0 }}
             >
-              {selectedCamera.label.toUpperCase()}
+              {selectedCamera.enclosure} / {selectedCamera.label.toUpperCase()}
             </motion.span>
             <span className="camera-state">
               <Check size={13} />
@@ -223,17 +344,8 @@ export function MonitorWorkspace() {
             >
               <RotateCcw size={15} />
             </button>
-            <input
-              className="video-scrubber"
-              type="range"
-              min="0"
-              max="100"
-              step="0.1"
-              value={progress}
-              onChange={(event) => setProgress(Number(event.target.value))}
-              aria-label="Segment timeline"
-            />
-            <span className="playback-time">{formatTime(progress)} / 02:15:00</span>
+            <ChapterScrubber progress={progress} onChange={setProgress} />
+            <span className="playback-time">{formatTime(progress)}</span>
             <button
               type="button"
               className="icon-button"
@@ -243,50 +355,91 @@ export function MonitorWorkspace() {
             </button>
           </div>
 
-          <div className="observation-timeline">
+          <div
+            className="timeline-editor"
+            style={
+              {
+                "--timeline-progress": progress / 100,
+              } as CSSProperties
+            }
+          >
             <div className="timeline-head">
               <span>Observed activity</span>
-              <small>Source-aligned timestamps</small>
+              <small>Source-aligned · 15 minute segment</small>
             </div>
-            <div className="timeline-lanes">
-              <span className="lane-name">Pacing · Rex</span>
-              <div className="timeline-track">
-                <span
-                  className="timeline-block pacing"
-                  style={{ left: "3%", width: "88%" }}
-                >
-                  02:00–02:14
-                </span>
-              </div>
-              <span className="lane-name">Water bowl</span>
-              <div className="timeline-track">
-                <span
-                  className="timeline-block neutral"
-                  style={{ left: "20%", width: "23%" }}
-                >
-                  in frame
-                </span>
-              </div>
-              <span className="lane-name">Resting · Zuri</span>
-              <div className="timeline-track">
-                <span
-                  className="timeline-block resting"
-                  style={{ left: "58%", width: "35%" }}
-                >
-                  observed
-                </span>
-              </div>
-              <span
-                className="timeline-playhead"
-                style={{ left: `calc(116px + (100% - 116px) * ${progress / 100})` }}
-              />
+            <div className="timeline-ruler">
+              <span />
+              {["02:00", "02:03", "02:06", "02:09", "02:12", "02:15"].map(
+                (time) => (
+                  <time key={time}>{time}</time>
+                ),
+              )}
             </div>
-            <div className="filmstrip" aria-hidden="true">
-              {Array.from({ length: 10 }).map((_, index) => (
-                <span key={index}>
-                  <Dog size={18} />
+            <div className="timeline-editor-body">
+              <div className="timeline-editor-row">
+                <span className="timeline-row-label">
+                  <strong>Behavior</strong>
+                  <small>Track 14</small>
                 </span>
-              ))}
+                <div className="timeline-editor-track">
+                  <button
+                    type="button"
+                    className="timeline-clip pacing"
+                    style={{ left: "2%", width: "89%" }}
+                    onClick={() => setSelectedTrack("rex")}
+                  >
+                    <span>Pacing</span>
+                    <small>14 min · confidence 0.91</small>
+                  </button>
+                </div>
+              </div>
+              <div className="timeline-editor-row">
+                <span className="timeline-row-label">
+                  <strong>Context</strong>
+                  <small>Object region</small>
+                </span>
+                <div className="timeline-editor-track">
+                  <span
+                    className="timeline-clip context"
+                    style={{ left: "19%", width: "27%" }}
+                  >
+                    <span>Water station</span>
+                    <small>in frame</small>
+                  </span>
+                </div>
+              </div>
+              <div className="timeline-editor-row">
+                <span className="timeline-row-label">
+                  <strong>Behavior</strong>
+                  <small>Track 21</small>
+                </span>
+                <div className="timeline-editor-track">
+                  <button
+                    type="button"
+                    className="timeline-clip resting"
+                    style={{ left: "57%", width: "37%" }}
+                    onClick={() => setSelectedTrack("zuri")}
+                  >
+                    <span>Resting</span>
+                    <small>confidence 0.94</small>
+                  </button>
+                </div>
+              </div>
+              <div className="timeline-editor-row frame-row">
+                <span className="timeline-row-label">
+                  <strong>Frames</strong>
+                  <small>3 minute intervals</small>
+                </span>
+                <div className="frame-strip" aria-hidden="true">
+                  {Array.from({ length: 6 }).map((_, index) => (
+                    <i key={index}>
+                      <ScanLine size={13} />
+                      <span />
+                    </i>
+                  ))}
+                </div>
+              </div>
+              <span className="timeline-editor-playhead" aria-hidden="true" />
             </div>
           </div>
         </div>
@@ -296,6 +449,7 @@ export function MonitorWorkspace() {
             <div>
               <span className="section-kicker">Selected track</span>
               <h2>{selectedAnimal.name}</h2>
+              <small>{selectedAnimal.track}</small>
             </div>
             <span
               className={`plain-status ${
@@ -312,7 +466,9 @@ export function MonitorWorkspace() {
             </div>
             <div>
               <dt>Source</dt>
-              <dd>ENC-07 Camera 2</dd>
+              <dd>
+                {selectedCamera.enclosure} {selectedCamera.label}
+              </dd>
             </div>
             <div>
               <dt>Identity</dt>
@@ -339,8 +495,8 @@ export function MonitorWorkspace() {
               <div className="drawer-note">
                 <Eye size={16} />
                 <p>
-                  Verify the animal identity and source clip before a welfare
-                  check.
+                  Verify the identity and source clip before recording a
+                  welfare check.
                 </p>
               </div>
             </>
@@ -367,64 +523,92 @@ export function MonitorWorkspace() {
         </aside>
       </section>
 
-      <section className="camera-dock" aria-labelledby="camera-dock-title">
-        <div className="camera-dock-heading">
+      <section className="camera-gallery" aria-labelledby="camera-gallery-title">
+        <div className="camera-gallery-heading">
           <div>
-            <span className="section-kicker">Available sources</span>
-            <h2 id="camera-dock-title">Camera feeds</h2>
+            <span className="section-kicker">Recorded sources</span>
+            <h2 id="camera-gallery-title">Choose camera view</h2>
           </div>
-          <span>{cameraOptions.length} recorded views</span>
+          <div className="gallery-nav" aria-label="Camera navigation">
+            <span>
+              {String(cameraIndex + 1).padStart(2, "0")} /{" "}
+              {String(cameraOptions.length).padStart(2, "0")}
+            </span>
+            <button
+              type="button"
+              onClick={() => changeCamera(-1)}
+              aria-label="Previous camera"
+            >
+              <ChevronLeft size={17} />
+            </button>
+            <button
+              type="button"
+              onClick={() => changeCamera(1)}
+              aria-label="Next camera"
+            >
+              <ChevronRight size={17} />
+            </button>
+          </div>
         </div>
-        <div
-          className="camera-card-strip"
-          role="radiogroup"
-          aria-label="Choose a camera feed"
-        >
-          {cameraOptions.map((option, index) => {
-            const active = option.id === selectedCamera.id;
 
-            return (
-              <motion.button
-                layout
-                type="button"
-                role="radio"
-                aria-checked={active}
-                className="camera-card"
-                data-active={active}
-                key={option.id}
-                onClick={() => setCameraId(option.id)}
-                whileHover={reduceMotion ? undefined : { y: -2 }}
-                whileTap={reduceMotion ? undefined : { scale: 0.985 }}
-              >
-                {active && (
-                  <motion.span
-                    className="camera-card-active"
-                    layoutId="active-camera-card"
-                    transition={{ type: "spring", bounce: 0.12, duration: 0.35 }}
-                  />
-                )}
-                <span
-                  className="camera-card-preview"
+        <div className="camera-gallery-layout">
+          <AnimatePresence mode="wait" initial={false}>
+            <motion.button
+              key={selectedCamera.id}
+              type="button"
+              className="camera-gallery-feature"
+              data-camera={selectedCamera.variant}
+              initial={reduceMotion ? false : { opacity: 0, x: 18 }}
+              animate={{ opacity: 1, x: 0 }}
+              exit={reduceMotion ? undefined : { opacity: 0, x: -18 }}
+              onClick={() => changeCamera(1)}
+              aria-label={`Current source: ${selectedCamera.label}. Show next camera.`}
+            >
+              <span className="gallery-scan-grid" aria-hidden="true" />
+              <span className="gallery-feature-index">
+                CAM {String(cameraIndex + 1).padStart(2, "0")}
+              </span>
+              <span className="gallery-feature-copy">
+                <small>{selectedCamera.enclosure}</small>
+                <strong>{selectedCamera.view}</strong>
+                <span>
+                  {selectedCamera.label} · analysis complete
+                </span>
+              </span>
+              <span className="gallery-feature-action">
+                Next view <ChevronRight size={15} />
+              </span>
+            </motion.button>
+          </AnimatePresence>
+
+          <div className="camera-gallery-neighbors">
+            {galleryNeighbors.map((option) => {
+              const index = cameraOptions.findIndex(
+                (camera) => camera.id === option.id,
+              );
+              return (
+                <button
+                  key={option.id}
+                  type="button"
+                  className="camera-gallery-preview"
                   data-camera={option.variant}
-                  aria-hidden="true"
+                  onClick={() => setCameraIndex(index)}
                 >
-                  <Camera size={18} />
-                  <span className="preview-horizon" />
-                  <small>CAM {String(index + 1).padStart(2, "0")}</small>
-                </span>
-                <span className="camera-card-copy">
-                  <strong>{option.label}</strong>
-                  <small>
-                    {option.enclosure} · {option.view}
-                  </small>
-                </span>
-                <span className="camera-card-status">
-                  <span className="status-dot" />
-                  Ready
-                </span>
-              </motion.button>
-            );
-          })}
+                  <span className="gallery-preview-frame">
+                    <Camera size={16} />
+                    <i />
+                  </span>
+                  <span>
+                    <small>
+                      CAM {String(index + 1).padStart(2, "0")}
+                    </small>
+                    <strong>{option.view}</strong>
+                  </span>
+                  <ChevronRight size={15} />
+                </button>
+              );
+            })}
+          </div>
         </div>
       </section>
     </div>

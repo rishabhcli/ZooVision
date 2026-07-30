@@ -2,7 +2,6 @@
 
 import {
   Check,
-  ChevronDown,
   Clock3,
   ExternalLink,
   FileText,
@@ -75,33 +74,13 @@ export function AnalysisWorkspace() {
   return (
     <div className="page-stack analysis-page">
       <div className="control-row">
-        <label className="select-control">
-          <span>Enclosure</span>
-          <select defaultValue="ENC-07 · Painted dogs">
-            <option>ENC-07 · Painted dogs</option>
-            <option>ENC-05 · Otters</option>
-            <option>ENC-03 · Snow leopard</option>
-          </select>
-          <ChevronDown size={14} />
-        </label>
-        <label className="select-control compact">
-          <span>Animal</span>
-          <select defaultValue="All animals">
-            <option>All animals</option>
-            <option>Rex</option>
-            <option>Zuri</option>
-          </select>
-          <ChevronDown size={14} />
-        </label>
-        <label className="select-control">
-          <span>Review period</span>
-          <select defaultValue="Tonight · 22:00–06:00">
-            <option>Tonight · 22:00–06:00</option>
-            <option>Last 7 nights</option>
-            <option>Last 30 nights</option>
-          </select>
-          <ChevronDown size={14} />
-        </label>
+        <div className="analysis-scope-readout">
+          <Clock3 size={15} />
+          <span>
+            <small>ENC-07 · All monitored animals</small>
+            <strong>Tonight · 22:00–06:00</strong>
+          </span>
+        </div>
         <button
           className="primary-button briefing-button"
           type="button"
