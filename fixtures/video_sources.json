@@ -1,0 +1,59 @@
+{
+  "schema_version": 1,
+  "sources": [
+    {
+      "id": "badger-garden-2023",
+      "filename": "badger-garden-2023.webm",
+      "fixture_filename": "enc07_badger_night_30m.mp4",
+      "fixture_duration_seconds": 1800,
+      "title": "Blaireau dans un jardin de Saint-Remy-les-Chevreuse le 22 septembre 2023",
+      "animal": "European badger",
+      "camera_style": "fixed infrared garden camera",
+      "source_page": "https://commons.wikimedia.org/wiki/File:Blaireau_dans_un_jardin_de_Saint-R%C3%A9my-l%C3%A8s-Chevreuse_le_22_septembre_2023.webm",
+      "download_url": "https://upload.wikimedia.org/wikipedia/commons/b/b6/Blaireau_dans_un_jardin_de_Saint-R%C3%A9my-l%C3%A8s-Chevreuse_le_22_septembre_2023.webm",
+      "creator": "Lionel Allorge",
+      "license": "CC BY-SA 4.0",
+      "license_url": "https://creativecommons.org/licenses/by-sa/4.0/",
+      "sha256": "4f8c14748c826c20e37bc89a77b0bbc1c8925b78874e0bbd206136795e3d0473",
+      "source_bytes": 8075619,
+      "verified_media_seconds": 29.867,
+      "timeline_note": "The container reports roughly 5h15m because its first packet starts near 05:14:35. It contains 449 video frames, or about 30 seconds of actual footage."
+    },
+    {
+      "id": "trail-camera-test",
+      "filename": "trail-camera-test.webm",
+      "fixture_filename": "enc03_trailcam_night_15m.mp4",
+      "fixture_duration_seconds": 900,
+      "title": "Powerextra - Trail Camera - Footage test (version 1)",
+      "animal": "cats and birds",
+      "camera_style": "fixed outdoor trail camera",
+      "source_page": "https://commons.wikimedia.org/wiki/File:Powerextra_-_Trail_Camera_-_Footage_test_(version_1).webm",
+      "download_url": "https://upload.wikimedia.org/wikipedia/commons/4/48/Powerextra_-_Trail_Camera_-_Footage_test_%28version_1%29.webm",
+      "creator": "James Glen",
+      "license": "CC BY 3.0",
+      "license_url": "https://creativecommons.org/licenses/by/3.0/",
+      "sha256": "d499b3e0fd08e26398558f1246fdf5d6e8435848284a4a97b6c88231d14cfc9b",
+      "source_bytes": 154990443,
+      "verified_media_seconds": 305.675,
+      "timeline_note": "The source is a continuous 5m05s trail-camera test. The prepared fixture repeats it to reach 15 minutes."
+    },
+    {
+      "id": "condor-nest-camera",
+      "filename": "condor-nest-camera.webm",
+      "fixture_filename": "enc05_condor_nest_15m.mp4",
+      "fixture_duration_seconds": 900,
+      "title": "Female California condor incubating egg",
+      "animal": "California condor",
+      "camera_style": "fixed wild nest camera",
+      "source_page": "https://commons.wikimedia.org/wiki/File:Female_California_condor_(Gymnogyps_californianus)_incubating_egg.webm",
+      "download_url": "https://upload.wikimedia.org/wikipedia/commons/7/7b/Female_California_condor_%28Gymnogyps_californianus%29_incubating_egg.webm",
+      "creator": "Pacific Southwest Region, U.S. Fish and Wildlife Service",
+      "license": "Public domain",
+      "license_url": "https://commons.wikimedia.org/wiki/Commons:Copyright_rules_by_territory/United_States#Works_by_the_US_Federal_Government",
+      "sha256": "916a4be72eebcda2687ca4f45140071f8d7625c896606c2cd4734b491c8fadc8",
+      "source_bytes": 81829320,
+      "verified_media_seconds": 123.224,
+      "timeline_note": "The source is a continuous 2m03s fixed nest-camera recording. The prepared fixture repeats it to reach 15 minutes."
+    }
+  ]
+}
