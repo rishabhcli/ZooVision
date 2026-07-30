@@ -35,7 +35,7 @@ For example, an unusual 14-minute pacing event can become a `MODERATE` welfare-c
 | TwelveLabs Pegasus 1.5 | Produce schema-constrained behavior observations per video chunk. |
 | TwelveLabs Marengo 3.0 | Create video embeddings and retrieve visually similar clips from an individual animal's history. |
 | Strands Agents | Orchestrate the fixed, auditable day/night pipeline. |
-| OpenAI GPT-5.6 Terra | Merge structured evidence with graph context and phrase staff-facing messages; never decide severity. |
+| OpenAI GPT-5.6 Luna | Merge structured evidence with graph context and phrase staff-facing messages; never decide severity. |
 | Deterministic Python | Compute baseline deltas, apply triage rules, and enforce escalation behavior. |
 | Neo4j Aura | Store the animal context graph, event history, baselines, outcomes, and vector-searchable clips. |
 | S3-compatible object storage | Retain raw segments, analysis JSON, and extracted alert clips under explicit lifecycle policies. |
