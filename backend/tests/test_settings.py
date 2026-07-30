@@ -87,6 +87,8 @@ def test_production_accepts_complete_live_configuration():
         NEO4J_USERNAME="test-user",
         NEO4J_PASSWORD="test-password",
         ZOOVISION_AWS_STORAGE_ENABLED=True,
+        ZOOVISION_BEDROCK_EMBEDDING_ENABLED=True,
+        ZOOVISION_OPENAI_ENRICHMENT_ENABLED=True,
         ZOOVISION_S3_RAW_BUCKET="raw",
         ZOOVISION_S3_ANALYSIS_BUCKET="analysis",
         ZOOVISION_S3_CLIPS_BUCKET="clips",

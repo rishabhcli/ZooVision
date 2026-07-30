@@ -15,6 +15,7 @@ from zoovision.graph import (
     READ_ENCLOSURES_CYPHER,
     READ_GRAPH_CYPHER,
     SCHEMA_QUERIES,
+    WRITE_CLIP_EMBEDDING_CYPHER,
     WRITE_EVENT_CYPHER,
     WRITE_OBSERVATIONS_CYPHER,
     GraphEventBundle,
@@ -175,6 +176,20 @@ def test_graph_writer_indexes_observations_without_an_event():
     assert "MERGE (observation:Observation" in WRITE_OBSERVATIONS_CYPHER
     assert "MERGE (animal)-[:HAS_OBSERVATION]->(observation)" in WRITE_OBSERVATIONS_CYPHER
     assert driver.transaction.parameters["observations"][0]["observation_id"] == "obs-1"
+
+
+def test_graph_writer_persists_runtime_embedding_dimension():
+    driver = FakeDriver()
+    writer = Neo4jGraphWriter("unused", "unused", "unused", driver=driver)
+
+    writer.write_clip_embedding(
+        clip_id="chunk-1",
+        embedding=[0.1, 0.2, 0.3],
+        embedding_model="twelvelabs.marengo-embed-3-0-v1:0",
+    )
+
+    assert driver.transaction.query == WRITE_CLIP_EMBEDDING_CYPHER
+    assert driver.transaction.parameters["embedding"] == [0.1, 0.2, 0.3]
 
 
 def test_graph_bundle_requires_exact_event_sources():

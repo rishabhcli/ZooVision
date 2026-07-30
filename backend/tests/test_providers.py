@@ -35,6 +35,7 @@ def test_provider_timestamps_are_normalized_with_chunk_provenance(chunk):
                     "relative_end_seconds": 90,
                     "confidence": 0.8,
                     "evidence": "Repeated route was visible.",
+                    "activity_label": "Boundary patrol",
                     "provider_item_id": "segment-a",
                 }
             ],
@@ -51,6 +52,7 @@ def test_provider_timestamps_are_normalized_with_chunk_provenance(chunk):
     assert observations[0].chunk_id == "chunk-1"
     assert observations[0].start_ts == chunk.start_ts + timedelta(seconds=30)
     assert observations[0].provider_item_id == "segment-a"
+    assert observations[0].activity_label == "Boundary patrol"
 
 
 def test_provider_cannot_return_severity():
@@ -122,6 +124,26 @@ def test_subsecond_provider_overshoot_is_clamped_to_chunk_end(chunk):
         provider_model="strict-v1",
     )[0]
     assert observation.end_ts == chunk.end_ts
+
+
+def test_zero_length_provider_marker_is_excluded_with_uncertainty():
+    batch = ProviderBatch.model_validate(
+        {
+            "observations": [
+                {
+                    "behavior": Behavior.EXITING_FRAME,
+                    "relative_start_seconds": 29,
+                    "relative_end_seconds": 29,
+                    "confidence": 0.7,
+                    "evidence": "The animal reaches the frame boundary.",
+                }
+            ],
+            "coverage_complete": True,
+        }
+    )
+
+    assert batch.observations == []
+    assert "zero-length" in batch.uncertainty[0]
 
 
 class FailingAnalyzeClient:

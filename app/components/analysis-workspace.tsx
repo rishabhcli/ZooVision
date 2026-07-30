@@ -124,11 +124,18 @@ export function AnalysisWorkspace() {
       </div>
     );
   }
-  if (!dashboard || !selected) {
+  if (!dashboard) {
     return (
       <div className="graph-loading" role="status">
         <span />
         <p>Loading evidence analysis from the backend…</p>
+      </div>
+    );
+  }
+  if (!selected) {
+    return (
+      <div className="graph-loading" role="status">
+        <p>No deterministic events are available for review yet.</p>
       </div>
     );
   }

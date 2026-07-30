@@ -91,7 +91,7 @@ def seed_demo(store: SQLiteStore, settings: Settings, *, now: datetime | None = 
     baseline_specs = (
         ("animal-nox", Behavior.PACING, 8, False),
         ("animal-mara", Behavior.INACTIVITY, 10, True),
-        ("animal-juniper", Behavior.WATER_BOWL_TIPPED, 4, False),
+        ("animal-juniper", Behavior.OTHER, 4, False),
     )
     for animal_id, behavior, count, approved in baseline_specs:
         store.save_baseline(
@@ -179,6 +179,7 @@ def seed_demo(store: SQLiteStore, settings: Settings, *, now: datetime | None = 
             provider_model="scenario-v1",
             provider_item_id="nox-route-a",
             evidence_kind=EvidenceKind.SYNTHETIC_SCENARIO,
+            activity_label="Repeated boundary patrol",
         ),
         Observation(
             observation_id="obs-nox-pacing-02",
@@ -194,34 +195,39 @@ def seed_demo(store: SQLiteStore, settings: Settings, *, now: datetime | None = 
             provider_model="scenario-v1",
             provider_item_id="nox-route-b",
             evidence_kind=EvidenceKind.SYNTHETIC_SCENARIO,
+            activity_label="Repeated boundary patrol",
         ),
         Observation(
             observation_id="obs-mara-resting-01",
             animal_id="animal-mara",
             enclosure_id="ENC-05",
             chunk_id="chunk-mara-01",
-            behavior=Behavior.RESTING,
-            start_ts=anchor + timedelta(hours=6, minutes=1),
-            end_ts=anchor + timedelta(hours=6, minutes=12),
+            behavior=Behavior.OTHER,
+            start_ts=anchor + timedelta(hours=6),
+            end_ts=anchor + timedelta(hours=6, minutes=15),
             confidence=0.95,
-            evidence="Synthetic scenario: stationary posture in the nest alcove.",
+            evidence=(
+                "Demo annotation: an adult elephant and calf move together across open grassland."
+            ),
             provider="fixture",
             provider_model="scenario-v1",
             evidence_kind=EvidenceKind.SYNTHETIC_SCENARIO,
+            activity_label="Walking with calf",
         ),
         Observation(
             observation_id="obs-juniper-water-01",
             animal_id="animal-juniper",
             enclosure_id="ENC-03",
             chunk_id="chunk-juniper-01",
-            behavior=Behavior.WATER_BOWL_TIPPED,
-            start_ts=anchor + timedelta(hours=8, minutes=4),
-            end_ts=anchor + timedelta(hours=8, minutes=5),
+            behavior=Behavior.OTHER,
+            start_ts=anchor + timedelta(hours=8),
+            end_ts=anchor + timedelta(hours=8, minutes=14),
             confidence=0.87,
-            evidence="Synthetic scenario: the water bowl changed from upright to its side.",
+            evidence="Demo annotation: the gorilla climbs and holds position on a tree trunk.",
             provider="fixture",
             provider_model="scenario-v1",
             evidence_kind=EvidenceKind.SYNTHETIC_SCENARIO,
+            activity_label="Climbing tree",
         ),
     ]
     for observation in observations:

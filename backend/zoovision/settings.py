@@ -152,9 +152,7 @@ class Settings(BaseSettings):
         if not self.proxy_shared_secret:
             missing.append("ZOOVISION_PROXY_SHARED_SECRET")
         if self.alert_delivery_enabled and not self.eventbridge_scheduler_configured:
-            missing.append(
-                "ZOOVISION_EVENTBRIDGE_SCHEDULER_ENABLED/target ARN/role ARN"
-            )
+            missing.append("ZOOVISION_EVENTBRIDGE_SCHEDULER_ENABLED/target ARN/role ARN")
         if missing:
             raise ValueError("production integrations are incomplete: " + ", ".join(missing))
         return self

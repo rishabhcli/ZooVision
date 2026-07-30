@@ -44,7 +44,8 @@ CREATE TABLE IF NOT EXISTS observations (
     provider TEXT NOT NULL,
     provider_model TEXT NOT NULL,
     provider_item_id TEXT,
-    evidence_kind TEXT NOT NULL
+    evidence_kind TEXT NOT NULL,
+    activity_label TEXT
 );
 
 CREATE TABLE IF NOT EXISTS events (
@@ -176,6 +177,7 @@ class SQLiteStore:
         with self.connect() as connection:
             connection.executescript(SCHEMA)
             self._migrate_detection_provenance(connection)
+            self._migrate_observation_activity(connection)
             self._migrate_alert_scheduler(connection)
 
     @staticmethod
@@ -189,6 +191,12 @@ class SQLiteStore:
         ):
             if name not in columns:
                 connection.execute(f"ALTER TABLE detections ADD COLUMN {name} {sql_type}")
+
+    @staticmethod
+    def _migrate_observation_activity(connection: sqlite3.Connection) -> None:
+        columns = {row["name"] for row in connection.execute("PRAGMA table_info(observations)")}
+        if "activity_label" not in columns:
+            connection.execute("ALTER TABLE observations ADD COLUMN activity_label TEXT")
 
     @staticmethod
     def _migrate_alert_scheduler(connection: sqlite3.Connection) -> None:
@@ -329,12 +337,13 @@ class SQLiteStore:
                 INSERT INTO observations(
                     observation_id, chunk_id, animal_id, behavior, start_ts, end_ts,
                     confidence, evidence, provider, provider_model, provider_item_id,
-                    evidence_kind
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    evidence_kind, activity_label
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(observation_id) DO UPDATE SET
                     confidence = excluded.confidence,
                     evidence = excluded.evidence,
-                    provider_item_id = excluded.provider_item_id
+                    provider_item_id = excluded.provider_item_id,
+                    activity_label = excluded.activity_label
                 """,
                 (
                     observation.observation_id,
@@ -349,6 +358,7 @@ class SQLiteStore:
                     observation.provider_model,
                     observation.provider_item_id,
                     observation.evidence_kind.value,
+                    observation.activity_label,
                 ),
             )
 
@@ -605,6 +615,26 @@ class SQLiteStore:
             ).fetchone()
             return row["scheduler_schedule_name"] if row else None
 
+    def alert_state(self, alert_id: str) -> str | None:
+        with self.connect() as connection:
+            row = connection.execute(
+                "SELECT ack_state FROM alerts WHERE alert_id = ?",
+                (alert_id,),
+            ).fetchone()
+            return row["ack_state"] if row else None
+
+    def escalate_pending_alert(self, alert_id: str) -> bool:
+        with self.connect() as connection:
+            cursor = connection.execute(
+                """
+                UPDATE alerts
+                SET ack_state = 'escalated', escalated = 1
+                WHERE alert_id = ? AND ack_state = 'pending'
+                """,
+                (alert_id,),
+            )
+            return cursor.rowcount == 1
+
     def reset_demo(self) -> None:
         with self.connect() as connection:
             for table in (
@@ -785,7 +815,8 @@ class SQLiteStore:
                            count(DISTINCT d.detection_id) AS detection_count,
                            count(DISTINCT o.observation_id) AS observation_count,
                            count(DISTINCT e.event_id) AS event_count,
-                           group_concat(DISTINCT a.name) AS animal_names
+                           group_concat(DISTINCT a.name) AS animal_names,
+                           group_concat(DISTINCT a.species) AS animal_species
                     FROM video_chunks vc
                     LEFT JOIN detections d ON d.chunk_id = vc.chunk_id
                     LEFT JOIN observations o ON o.chunk_id = vc.chunk_id
@@ -902,6 +933,7 @@ class SQLiteStore:
                     "evidence": row["evidence"],
                     "provider": row["provider"],
                     "evidence_kind": row["evidence_kind"],
+                    "activity_label": row["activity_label"],
                     "start_seconds": round(
                         max(
                             0.0,
@@ -936,6 +968,77 @@ class SQLiteStore:
                 "events": events,
                 "observations": observations,
             }
+
+    def searchable_moments(
+        self,
+        *,
+        enclosure_id: str | None = None,
+        animal_id: str | None = None,
+        limit: int = 240,
+    ) -> list[dict]:
+        """Return provider observations with stable, browser-seekable positions."""
+        conditions = ["1 = 1"]
+        parameters: list[object] = []
+        if enclosure_id:
+            conditions.append("vc.enclosure_id = ?")
+            parameters.append(enclosure_id)
+        if animal_id:
+            conditions.append("o.animal_id = ?")
+            parameters.append(animal_id)
+        parameters.append(limit)
+
+        with self.connect() as connection:
+            rows = connection.execute(
+                f"""
+                SELECT o.*, a.name AS animal_name, a.species,
+                       vc.source_path, vc.camera_id, vc.source_offset_seconds,
+                       vc.start_ts AS chunk_start_ts,
+                       vc.enclosure_id AS moment_enclosure_id
+                FROM observations o
+                JOIN animals a ON a.animal_id = o.animal_id
+                JOIN video_chunks vc ON vc.chunk_id = o.chunk_id
+                WHERE {' AND '.join(conditions)}
+                ORDER BY o.start_ts
+                LIMIT ?
+                """,
+                parameters,
+            )
+            return [
+                {
+                    "observation_id": row["observation_id"],
+                    "animal_id": row["animal_id"],
+                    "animal_name": row["animal_name"],
+                    "species": row["species"],
+                    "enclosure_id": row["moment_enclosure_id"],
+                    "camera_id": row["camera_id"],
+                    "behavior": row["behavior"],
+                    "activity_label": row["activity_label"],
+                    "evidence": row["evidence"],
+                    "provider": row["provider"],
+                    "provider_model": row["provider_model"],
+                    "evidence_kind": row["evidence_kind"],
+                    "source_path": row["source_path"],
+                    "start_ts": row["start_ts"],
+                    "end_ts": row["end_ts"],
+                    "start_seconds": round(
+                        max(
+                            0.0,
+                            row["source_offset_seconds"]
+                            + _seconds_between(row["chunk_start_ts"], row["start_ts"]),
+                        ),
+                        3,
+                    ),
+                    "end_seconds": round(
+                        max(
+                            0.0,
+                            row["source_offset_seconds"]
+                            + _seconds_between(row["chunk_start_ts"], row["end_ts"]),
+                        ),
+                        3,
+                    ),
+                }
+                for row in rows
+            ]
 
     def morning_report(self) -> dict:
         dashboard = self.dashboard()

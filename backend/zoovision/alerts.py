@@ -14,6 +14,7 @@ class AlertDeliveryContext(BaseModel):
     fixture_mode: bool
     delivery_enabled: bool
     webhook_configured: bool
+    scheduler_configured: bool = False
     baseline_state: BaselineState
 
 
@@ -36,8 +37,8 @@ def delivery_gate(event: EventRecord, context: AlertDeliveryContext) -> AlertGat
         reasons.append("fixture_mode")
     if not context.delivery_enabled:
         reasons.append("delivery_disabled")
-    if not context.webhook_configured:
-        reasons.append("webhook_not_configured")
+    if not context.webhook_configured and not context.scheduler_configured:
+        reasons.append("delivery_target_not_configured")
     return AlertGateDecision(allowed=not reasons, reasons=reasons)
 
 

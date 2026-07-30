@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import time
 from collections.abc import Callable
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -20,11 +20,13 @@ from .aws_storage import AssetKind, S3Archive
 from .domain import (
     AckState,
     BaselineState,
+    DataGap,
     EventRecord,
     Severity,
     ShiftMode,
     TriageInput,
 )
+from .enrichment import EvidenceMergeRequest, EvidenceSource
 from .graph import GraphEventBundle, GraphObservationBundle, Neo4jGraphWriter
 from .ids import event_id, stable_id
 from .providers import ProviderAnalysis, VideoChunkContext
@@ -59,6 +61,7 @@ class SegmentWorkflowInput(BaseModel):
     source_offset_seconds: float = Field(default=0, ge=0)
     video_url: str | None = None
     local_video_path: Path | None = None
+    archive_video_path: Path | None = None
     shift_mode: ShiftMode
     baseline_state: BaselineState
     fixture_mode: bool = True
@@ -92,6 +95,10 @@ class SegmentWorkflowResult(BaseModel):
     raw_archive_uri: str | None = None
     analysis_archive_uri: str | None = None
     baseline_candidate_observation_ids: list[str] = Field(default_factory=list)
+    enriched_event_ids: list[str] = Field(default_factory=list)
+    scheduled_alert_ids: list[str] = Field(default_factory=list)
+    embedding_status: str = "not_configured"
+    embedding_data_gap_id: str | None = None
     audit: list[WorkflowAuditEntry]
 
 
@@ -164,12 +171,20 @@ class SegmentWorkflow:
         store: SQLiteStore,
         graph_writer: Neo4jGraphWriter | None = None,
         archive: S3Archive | None = None,
+        embedder: Any | None = None,
+        evidence_enricher: Any | None = None,
+        escalation_scheduler: Any | None = None,
+        alert_ack_minutes: int = 20,
         now: Callable[[], datetime] | None = None,
     ):
         self.analyzer = analyzer
         self.store = store
         self.graph_writer = graph_writer
         self.archive = archive
+        self.embedder = embedder
+        self.evidence_enricher = evidence_enricher
+        self.escalation_scheduler = escalation_scheduler
+        self.alert_ack_minutes = alert_ack_minutes
         self.now = now or (lambda: datetime.now(UTC))
 
     def run(self, request: SegmentWorkflowInput) -> SegmentWorkflowResult:
@@ -178,6 +193,9 @@ class SegmentWorkflow:
             "audit": [],
             "event_ids": [],
             "rules_fired": [],
+            "enriched_event_ids": [],
+            "scheduled_alert_ids": [],
+            "embedding_status": "not_configured",
         }
         graph = self._build_graph()
         result = graph("process one camera segment", invocation_state=state)
@@ -195,6 +213,10 @@ class SegmentWorkflow:
                 "baseline_candidate_observation_ids",
                 [],
             ),
+            enriched_event_ids=state["enriched_event_ids"],
+            scheduled_alert_ids=state["scheduled_alert_ids"],
+            embedding_status=state["embedding_status"],
+            embedding_data_gap_id=state.get("embedding_data_gap_id"),
             audit=state["audit"],
         )
 
@@ -237,12 +259,11 @@ class SegmentWorkflow:
             status="analyzing",
         )
         if self.archive is not None and request.local_video_path is not None:
+            archive_source = request.archive_video_path or request.local_video_path
             state["raw_archive_uri"] = self.archive.upload_file(
                 AssetKind.RAW,
-                request.local_video_path,
-                object_key=(
-                    f"{chunk.animal_id}/{chunk.chunk_id}{request.local_video_path.suffix.lower()}"
-                ),
+                archive_source,
+                object_key=(f"{chunk.animal_id}/{chunk.chunk_id}{archive_source.suffix.lower()}"),
                 content_type="video/mp4",
                 metadata={
                     "animal-id": chunk.animal_id,
@@ -276,6 +297,31 @@ class SegmentWorkflow:
                     observations=analysis.observations,
                 )
             )
+        if self.embedder is not None and self.graph_writer is not None and analysis.observations:
+            try:
+                evidence_text = "\n".join(
+                    f"{item.behavior.value}: {item.evidence}" for item in analysis.observations
+                )
+                vector = self.embedder.embed_text(evidence_text)
+                self.graph_writer.write_clip_embedding(
+                    clip_id=chunk.chunk_id,
+                    embedding=vector.embedding,
+                    embedding_model=self.embedder.model_id,
+                )
+                state["embedding_status"] = "complete"
+            except Exception as error:  # noqa: BLE001 - retain behavior evidence and record the gap
+                gap = DataGap(
+                    gap_id=stable_id("gap", chunk.chunk_id, "bedrock-marengo"),
+                    enclosure_id=chunk.enclosure_id,
+                    chunk_id=chunk.chunk_id,
+                    start_ts=chunk.start_ts,
+                    end_ts=chunk.end_ts,
+                    reason="bedrock_embedding_failed",
+                    detail=type(error).__name__,
+                )
+                self.store.save_data_gap(gap)
+                state["embedding_status"] = "failed"
+                state["embedding_data_gap_id"] = gap.gap_id
         for observation in analysis.observations:
             self.store.save_observation(observation)
         self.store.upsert_video_chunk(
@@ -352,21 +398,67 @@ class SegmentWorkflow:
                 created_at=self.now(),
             )
             self.store.save_event(record)
+            if self.evidence_enricher is not None:
+                sources_by_id = {source.observation_id: source for source in analysis.observations}
+                try:
+                    narrative = self.evidence_enricher.merge(
+                        EvidenceMergeRequest(
+                            event_id=record.event_id,
+                            animal_name=request.animal_name,
+                            behavior_label=record.behavior.value,
+                            sources=[
+                                EvidenceSource(
+                                    source_id=source_id,
+                                    fact=sources_by_id[source_id].evidence,
+                                )
+                                for source_id in record.source_observation_ids
+                            ],
+                        )
+                    )
+                    self.store.save_event_narrative(
+                        event_id=record.event_id,
+                        headline=narrative.headline,
+                        factual_summary=narrative.factual_summary,
+                        uncertainty=narrative.uncertainty,
+                        cited_source_ids=narrative.cited_source_ids,
+                        model=self.evidence_enricher.model,
+                        created_at=self.now().isoformat(),
+                    )
+                    state["enriched_event_ids"].append(record.event_id)
+                except Exception:  # noqa: BLE001 - deterministic event remains authoritative
+                    pass
             gate = delivery_gate(
                 record,
                 AlertDeliveryContext(
                     fixture_mode=request.fixture_mode,
                     delivery_enabled=request.delivery_enabled,
                     webhook_configured=request.webhook_configured,
+                    scheduler_configured=self.escalation_scheduler is not None,
                     baseline_state=request.baseline_state,
                 ),
             )
+            alert_id = stable_id("alt", record.event_id, "keeper-console")
+            schedule = None
+            delivery_status = "shadowed"
+            if gate.allowed and self.escalation_scheduler is not None:
+                try:
+                    schedule = self.escalation_scheduler.schedule_alert(
+                        alert_id=alert_id,
+                        event_id=record.event_id,
+                        run_at=self.now() + timedelta(minutes=self.alert_ack_minutes),
+                    )
+                    delivery_status = "scheduled"
+                    state["scheduled_alert_ids"].append(alert_id)
+                except Exception:  # noqa: BLE001 - persist a visible delivery failure
+                    delivery_status = "schedule_failed"
             self.store.save_alert(
-                alert_id=stable_id("alt", record.event_id, "keeper-console"),
+                alert_id=alert_id,
                 event_id=record.event_id,
                 channel="keeper_console",
-                delivery_status="queued" if gate.allowed else "shadowed",
+                delivery_status=delivery_status,
                 ack_state=AckState.PENDING.value,
+                scheduler_schedule_name=schedule.name if schedule else None,
+                scheduler_schedule_arn=schedule.arn if schedule else None,
             )
             events.append(record)
         state["events"] = events

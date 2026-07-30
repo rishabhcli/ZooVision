@@ -322,6 +322,11 @@ class VideoIngestService:
         analyzer_factory: Callable[[], Any] | None = None,
         detector_config: DetectorConfig | None = None,
         graph_writer: Any | None = None,
+        archive: Any | None = None,
+        embedder: Any | None = None,
+        evidence_enricher: Any | None = None,
+        escalation_scheduler: Any | None = None,
+        alert_ack_minutes: int = 20,
         fixture_mode: bool = True,
         delivery_enabled: bool = False,
         webhook_configured: bool = False,
@@ -332,6 +337,11 @@ class VideoIngestService:
         self.analyzer_factory = analyzer_factory
         self.detector_config = detector_config or DetectorConfig()
         self.graph_writer = graph_writer
+        self.archive = archive
+        self.embedder = embedder
+        self.evidence_enricher = evidence_enricher
+        self.escalation_scheduler = escalation_scheduler
+        self.alert_ack_minutes = alert_ack_minutes
         self.fixture_mode = fixture_mode
         self.delivery_enabled = delivery_enabled
         self.webhook_configured = webhook_configured
@@ -458,6 +468,11 @@ class VideoIngestService:
             analyzer=analyzer,
             store=self.store,
             graph_writer=self.graph_writer,
+            archive=self.archive,
+            embedder=self.embedder,
+            evidence_enricher=self.evidence_enricher,
+            escalation_scheduler=self.escalation_scheduler,
+            alert_ack_minutes=self.alert_ack_minutes,
             now=self.now,
         )
         outcome = workflow.run(
@@ -476,6 +491,7 @@ class VideoIngestService:
                 content_sha256=_file_fingerprint(source),
                 source_offset_seconds=offset,
                 local_video_path=analyzable,
+                archive_video_path=piece,
                 shift_mode=request.shift_mode,
                 baseline_state=_baseline_state(self.store, request.animal_id),
                 fixture_mode=self.fixture_mode,

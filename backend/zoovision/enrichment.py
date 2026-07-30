@@ -5,6 +5,8 @@ from typing import Any
 
 from openai import OpenAI
 from pydantic import BaseModel, ConfigDict, Field
+from strands import Agent
+from strands.models.openai_responses import OpenAIResponsesModel
 
 ENRICHMENT_INSTRUCTIONS = """
 You phrase evidence for an animal-welfare support record. Use only the supplied
@@ -121,4 +123,83 @@ class OpenAIMorningReportWriter:
         actual = {animal.animal_id for animal in narrative.animals}
         if actual != expected or len(narrative.animals) != len(request.animals):
             raise ValueError("OpenAI morning narrative did not include each animal exactly once")
+        return narrative
+
+
+class StrandsEvidenceEnricher:
+    """Run the constrained evidence phrasing call through a Strands Agent."""
+
+    def __init__(
+        self,
+        api_key: str,
+        *,
+        model: str,
+        model_provider: Any | None = None,
+    ):
+        self.model = model
+        self.model_provider = model_provider or OpenAIResponsesModel(
+            model_id=model,
+            client_args={"api_key": api_key},
+            stateful=False,
+            params={"store": False, "reasoning": {"effort": "low"}, "max_output_tokens": 500},
+        )
+
+    def merge(self, request: EvidenceMergeRequest) -> EvidenceNarrative:
+        agent = Agent(
+            name="evidence_phrase_agent",
+            description="Phrases validated animal-welfare evidence without assigning severity.",
+            model=self.model_provider,
+            system_prompt=ENRICHMENT_INSTRUCTIONS,
+            callback_handler=None,
+        )
+        result = agent(
+            json.dumps(request.model_dump(mode="json")),
+            structured_output_model=EvidenceNarrative,
+        )
+        narrative = EvidenceNarrative.model_validate(result.structured_output)
+        allowed = {source.source_id for source in request.sources}
+        cited = set(narrative.cited_source_ids)
+        if not cited.issubset(allowed) or not cited:
+            raise ValueError("Strands narrative cited an unknown evidence source")
+        return narrative
+
+
+class StrandsMorningReportWriter:
+    """Run the all-animal morning handoff through a Strands Agent."""
+
+    def __init__(
+        self,
+        api_key: str,
+        *,
+        model: str,
+        model_provider: Any | None = None,
+    ):
+        self.model = model
+        self.model_provider = model_provider or OpenAIResponsesModel(
+            model_id=model,
+            client_args={"api_key": api_key},
+            stateful=False,
+            params={"store": False, "reasoning": {"effort": "low"}, "max_output_tokens": 1200},
+        )
+
+    def write(self, request: MorningReportRequest) -> MorningNarrative:
+        agent = Agent(
+            name="morning_report_agent",
+            description="Phrases a complete factual keeper handoff.",
+            model=self.model_provider,
+            system_prompt=(
+                ENRICHMENT_INSTRUCTIONS
+                + "\nInclude every supplied animal, including animals with no notable events."
+            ),
+            callback_handler=None,
+        )
+        result = agent(
+            json.dumps(request.model_dump(mode="json")),
+            structured_output_model=MorningNarrative,
+        )
+        narrative = MorningNarrative.model_validate(result.structured_output)
+        expected = {animal.animal_id for animal in request.animals}
+        actual = {animal.animal_id for animal in narrative.animals}
+        if actual != expected or len(narrative.animals) != len(request.animals):
+            raise ValueError("Strands morning narrative did not include each animal exactly once")
         return narrative

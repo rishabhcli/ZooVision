@@ -1,5 +1,5 @@
 import vinext from "vinext";
-import { defineConfig } from "vite";
+import { defineConfig, loadEnv } from "vite";
 import hostingConfig from "./.openai/hosting.json";
 import { sites } from "./build/sites-vite-plugin";
 
@@ -33,7 +33,13 @@ const localBindingConfig = {
     : [],
 };
 
-export default defineConfig(async () => {
+export default defineConfig(async ({ mode }) => {
+  const environment = loadEnv(mode, ".", "");
+  const proxySecret = environment.ZOOVISION_PROXY_SHARED_SECRET;
+  const trustedProxyHeaders = proxySecret
+    ? { "x-zoovision-proxy-secret": proxySecret }
+    : undefined;
+
   // Keep Wrangler and Miniflare state project-local. These are non-secret tool
   // settings; application environment belongs in ignored `.env*` files.
   process.env.WRANGLER_WRITE_LOGS ??= "false";
@@ -52,10 +58,12 @@ export default defineConfig(async () => {
         "/api": {
           target: process.env.ZOOVISION_API_ORIGIN ?? "http://127.0.0.1:8000",
           changeOrigin: true,
+          headers: trustedProxyHeaders,
         },
         "/media": {
           target: process.env.ZOOVISION_API_ORIGIN ?? "http://127.0.0.1:8000",
           changeOrigin: true,
+          headers: trustedProxyHeaders,
         },
       },
     },

@@ -11,7 +11,7 @@ import {
   ChevronRight,
   Clock3,
   Eye,
-  Gauge,
+  Footprints,
   Maximize2,
   Moon,
   Pause,
@@ -21,6 +21,7 @@ import {
   SkipBack,
   SkipForward,
   Sparkles,
+  Route,
   Video,
 } from "lucide-react";
 import { motion, useReducedMotion } from "motion/react";
@@ -57,6 +58,12 @@ function formatBehavior(value?: string | null) {
     .split("_")
     .map((word) => `${word.charAt(0).toUpperCase()}${word.slice(1)}`)
     .join(" ");
+}
+
+function trackRole(index: number) {
+  if (index === 0) return "Primary subject";
+  if (index === 1) return "Companion subject";
+  return `Context track ${String(index - 1).padStart(2, "0")}`;
 }
 
 function formatDuration(seconds: number) {
@@ -351,6 +358,10 @@ export function MonitorWorkspace() {
   const [track, setTrack] = useState<VideoTrack | null>(null);
   const [trackVisibility, setTrackVisibility] = useState<Record<string, boolean>>({});
   const [videos, setVideos] = useState<VideoSource[]>([]);
+  const pendingSeekRef = useRef<{
+    sourcePath: string;
+    seconds: number;
+  } | null>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
   const videoStageRef = useRef<HTMLDivElement>(null);
   const selectedCamera = videos[cameraIndex];
@@ -362,47 +373,69 @@ export function MonitorWorkspace() {
   const usesYolo = localizedDetections.some(
     (detection) => detection.source === "yolov8_object",
   );
-
-  const trackIds = useMemo(
-    () => [...new Set(localizedDetections.map((item) => item.track_id))],
-    [localizedDetections],
+  const usesTwelveLabs = Boolean(
+    track?.observations.some((observation) => observation.provider === "twelvelabs"),
   );
-  const trackLabels = useMemo(
-    () => {
-      const firstByTrack = new Map<string, VideoDetection>();
-      for (const detection of localizedDetections) {
-        if (!firstByTrack.has(detection.track_id)) {
-          firstByTrack.set(detection.track_id, detection);
-        }
-      }
-      return new Map(
-        trackIds.map((trackId, index) => {
-          const detection = firstByTrack.get(trackId);
-          const label =
-            detection?.source === "yolov8_object"
-              ? `Animal candidate ${String(index + 1).padStart(2, "0")}`
-              : `Motion ${String(index + 1).padStart(2, "0")}`;
-          return [trackId, label];
-        }),
+
+  const trackIds = useMemo(() => {
+    const stats = new Map<
+      string,
+      { samples: number; score: number; largestArea: number }
+    >();
+    for (const detection of localizedDetections) {
+      const current = stats.get(detection.track_id) ?? {
+        samples: 0,
+        score: 0,
+        largestArea: 0,
+      };
+      current.samples += 1;
+      current.score += detection.score;
+      current.largestArea = Math.max(
+        current.largestArea,
+        detection.box.width * detection.box.height,
       );
-    },
-    [localizedDetections, trackIds],
+      stats.set(detection.track_id, current);
+    }
+    return [...stats.entries()]
+      .sort(([, left], [, right]) => {
+        const persistence = right.samples - left.samples;
+        if (persistence !== 0) return persistence;
+        const prominence = right.largestArea - left.largestArea;
+        if (prominence !== 0) return prominence;
+        return right.score - left.score;
+      })
+      .map(([trackId]) => trackId);
+  }, [localizedDetections]);
+  const trackLabels = useMemo(
+    () =>
+      new Map(
+        trackIds.map((trackId, index) => [
+          trackId,
+          usesYolo ? trackRole(index) : `Motion ${String(index + 1).padStart(2, "0")}`,
+        ]),
+      ),
+    [trackIds, usesYolo],
   );
   const activeDetections = useMemo(() => {
-    const nearest = new Map<string, VideoDetection>();
-    for (const detection of localizedDetections) {
-      if (trackVisibility[detection.track_id] === false) continue;
-      const distance = Math.abs(detection.video_seconds - currentSeconds);
-      if (distance > 1.25) continue;
-      const previous = nearest.get(detection.track_id);
-      if (
-        !previous ||
-        distance < Math.abs(previous.video_seconds - currentSeconds)
-      ) {
-        nearest.set(detection.track_id, detection);
-      }
-    }
-    return [...nearest.values()];
+    const visible = localizedDetections.filter(
+      (detection) => trackVisibility[detection.track_id] !== false,
+    );
+    const nearestTimestamp = visible.reduce<number | null>((nearest, detection) => {
+      if (Math.abs(detection.video_seconds - currentSeconds) > 1.25) return nearest;
+      if (nearest == null) return detection.video_seconds;
+      return Math.abs(detection.video_seconds - currentSeconds) <
+        Math.abs(nearest - currentSeconds)
+        ? detection.video_seconds
+        : nearest;
+    }, null);
+    if (nearestTimestamp == null) return [];
+    return visible
+      .filter(
+        (detection) =>
+          Math.abs(detection.video_seconds - nearestTimestamp) < 0.001,
+      )
+      .sort((left, right) => right.score - left.score)
+      .slice(0, 4);
   }, [currentSeconds, localizedDetections, trackVisibility]);
   const selectedEvent = useMemo(() => {
     if (!track) return null;
@@ -453,6 +486,57 @@ export function MonitorWorkspace() {
         ),
       );
   }, []);
+
+  useEffect(() => {
+    function openMoment(event: Event) {
+      const detail = (event as CustomEvent).detail as
+        | { sourcePath?: string; seconds?: number }
+        | undefined;
+      if (
+        !detail?.sourcePath ||
+        typeof detail.seconds !== "number" ||
+        !Number.isFinite(detail.seconds)
+      ) {
+        return;
+      }
+      const targetIndex = videos.findIndex(
+        (video) => video.source_path === detail.sourcePath,
+      );
+      if (targetIndex < 0) return;
+      sessionStorage.removeItem("zoovision:pending-moment");
+      if (targetIndex === cameraIndex) {
+        const video = videoRef.current;
+        const duration =
+          video && Number.isFinite(video.duration) && video.duration > 0
+            ? video.duration
+            : durationSeconds;
+        const next = clamp(detail.seconds, 0, duration);
+        if (video) video.currentTime = next;
+        setProgress((next / duration) * 100);
+        return;
+      }
+      pendingSeekRef.current = {
+        sourcePath: detail.sourcePath,
+        seconds: detail.seconds,
+      };
+      setCameraIndex(targetIndex);
+    }
+
+    window.addEventListener("zoovision:seek-moment", openMoment);
+    const stored = sessionStorage.getItem("zoovision:pending-moment");
+    if (stored) {
+      try {
+        openMoment(
+          new CustomEvent("zoovision:seek-moment", {
+            detail: JSON.parse(stored),
+          }),
+        );
+      } catch {
+        sessionStorage.removeItem("zoovision:pending-moment");
+      }
+    }
+    return () => window.removeEventListener("zoovision:seek-moment", openMoment);
+  }, [cameraIndex, durationSeconds, videos]);
 
   useEffect(() => {
     if (!selectedCamera) return;
@@ -591,6 +675,11 @@ export function MonitorWorkspace() {
   const isFixtureEvidence =
     selectedObservation?.provider === "fixture" ||
     selectedObservation?.evidence_kind === "synthetic_scenario";
+  const currentActivity =
+    selectedObservation?.activity_label ??
+    (selectedObservation?.behavior && selectedObservation.behavior !== "other"
+      ? formatBehavior(selectedObservation.behavior)
+      : "No activity annotation");
   const currentEventActive =
     selectedEvent != null &&
     currentSeconds >= selectedEvent.start_seconds &&
@@ -610,6 +699,8 @@ export function MonitorWorkspace() {
               {selectedCamera.enclosure_id}
               <span>·</span>
               {selectedCamera.animal_names.join(", ") || "Animal not assigned"}
+              <span>·</span>
+              {selectedCamera.animal_species.join(", ") || "Species not assigned"}
             </p>
           </div>
         </div>
@@ -619,12 +710,12 @@ export function MonitorWorkspace() {
             <dd>{formatDate(selectedCamera.first_start_ts)}</dd>
           </div>
           <div>
-            <dt>{usesYolo ? "YOLO boxes" : "Motion regions"}</dt>
-            <dd>{localizedDetections.length}</dd>
+            <dt>{usesYolo ? "Spatial tracks" : "Motion regions"}</dt>
+            <dd>{trackIds.length}</dd>
           </div>
           <div>
-            <dt>Rule events</dt>
-            <dd>{selectedCamera.event_count}</dd>
+            <dt>Tracked moments</dt>
+            <dd>{selectedCamera.observation_count}</dd>
           </div>
           <div className="review-mode">
             <dt>Delivery</dt>
@@ -671,11 +762,17 @@ export function MonitorWorkspace() {
                     Number.isFinite(video.duration) && video.duration > 0
                       ? video.duration
                       : maximumTrackSeconds(track);
+                  const pending = pendingSeekRef.current;
                   const initial = clamp(
-                    initialEvidenceSeconds(track),
+                    pending?.sourcePath === selectedCamera.source_path
+                      ? pending.seconds
+                      : initialEvidenceSeconds(track),
                     0,
                     duration,
                   );
+                  if (pending?.sourcePath === selectedCamera.source_path) {
+                    pendingSeekRef.current = null;
+                  }
                   video.playbackRate = playbackRate;
                   video.currentTime = initial;
                   setDurationSeconds(duration);
@@ -706,7 +803,11 @@ export function MonitorWorkspace() {
                 </span>
                 <span className="evidence-mode-badge">
                   <ScanLine size={12} />
-                  {usesYolo ? "YOLOv8n" : "Motion fallback"}
+                  {usesTwelveLabs
+                    ? "TwelveLabs analyzed"
+                    : usesYolo
+                      ? "YOLOv8n"
+                      : "Motion fallback"}
                 </span>
               </div>
 
@@ -749,24 +850,14 @@ export function MonitorWorkspace() {
                   )}
                   {currentEventActive
                     ? `${selectedEvent?.severity} · ${formatBehavior(selectedEvent?.behavior)}`
-                    : activeDetections.length > 0
-                      ? usesYolo
-                        ? `${activeDetections.length} YOLO animal ${
-                            activeDetections.length === 1
-                              ? "candidate"
-                              : "candidates"
-                          }`
-                        : `${activeDetections.length} measured motion ${
-                            activeDetections.length === 1 ? "region" : "regions"
-                          }`
-                      : usesYolo
-                        ? "No YOLO animal candidate at this instant"
-                        : "No motion region at this instant"}
+                    : `Observed activity · ${currentActivity}`}
                 </span>
                 <span>
-                  {usesYolo
-                    ? "Model class candidate · human verification required"
-                    : "Motion only · no identity or diagnosis inferred"}
+                  {isFixtureEvidence
+                    ? "Demo annotation · spatial tracks shown separately"
+                    : usesYolo
+                      ? `${activeDetections.length} localized at playhead · verify identity`
+                      : "Motion only · no identity or diagnosis inferred"}
                 </span>
               </div>
             </div>
@@ -896,6 +987,21 @@ export function MonitorWorkspace() {
               </span>
             </header>
 
+            <div className="activity-summary">
+              <span className="activity-summary-icon">
+                <Footprints size={18} />
+              </span>
+              <div>
+                <span>Observed activity</span>
+                <strong>{currentActivity}</strong>
+                <p>
+                  {isFixtureEvidence
+                    ? "Demo annotation, kept separate from localization and severity."
+                    : "Structured observation nearest to the playhead."}
+                </p>
+              </div>
+            </div>
+
             <div
               className={`event-summary severity-${
                 selectedEvent?.severity.toLowerCase() ?? "none"
@@ -925,6 +1031,25 @@ export function MonitorWorkspace() {
               </div>
             </div>
 
+            <div className="response-summary" data-triggered={selectedEvent?.action != null}>
+              <span className="response-summary-icon">
+                {selectedEvent?.action ? <Route size={18} /> : <ShieldCheck size={18} />}
+              </span>
+              <div>
+                <span>Keeper response</span>
+                <strong>
+                  {selectedEvent?.action
+                    ? formatBehavior(selectedEvent.action)
+                    : "No response triggered"}
+                </strong>
+                <p>
+                  {selectedEvent?.action
+                    ? `Deterministic rule ${selectedEvent.rule_fired} selected this constrained response.`
+                    : "Continue routine review; no deterministic welfare rule fired."}
+                </p>
+              </div>
+            </div>
+
             <dl className="evidence-facts">
               <div>
                 <dt>Animal</dt>
@@ -933,6 +1058,10 @@ export function MonitorWorkspace() {
               <div>
                 <dt>Rule fired</dt>
                 <dd>{selectedEvent?.rule_fired ?? "None"}</dd>
+              </div>
+              <div>
+                <dt>Response</dt>
+                <dd>{selectedEvent?.action ? formatBehavior(selectedEvent.action) : "None"}</dd>
               </div>
               <div>
                 <dt>Evidence window</dt>
@@ -961,9 +1090,9 @@ export function MonitorWorkspace() {
             <div className="observation-note">
               <span>
                 <Eye size={14} />
-                Nearest observation
+                Observation detail
               </span>
-              <strong>{formatBehavior(selectedObservation?.behavior)}</strong>
+              <strong>{currentActivity}</strong>
               <p>
                 {selectedObservation?.evidence ??
                   "No observation was recorded near this point."}
@@ -987,7 +1116,7 @@ export function MonitorWorkspace() {
               <div>
                 <span>Overlay controls</span>
                 <strong>
-                  {usesYolo ? "YOLOv8 candidates" : "Measured motion"}
+                  {usesYolo ? "Spatial subject tracks" : "Measured motion"}
                 </strong>
               </div>
               <button
@@ -1033,12 +1162,12 @@ export function MonitorWorkspace() {
                       <small>
                         {active
                           ? usesYolo
-                            ? `${formatBehavior(activeDetection?.label)} class · ${Math.round(
+                            ? `Localized object · ${Math.round(
                                 (activeDetection?.score ?? 0) * 100,
                               )}%`
                             : "Visible at playhead"
                           : usesYolo
-                            ? "YOLOv8n · model candidate"
+                            ? "Tracked spatial region"
                             : trackId.slice(-8)}
                       </small>
                     </span>
@@ -1130,16 +1259,19 @@ export function MonitorWorkspace() {
                 <span className="camera-card-copy">
                   <span>
                     <strong>{cameraSource.camera_id}</strong>
-                    <small>{cameraSource.enclosure_id}</small>
+                    <small>
+                      {cameraSource.enclosure_id} ·{" "}
+                      {cameraSource.animal_species.join(", ") || "Unassigned species"}
+                    </small>
                   </span>
                   <span className="camera-card-metrics">
                     <span>
-                      <Gauge size={13} />
-                      {cameraSource.detection_count} localized boxes
+                      <Footprints size={13} />
+                      {cameraSource.animal_names.join(", ") || "Unassigned"}
                     </span>
                     <span>
-                      <AlertTriangle size={13} />
-                      {cameraSource.event_count} events
+                      <Eye size={13} />
+                      {cameraSource.observation_count} moments
                     </span>
                     <span>
                       <Clock3 size={13} />

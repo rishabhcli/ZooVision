@@ -14,6 +14,7 @@ import {
   Moon,
   Network,
   Paperclip,
+  Play,
   Send,
   Settings,
   ShieldCheck,
@@ -27,7 +28,7 @@ import {
   useRef,
   useState,
 } from "react";
-import { api } from "../lib/api";
+import { api, type ChatMoment } from "../lib/api";
 
 type WorkspaceShellProps = {
   children: ReactNode;
@@ -40,6 +41,7 @@ type ChatMessage = {
   role: "user" | "assistant";
   body: string;
   citations?: string[];
+  moments?: ChatMoment[];
   time?: string;
 };
 
@@ -152,6 +154,7 @@ export function WorkspaceShell({
             role: "assistant",
             body: reply.answer,
             citations: reply.cited_ids,
+            moments: reply.moments,
           },
         ],
       }));
@@ -275,6 +278,40 @@ export function WorkspaceShell({
                           {message.citations.map((citation) => (
                             <button type="button" key={citation}>
                               {citation}
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                      {message.moments && message.moments.length > 0 && (
+                        <div className="chat-moment-row">
+                          {message.moments.map((moment) => (
+                            <button
+                              type="button"
+                              key={moment.observation_id}
+                              title={`Open ${moment.camera_id} at ${moment.start_seconds.toFixed(1)} seconds`}
+                              onClick={() => {
+                                const detail = {
+                                  sourcePath: moment.source_path,
+                                  seconds: moment.start_seconds,
+                                };
+                                sessionStorage.setItem(
+                                  "zoovision:pending-moment",
+                                  JSON.stringify(detail),
+                                );
+                                if (pathname !== "/monitor") {
+                                  router.push("/monitor");
+                                  return;
+                                }
+                                window.dispatchEvent(
+                                  new CustomEvent("zoovision:seek-moment", {
+                                    detail,
+                                  }),
+                                );
+                              }}
+                            >
+                              <Play size={12} fill="currentColor" />
+                              <span>{moment.label}</span>
+                              <small>{moment.camera_id}</small>
                             </button>
                           ))}
                         </div>

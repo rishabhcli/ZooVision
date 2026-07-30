@@ -6,18 +6,28 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Literal
 
+import boto3
 from fastapi import FastAPI, File, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
+from .aws_storage import S3Archive, S3BucketSet
+from .bedrock import BedrockMarengoEmbedder
 from .chat import ChatReply, ChatRequest, GroundedChat
 from .demo import seed_demo
+from .enrichment import (
+    MorningAnimalFacts,
+    MorningReportRequest,
+    StrandsEvidenceEnricher,
+    StrandsMorningReportWriter,
+)
 from .graph import Neo4jGraphReader, Neo4jGraphWriter
 from .graphview import GraphView, build_graph_view
 from .ids import stable_id
 from .ingest import IngestJob, IngestRequest, VideoIngestService
+from .scheduler import EventBridgeEscalationScheduler
 from .settings import Settings, get_settings
 from .store import SQLiteStore
 
@@ -101,6 +111,10 @@ def build_ingest_service(
     store: SQLiteStore,
     raw_root: Path,
     graph_writer: Neo4jGraphWriter | None = None,
+    archive: S3Archive | None = None,
+    embedder: BedrockMarengoEmbedder | None = None,
+    evidence_enricher: StrandsEvidenceEnricher | None = None,
+    escalation_scheduler: EventBridgeEscalationScheduler | None = None,
 ) -> VideoIngestService:
     def analyzer_factory():
         from .providers import TwelveLabsAnalyzer
@@ -119,6 +133,11 @@ def build_ingest_service(
         delivery_enabled=settings.alert_delivery_enabled,
         webhook_configured=bool(settings.slack_webhook_url),
         graph_writer=graph_writer,
+        archive=archive,
+        embedder=embedder,
+        evidence_enricher=evidence_enricher,
+        escalation_scheduler=escalation_scheduler,
+        alert_ack_minutes=settings.alert_ack_minutes,
     )
 
 
@@ -142,11 +161,79 @@ def build_graph_writer(settings: Settings) -> Neo4jGraphWriter | None:
     )
 
 
+def _aws_session(settings: Settings, *, bedrock: bool = False) -> boto3.Session:
+    kwargs = settings.bedrock_session_kwargs if bedrock else settings.aws_session_kwargs
+    return boto3.Session(**kwargs)
+
+
+def build_archive(settings: Settings) -> S3Archive | None:
+    if not settings.aws_storage_enabled or not settings.aws_storage_configured:
+        return None
+    client = _aws_session(settings).client("s3")
+    return S3Archive(
+        S3BucketSet(
+            raw=settings.s3_raw_bucket,
+            analysis=settings.s3_analysis_bucket,
+            clips=settings.s3_clips_bucket,
+        ),
+        region=settings.aws_region,
+        client=client,
+    )
+
+
+def build_embedder(settings: Settings) -> BedrockMarengoEmbedder | None:
+    if not settings.bedrock_embedding_enabled:
+        return None
+    client = _aws_session(settings, bedrock=True).client("bedrock-runtime")
+    return BedrockMarengoEmbedder(
+        model_id=settings.bedrock_marengo_model,
+        region=settings.aws_region,
+        client=client,
+    )
+
+
+def build_evidence_enricher(settings: Settings) -> StrandsEvidenceEnricher | None:
+    if not settings.openai_enrichment_enabled or not settings.openai_api_key:
+        return None
+    return StrandsEvidenceEnricher(
+        settings.openai_api_key,
+        model=settings.openai_merge_model,
+    )
+
+
+def build_report_writer(settings: Settings) -> StrandsMorningReportWriter | None:
+    if not settings.openai_enrichment_enabled or not settings.openai_api_key:
+        return None
+    return StrandsMorningReportWriter(
+        settings.openai_api_key,
+        model=settings.openai_report_model,
+    )
+
+
+def build_escalation_scheduler(
+    settings: Settings,
+) -> EventBridgeEscalationScheduler | None:
+    if not settings.eventbridge_scheduler_configured:
+        return None
+    return EventBridgeEscalationScheduler(
+        target_arn=settings.eventbridge_scheduler_target_arn,
+        role_arn=settings.eventbridge_scheduler_role_arn,
+        group_name=settings.eventbridge_scheduler_group,
+        region=settings.aws_region,
+        client=_aws_session(settings).client("scheduler"),
+    )
+
+
 def create_app(
     settings: Settings | None = None,
     store: SQLiteStore | None = None,
     graph_reader: Neo4jGraphReader | None = None,
     graph_writer: Neo4jGraphWriter | None = None,
+    archive: S3Archive | None = None,
+    embedder: BedrockMarengoEmbedder | None = None,
+    evidence_enricher: StrandsEvidenceEnricher | None = None,
+    report_writer: StrandsMorningReportWriter | None = None,
+    escalation_scheduler: EventBridgeEscalationScheduler | None = None,
 ) -> FastAPI:
     if settings is None or store is None:
         settings, store = _services()
@@ -190,7 +277,21 @@ def create_app(
     chat_service = build_chat_service(settings, store)
     graph_reader = graph_reader or build_graph_reader(settings)
     graph_writer = graph_writer or build_graph_writer(settings)
-    ingest_service = build_ingest_service(settings, store, raw_root, graph_writer)
+    archive = archive or build_archive(settings)
+    embedder = embedder or build_embedder(settings)
+    evidence_enricher = evidence_enricher or build_evidence_enricher(settings)
+    report_writer = report_writer or build_report_writer(settings)
+    escalation_scheduler = escalation_scheduler or build_escalation_scheduler(settings)
+    ingest_service = build_ingest_service(
+        settings,
+        store,
+        raw_root,
+        graph_writer,
+        archive,
+        embedder,
+        evidence_enricher,
+        escalation_scheduler,
+    )
     if graph_reader is not None:
         app.router.add_event_handler("shutdown", graph_reader.close)
     if graph_writer is not None:
@@ -223,6 +324,18 @@ def create_app(
             "aws_storage": _integration_state(
                 configured=settings.aws_storage_configured,
                 enabled=settings.aws_storage_enabled,
+            ),
+            "bedrock_marengo": _integration_state(
+                configured=bool(embedder),
+                enabled=settings.bedrock_embedding_enabled,
+            ),
+            "eventbridge_scheduler": _integration_state(
+                configured=settings.eventbridge_scheduler_configured,
+                enabled=settings.alert_delivery_enabled,
+            ),
+            "agentcore": _integration_state(
+                configured=bool(settings.agentcore_runtime_arn),
+                enabled=bool(settings.agentcore_runtime_arn),
             ),
             "neo4j": _neo4j_integration_state(
                 graph_reader,
@@ -308,6 +421,9 @@ def create_app(
             source["media_url"] = f"/media/{source['source_path']}"
             source["animal_names"] = sorted(
                 set(filter(None, (source.get("animal_names") or "").split(",")))
+            )
+            source["animal_species"] = sorted(
+                set(filter(None, (source.get("animal_species") or "").split(",")))
             )
         return {"videos": sources}
 
@@ -398,6 +514,7 @@ def create_app(
 
     @app.post("/api/alerts/{alert_id}/ack")
     def acknowledge(alert_id: str, payload: AckRequest) -> dict:
+        schedule_name = store.alert_schedule_name(alert_id)
         changed = store.acknowledge_alert(
             alert_id,
             keeper=payload.keeper,
@@ -405,7 +522,18 @@ def create_app(
         )
         if not changed:
             raise HTTPException(status_code=409, detail="alert is not pending")
-        return {"status": "acknowledged", "alert_id": alert_id}
+        schedule_status = "not_scheduled"
+        if schedule_name and escalation_scheduler is not None:
+            try:
+                escalation_scheduler.cancel(schedule_name)
+                schedule_status = "cancelled"
+            except Exception:  # noqa: BLE001 - acknowledgement remains durable
+                schedule_status = "cancel_failed"
+        return {
+            "status": "acknowledged",
+            "alert_id": alert_id,
+            "escalation_schedule": schedule_status,
+        }
 
     @app.post("/api/events/{event_id}/outcomes")
     def outcome(event_id: str, payload: OutcomeRequest) -> dict:
@@ -454,7 +582,38 @@ def create_app(
 
     @app.get("/api/morning-report")
     def morning_report() -> dict:
-        return store.morning_report()
+        report = store.morning_report()
+        if report_writer is None:
+            return {**report, "narrative": None, "narrative_mode": "not_configured"}
+        request = MorningReportRequest(
+            shift_label=datetime.now(settings.timezone).date().isoformat(),
+            animals=[
+                MorningAnimalFacts(
+                    animal_id=animal["animal_id"],
+                    animal_name=animal["name"],
+                    event_facts=[
+                        (
+                            f"{event['behavior']} from {event['start_ts']} to {event['end_ts']}; "
+                            f"rule {event['rule_fired']}"
+                        )
+                        for event in animal["events"]
+                    ],
+                    data_gap_facts=[
+                        f"{gap['reason']} from {gap['start_ts']} to {gap['end_ts']}"
+                        for gap in report["data_gaps"]
+                        if gap["enclosure_id"] == animal["enclosure_id"]
+                    ],
+                    no_notable_events=not animal["events"],
+                )
+                for animal in report["animals"]
+            ],
+        )
+        narrative = report_writer.write(request)
+        return {
+            **report,
+            "narrative": narrative.model_dump(mode="json"),
+            "narrative_mode": "strands_openai",
+        }
 
     @app.post("/api/demo/reset")
     def reset_demo() -> dict:

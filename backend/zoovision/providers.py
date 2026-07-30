@@ -15,11 +15,25 @@ from .domain import Behavior, DataGap, EvidenceKind, Observation
 from .ids import observation_id, stable_id
 
 PROVIDER_PROMPT = """
-Observe only visible animal behavior in this video interval. Return timestamped
-observations that match the JSON schema. State uncertainty when identity or
-behavior is unclear. Do not assign severity, diagnose a condition, recommend
-treatment, infer intent, or claim an event when the visual evidence is absent.
-Timestamps must be seconds relative to the start of this supplied video.
+Create a dense, chronological activity log for the entire supplied enclosure
+video. Cover every interval in which an animal is visibly doing something
+meaningful, including routine activity such as walking, standing, resting,
+eating, drinking, grooming, foraging, playing, social interaction, entering or
+exiting the frame, and vocalizing when the audio clearly supports it. Also
+record the constrained welfare-relevant behaviors in the schema when they are
+visibly supported.
+
+Use one observation per continuous activity. Split an observation whenever the
+activity changes, and merge adjacent intervals only when the same activity
+clearly continues. Prefer the specific behavior enum. Use `other` only when a
+visible activity does not fit another enum, and then supply a short,
+keeper-readable `activity_label` describing exactly what is visible. Set
+`coverage_complete` to false if any part of the video could not be assessed.
+
+Return only facts supported by visible or audible evidence. State uncertainty
+when identity or behavior is unclear. Do not assign severity, diagnose a
+condition, recommend treatment, infer intent, or claim an event when evidence is
+absent. Timestamps must be seconds relative to the start of this supplied video.
 """.strip()
 
 
@@ -31,14 +45,8 @@ class ProviderObservation(BaseModel):
     relative_end_seconds: float = Field(gt=0)
     confidence: float = Field(ge=0, le=1)
     evidence: str = Field(min_length=1, max_length=1000)
+    activity_label: str | None = Field(default=None, min_length=1, max_length=160)
     provider_item_id: str | None = None
-
-    @model_validator(mode="after")
-    def validate_interval(self) -> ProviderObservation:
-        if self.relative_end_seconds <= self.relative_start_seconds:
-            raise ValueError("relative end must be after relative start")
-        return self
-
 
 class ProviderBatch(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -46,6 +54,24 @@ class ProviderBatch(BaseModel):
     observations: list[ProviderObservation]
     coverage_complete: bool
     uncertainty: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def discard_zero_length_markers(self) -> ProviderBatch:
+        invalid = [
+            item
+            for item in self.observations
+            if item.relative_end_seconds <= item.relative_start_seconds
+        ]
+        if invalid:
+            self.observations = [
+                item
+                for item in self.observations
+                if item.relative_end_seconds > item.relative_start_seconds
+            ]
+            self.uncertainty.append(
+                f"{len(invalid)} zero-length provider marker(s) were excluded."
+            )
+        return self
 
 
 class VideoChunkContext(BaseModel):
@@ -110,6 +136,7 @@ def normalize_batch(
                 provider_model=provider_model,
                 provider_item_id=item.provider_item_id,
                 evidence_kind=EvidenceKind.PROVIDER_STRUCTURED,
+                activity_label=item.activity_label,
             )
         )
     return normalized
@@ -148,7 +175,7 @@ class TwelveLabsAnalyzer:
                 "type": "json_schema",
                 "json_schema": provider_response_schema(),
             },
-            max_tokens=3000,
+            max_tokens=8000,
         )
         if getattr(response, "finish_reason", None) == "length":
             raise ValueError("provider response was truncated")

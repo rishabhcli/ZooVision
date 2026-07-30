@@ -5,7 +5,8 @@ from datetime import UTC, datetime
 from typing import Any
 
 import boto3
-from pydantic import BaseModel, ConfigDict, Field
+from botocore.exceptions import ClientError
+from pydantic import BaseModel, ConfigDict
 
 
 class ScheduledEscalation(BaseModel):
@@ -44,6 +45,7 @@ class EventBridgeEscalationScheduler:
         name = _schedule_name(alert_id)
         response = self.client.create_schedule(
             Name=name,
+            ClientToken=name,
             GroupName=self.group_name,
             Description=f"ZooVision acknowledgement check for {alert_id}",
             ScheduleExpression=f"at({utc_run_at.strftime('%Y-%m-%dT%H:%M:%S')})",
@@ -76,9 +78,15 @@ class EventBridgeEscalationScheduler:
         )
 
     def cancel(self, name: str) -> None:
-        self.client.delete_schedule(Name=name, GroupName=self.group_name)
+        try:
+            self.client.delete_schedule(Name=name, GroupName=self.group_name)
+        except ClientError as error:
+            if error.response.get("Error", {}).get("Code") != "ResourceNotFoundException":
+                raise
 
 
 def _schedule_name(alert_id: str) -> str:
-    normalized = "".join(character if character.isalnum() or character in "-_." else "-" for character in alert_id)
+    normalized = "".join(
+        character if character.isalnum() or character in "-_." else "-" for character in alert_id
+    )
     return f"zv-{normalized}"[:64]

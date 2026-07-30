@@ -8,7 +8,9 @@ from zoovision.domain import (
     Observation,
     ShiftMode,
 )
+from zoovision.enrichment import EvidenceNarrative
 from zoovision.providers import ProviderAnalysis, VideoChunkContext
+from zoovision.scheduler import ScheduledEscalation
 from zoovision.store import SQLiteStore
 from zoovision.workflow import SegmentWorkflow, SegmentWorkflowInput
 
@@ -28,12 +30,49 @@ class FakeGraphWriter:
     def __init__(self):
         self.bundles = []
         self.observation_bundles = []
+        self.embeddings = []
 
     def write_event(self, bundle):
         self.bundles.append(bundle)
 
     def write_observations(self, bundle):
         self.observation_bundles.append(bundle)
+
+    def write_clip_embedding(self, **payload):
+        self.embeddings.append(payload)
+
+
+class FakeEmbedder:
+    model_id = "marengo-test"
+
+    def embed_text(self, text):
+        assert "Repeated route" in text
+        return type("Vector", (), {"embedding": [0.1, 0.2]})()
+
+
+class FakeEnricher:
+    model = "openai-test"
+
+    def merge(self, request):
+        return EvidenceNarrative(
+            headline="Repeated boundary route observed",
+            factual_summary="The supplied clip evidence records a repeated boundary route.",
+            uncertainty=[],
+            cited_source_ids=[request.sources[0].source_id],
+        )
+
+
+class FakeScheduler:
+    def __init__(self):
+        self.requests = []
+
+    def schedule_alert(self, **request):
+        self.requests.append(request)
+        return ScheduledEscalation(
+            name="zv-alt-1",
+            arn="arn:aws:scheduler:::schedule/zv-alt-1",
+            run_at=request["run_at"],
+        )
 
 
 def request(*, mode=ShiftMode.NIGHT):
@@ -158,3 +197,33 @@ def test_provider_gap_routes_away_from_triage(tmp_path):
     assert [entry.node_id for entry in result.audit] == ["ingest", "data_gap"]
     assert store.dump_table("events") == []
     assert store.dump_table("video_chunks")[0]["status"] == "coverage_gap"
+
+
+def test_workflow_uses_bedrock_enrichment_and_scheduler_on_active_night(tmp_path):
+    store = initialized_store(tmp_path)
+    store.set_baseline_state("animal-1", "active")
+    graph_writer = FakeGraphWriter()
+    scheduler = FakeScheduler()
+    workflow = SegmentWorkflow(
+        analyzer=FakeAnalyzer(observation_analysis()),
+        store=store,
+        graph_writer=graph_writer,
+        embedder=FakeEmbedder(),
+        evidence_enricher=FakeEnricher(),
+        escalation_scheduler=scheduler,
+        now=lambda: datetime(2026, 7, 30, 3, tzinfo=UTC),
+    )
+    live_request = request()
+    live_request.fixture_mode = False
+    live_request.delivery_enabled = True
+    live_request.baseline_state = BaselineState.ACTIVE
+
+    result = workflow.run(live_request)
+
+    assert result.embedding_status == "complete"
+    assert result.enriched_event_ids == result.event_ids
+    assert len(result.scheduled_alert_ids) == 1
+    assert graph_writer.embeddings[0]["embedding"] == [0.1, 0.2]
+    assert store.dump_table("event_narratives")[0]["model"] == "openai-test"
+    assert store.dump_table("alerts")[0]["delivery_status"] == "scheduled"
+    assert scheduler.requests[0]["run_at"] == datetime(2026, 7, 30, 3, 20, tzinfo=UTC)

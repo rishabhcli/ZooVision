@@ -319,14 +319,10 @@ enablement, and an active human-reviewed baseline.
 
 ## Production deployment
 
-The production UI runs as a Sites worker and proxies `/api` and `/media` to the
-Python service. Two separate credentials protect that path:
-
-- `ZOOVISION_EDGE_AUTH_USERNAME` and `ZOOVISION_EDGE_AUTH_PASSWORD` challenge
-  every browser request at the edge.
-- `ZOOVISION_PROXY_SHARED_SECRET` is removed from incoming requests, injected by
-  the worker, and required by FastAPI for every API and media request except the
-  minimal health check.
+The production UI runs as a public Sites worker and proxies `/api` and `/media`
+to the Python service. `ZOOVISION_PROXY_SHARED_SECRET` is removed from incoming
+requests, injected by the worker, and required by FastAPI for every API and
+media request except the minimal health check.
 
 Store these values as managed deployment secrets. Do not put them in Git or DNS.
 The same proxy secret must be configured in Sites and in the API service.
@@ -345,9 +341,6 @@ point that hostname's DNS record to the backend host before starting Caddy.
 Configure Sites with:
 
 ```text
-ZOOVISION_EDGE_AUTH_ENABLED=true
-ZOOVISION_EDGE_AUTH_USERNAME=<managed value>
-ZOOVISION_EDGE_AUTH_PASSWORD=<managed secret>
 ZOOVISION_PROXY_SHARED_SECRET=<same managed secret as the API>
 ZOOVISION_API_ORIGIN=https://api.example.com
 ```

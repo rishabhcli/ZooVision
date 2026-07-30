@@ -191,6 +191,7 @@ def test_model_answer_is_returned_when_citations_are_valid(tmp_path: Path) -> No
                 answer="Nox paced for 12 minutes; rule R005_PACING_10M recorded MODERATE.",
                 cited_ids=["evt-1", "obs-1"],
                 uncertainty=[],
+                moment_ids=["obs-1"],
             )
         )
     )
@@ -201,6 +202,9 @@ def test_model_answer_is_returned_when_citations_are_valid(tmp_path: Path) -> No
     assert reply.mode == "openai"
     assert reply.model == "gpt-test"
     assert reply.cited_ids == ["evt-1", "obs-1"]
+    assert reply.moments[0].observation_id == "obs-1"
+    assert reply.moments[0].source_path == "fixtures/badger.mp4"
+    assert reply.moments[0].start_seconds == 0
     # The record must never be retained by the provider.
     assert client.responses.calls[0]["store"] is False
 

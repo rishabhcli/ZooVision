@@ -75,6 +75,7 @@ export type VideoSource = {
   observation_count: number;
   event_count: number;
   animal_names: string[];
+  animal_species: string[];
 };
 
 export type VideoDetection = {
@@ -118,6 +119,7 @@ export type VideoTrack = {
     evidence: string;
     provider: string;
     evidence_kind: string;
+    activity_label: string | null;
     start_seconds: number;
     end_seconds: number;
   }>;
@@ -138,6 +140,17 @@ export type ReadinessPayload = {
       write_enabled?: boolean;
     }
   >;
+};
+
+export type ChatMoment = {
+  observation_id: string;
+  source_path: string;
+  start_seconds: number;
+  end_seconds: number;
+  label: string;
+  camera_id: string;
+  enclosure_id: string;
+  animal_name: string;
 };
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -179,6 +192,7 @@ export const api = {
       uncertainty: string[];
       mode: string;
       context_record_count: number;
+      moments: ChatMoment[];
     }>("/api/chat", {
       method: "POST",
       body: JSON.stringify({

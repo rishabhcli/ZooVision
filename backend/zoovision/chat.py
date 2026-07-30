@@ -35,6 +35,8 @@ Ground every statement in the supplied context JSON. Rules you must follow:
 - Motion regions locate movement in the frame. They do not identify a species or
   a behavior. Do not describe them as either.
 - Cite the ids of the context records you used in cited_ids.
+- When the question asks where or when something happened, select up to five
+  relevant observation ids in moment_ids. Only select ids present in moments.
 - Be brief and factual. Keeper staff read these during a night shift.
 """.strip()
 
@@ -60,6 +62,20 @@ class ChatAnswer(BaseModel):
     answer: str = Field(min_length=1, max_length=1800)
     cited_ids: list[str]
     uncertainty: list[str]
+    moment_ids: list[str] = Field(default_factory=list, max_length=5)
+
+
+class ChatMoment(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    observation_id: str
+    source_path: str
+    start_seconds: float = Field(ge=0)
+    end_seconds: float = Field(ge=0)
+    label: str
+    camera_id: str
+    enclosure_id: str
+    animal_name: str
 
 
 class ChatReply(BaseModel):
@@ -71,6 +87,7 @@ class ChatReply(BaseModel):
     mode: str
     model: str | None = None
     context_record_count: int
+    moments: list[ChatMoment] = Field(default_factory=list)
 
 
 def build_context(
@@ -85,6 +102,10 @@ def build_context(
     animals = dashboard["animals"]
     events = dashboard["events"]
     gaps = dashboard["data_gaps"]
+    moments = store.searchable_moments(
+        enclosure_id=enclosure_id,
+        animal_id=animal_id,
+    )
 
     if enclosure_id:
         animals = [a for a in animals if a["enclosure_id"] == enclosure_id]
@@ -144,6 +165,7 @@ def build_context(
             for animal in animals
         ],
         "events": trimmed_events,
+        "moments": moments,
         "data_gaps": [
             {
                 "gap_id": gap["gap_id"],
@@ -172,6 +194,7 @@ def context_record_count(context: dict[str, Any]) -> int:
     return (
         len(context.get("animals", []))
         + len(context.get("events", []))
+        + len(context.get("moments", []))
         + len(context.get("data_gaps", []))
     )
 
@@ -209,6 +232,7 @@ class GroundedChat:
                     mode="openai",
                     model=self.model,
                     context_record_count=count,
+                    moments=_resolve_moments(context, answer.moment_ids),
                 )
             except Exception as error:  # noqa: BLE001 - degrade to the grounded summary
                 if not self.allow_fallback:
@@ -219,19 +243,25 @@ class GroundedChat:
                     "this answer was assembled directly from the shift record."
                 )
                 return ChatReply(
-                    **fallback.model_dump(),
+                    answer=fallback.answer,
+                    cited_ids=fallback.cited_ids,
+                    uncertainty=fallback.uncertainty,
                     mode="deterministic_fallback",
                     model=None,
                     context_record_count=count,
+                    moments=_resolve_moments(context, fallback.moment_ids),
                 )
         if not self.allow_fallback:
             raise RuntimeError("live OpenAI chat is not configured")
         answer = summarize(context, request.messages[-1].content)
         return ChatReply(
-            **answer.model_dump(),
+            answer=answer.answer,
+            cited_ids=answer.cited_ids,
+            uncertainty=answer.uncertainty,
             mode="deterministic",
             model=None,
             context_record_count=count,
+            moments=_resolve_moments(context, answer.moment_ids),
         )
 
     def _ask_model(self, request: ChatRequest, context: dict[str, Any]) -> ChatAnswer:
@@ -258,6 +288,10 @@ class GroundedChat:
         unknown = [cited for cited in answer.cited_ids if cited not in allowed]
         if unknown:
             raise ValueError(f"chat answer cited unknown records: {unknown[:3]}")
+        allowed_moments = {moment["observation_id"] for moment in context.get("moments", [])}
+        unknown_moments = [moment for moment in answer.moment_ids if moment not in allowed_moments]
+        if unknown_moments:
+            raise ValueError(f"chat answer selected unknown moments: {unknown_moments[:3]}")
         return answer
 
 
@@ -271,6 +305,7 @@ def summarize(context: dict[str, Any], question: str) -> ChatAnswer:
     events = context.get("events", [])
     animals = context.get("animals", [])
     gaps = context.get("data_gaps", [])
+    moments = context.get("moments", [])
     asked = question.lower()
 
     focus = [
@@ -279,6 +314,19 @@ def summarize(context: dict[str, Any], question: str) -> ChatAnswer:
         if event["animal_name"].lower() in asked or event["behavior"].replace("_", " ") in asked
     ]
     selected = focus or events
+    matching_moments = [
+        moment
+        for moment in moments
+        if any(
+            term and term in asked
+            for term in (
+                moment["animal_name"].lower(),
+                moment["behavior"].replace("_", " "),
+                (moment.get("activity_label") or "").lower(),
+            )
+        )
+    ]
+    selected_moments = matching_moments or moments
 
     if not animals:
         return ChatAnswer(
@@ -302,6 +350,16 @@ def summarize(context: dict[str, Any], question: str) -> ChatAnswer:
             cited.append(event["event_id"])
     else:
         lines.append("No deterministic welfare events are recorded for this view.")
+
+    if selected_moments:
+        lines.append(f"{len(selected_moments)} tracked footage moment(s) are available for review.")
+        for moment in selected_moments[:5]:
+            label = moment.get("activity_label") or moment["behavior"].replace("_", " ")
+            lines.append(
+                f"- {moment['animal_name']} on {moment['camera_id']}: {label} at "
+                f"{moment['start_seconds']:.1f}s. {moment['evidence']}"
+            )
+            cited.append(moment["observation_id"])
 
     quiet = [animal for animal in animals if animal["event_count"] == 0]
     if quiet:
@@ -327,6 +385,7 @@ def summarize(context: dict[str, Any], question: str) -> ChatAnswer:
         answer="\n".join(lines)[:1800],
         cited_ids=cited[:20],
         uncertainty=uncertainty,
+        moment_ids=[moment["observation_id"] for moment in selected_moments[:5]],
     )
 
 
@@ -337,6 +396,27 @@ def _citable_ids(context: dict[str, Any]) -> set[str]:
     for event in context.get("events", []):
         allowed.add(event["event_id"])
         allowed.update(source["observation_id"] for source in event.get("sources", []))
+    for moment in context.get("moments", []):
+        allowed.add(moment["observation_id"])
     for gap in context.get("data_gaps", []):
         allowed.add(gap["gap_id"])
     return allowed
+
+
+def _resolve_moments(context: dict[str, Any], moment_ids: list[str]) -> list[ChatMoment]:
+    requested = set(moment_ids)
+    return [
+        ChatMoment(
+            observation_id=moment["observation_id"],
+            source_path=moment["source_path"],
+            start_seconds=moment["start_seconds"],
+            end_seconds=moment["end_seconds"],
+            label=moment.get("activity_label")
+            or moment["behavior"].replace("_", " ").title(),
+            camera_id=moment["camera_id"],
+            enclosure_id=moment["enclosure_id"],
+            animal_name=moment["animal_name"],
+        )
+        for moment in context.get("moments", [])
+        if moment["observation_id"] in requested
+    ]

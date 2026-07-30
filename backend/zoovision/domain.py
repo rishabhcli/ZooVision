@@ -25,6 +25,15 @@ class Behavior(StrEnum):
     RESTING = "resting"
     EATING = "eating"
     GROOMING = "grooming"
+    WALKING = "walking"
+    STANDING = "standing"
+    RUNNING = "running"
+    FORAGING = "foraging"
+    PLAYING = "playing"
+    SOCIAL_INTERACTION = "social_interaction"
+    VOCALIZING = "vocalizing"
+    ENTERING_FRAME = "entering_frame"
+    EXITING_FRAME = "exiting_frame"
     OTHER = "other"
 
 
@@ -133,6 +142,7 @@ class Observation(BaseModel):
     provider_model: str
     provider_item_id: str | None = None
     evidence_kind: EvidenceKind = EvidenceKind.PROVIDER_STRUCTURED
+    activity_label: str | None = Field(default=None, min_length=1, max_length=160)
 
     @model_validator(mode="after")
     def validate_interval(self) -> Observation:

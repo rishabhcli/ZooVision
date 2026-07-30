@@ -132,9 +132,7 @@ def test_configured_proxy_secret_blocks_direct_api_and_media_access(tmp_path):
         _env_file=None,
     )
     store = SQLiteStore(tmp_path / "zoovision.db")
-    protected_client = TestClient(
-        create_app(settings, store, graph_reader=FakeGraphReader())
-    )
+    protected_client = TestClient(create_app(settings, store, graph_reader=FakeGraphReader()))
 
     assert protected_client.get("/api/health").status_code == 200
     response = protected_client.get("/api/dashboard")
@@ -161,7 +159,7 @@ def test_morning_report_includes_quiet_animals_and_gaps(client):
     report = client.get("/api/morning-report").json()
     assert report["summary"] == {
         "animals_monitored": 3,
-        "events": 2,
+        "events": 1,
         "data_gaps": 1,
     }
     assert any(animal["events"] == [] for animal in report["animals"])
@@ -236,6 +234,7 @@ def test_videos_endpoint_lists_analyzed_sources(client):
     assert source["media_url"].startswith("/media/")
     assert source["chunk_count"] >= 1
     assert isinstance(source["animal_names"], list)
+    assert isinstance(source["animal_species"], list)
 
 
 def test_video_track_places_events_on_the_media_timeline(client):
@@ -246,6 +245,8 @@ def test_video_track_places_events_on_the_media_timeline(client):
 
     assert body["source_path"] == source_path
     assert body["chunks"]
+    assert body["observations"]
+    assert all("activity_label" in observation for observation in body["observations"])
     for event in body["events"]:
         assert event["start_seconds"] >= 0
         assert event["end_seconds"] >= event["start_seconds"]
@@ -333,6 +334,8 @@ def test_production_ingest_cannot_disable_live_provider(tmp_path):
         NEO4J_USERNAME="test-user",
         NEO4J_PASSWORD="test-password",
         ZOOVISION_AWS_STORAGE_ENABLED=True,
+        ZOOVISION_BEDROCK_EMBEDDING_ENABLED=True,
+        ZOOVISION_OPENAI_ENRICHMENT_ENABLED=True,
         ZOOVISION_S3_RAW_BUCKET="raw",
         ZOOVISION_S3_ANALYSIS_BUCKET="analysis",
         ZOOVISION_S3_CLIPS_BUCKET="clips",
