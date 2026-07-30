@@ -45,6 +45,29 @@ type ChatMessage = {
   time?: string;
 };
 
+type AssistantContext = {
+  animalId: string | null;
+  animalName: string | null;
+  enclosureId: string | null;
+  cameraId: string | null;
+  sourcePath: string | null;
+};
+
+const emptyAssistantContext: AssistantContext = {
+  animalId: null,
+  animalName: null,
+  enclosureId: null,
+  cameraId: null,
+  sourcePath: null,
+};
+
+function citationLabel(citation: string, index: number) {
+  if (/^(obs|evt|event|gap|chk|alert)_/i.test(citation)) {
+    return `Verified evidence ${index + 1}`;
+  }
+  return citation;
+}
+
 const routeOptions = [
   { label: "Monitor", href: "/monitor", icon: Monitor },
   { label: "Node graph", href: "/graph", icon: Network },
@@ -108,6 +131,9 @@ export function WorkspaceShell({
   >({});
   const [draft, setDraft] = useState("");
   const [chatPending, setChatPending] = useState(false);
+  const [assistantContext, setAssistantContext] = useState<AssistantContext>(
+    emptyAssistantContext,
+  );
 
   useEffect(() => {
     function closeProfile(event: MouseEvent) {
@@ -117,6 +143,31 @@ export function WorkspaceShell({
     }
     document.addEventListener("mousedown", closeProfile);
     return () => document.removeEventListener("mousedown", closeProfile);
+  }, []);
+
+  useEffect(() => {
+    function updateAssistantContext(event: Event) {
+      const detail = (event as CustomEvent<AssistantContext>).detail;
+      if (detail) setAssistantContext(detail);
+    }
+
+    const stored = sessionStorage.getItem("zoovision:assistant-context");
+    if (stored) {
+      try {
+        setAssistantContext(JSON.parse(stored) as AssistantContext);
+      } catch {
+        sessionStorage.removeItem("zoovision:assistant-context");
+      }
+    }
+    window.addEventListener(
+      "zoovision:assistant-context",
+      updateAssistantContext,
+    );
+    return () =>
+      window.removeEventListener(
+        "zoovision:assistant-context",
+        updateAssistantContext,
+      );
   }, []);
 
   const messages =
@@ -148,10 +199,10 @@ export function WorkspaceShell({
         .filter((message) => !message.id.endsWith("-intro"))
         .map((message) => ({ role: message.role, content: message.body }))
         .slice(-11);
-      const reply = await api.chat([
-        ...history,
-        { role: "user" as const, content: value },
-      ]);
+      const reply = await api.chat(
+        [...history, { role: "user" as const, content: value }],
+        assistantContext,
+      );
       setMessagesByRoute((current) => ({
         ...current,
         [pathname]: [
@@ -160,7 +211,10 @@ export function WorkspaceShell({
             id: `assistant-${timestamp}`,
             role: "assistant",
             body: reply.answer,
-            citations: reply.cited_ids,
+            citations:
+              reply.citations?.length > 0
+                ? reply.citations.map((citation) => citation.label)
+                : reply.cited_ids,
             moments: reply.moments,
           },
         ],
@@ -283,9 +337,9 @@ export function WorkspaceShell({
                       <p className="message-copy">{message.body}</p>
                       {message.citations && (
                         <div className="citation-row">
-                          {message.citations.map((citation) => (
+                          {message.citations.map((citation, index) => (
                             <button type="button" key={citation}>
-                              {citation}
+                              {citationLabel(citation, index)}
                             </button>
                           ))}
                         </div>

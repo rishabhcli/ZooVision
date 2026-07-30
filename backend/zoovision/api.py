@@ -428,12 +428,10 @@ def create_app(
         sources = store.video_sources()
         for source in sources:
             source["media_url"] = f"/media/{source['source_path']}"
-            source["animal_names"] = sorted(
-                set(filter(None, (source.get("animal_names") or "").split(",")))
-            )
-            source["animal_species"] = sorted(
-                set(filter(None, (source.get("animal_species") or "").split(",")))
-            )
+            for field in ("animal_ids", "animal_names", "animal_species"):
+                source[field] = sorted(
+                    set(filter(None, (source.get(field) or "").split(",")))
+                )
         return {"videos": sources}
 
     @app.get("/api/videos/track")

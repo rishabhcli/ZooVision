@@ -40,12 +40,42 @@ type FeedItem = {
 };
 
 const TERMINAL_JOB_STATES = new Set(["complete", "failed"]);
+const RULE_LABELS: Record<string, string> = {
+  R001_FIGHTING: "Fighting observed",
+  R002_ESCAPE_ATTEMPT: "Escape attempt observed",
+  R003_VOMITING: "Vomiting observed",
+  R004_PACING_20M_NO_WATER_6H:
+    "Sustained pacing with no recent water visit",
+  R005_PACING_10M: "Sustained pacing",
+  R006_INACTIVITY_2SD: "Activity well below the daytime baseline",
+  R007_BASELINE_DELTA_2_5: "Large change from the daytime baseline",
+  R008_WATER_BOWL_TIPPED: "Water bowl appears tipped",
+};
 
 function titleCase(value: string | null | undefined) {
   if (!value) return "Not recorded";
   return value
     .replaceAll("_", " ")
     .replace(/\b\w/g, (letter) => letter.toUpperCase());
+}
+
+function readableRule(value: string | null | undefined) {
+  if (!value) return "No welfare rule fired";
+  if (RULE_LABELS[value]) return RULE_LABELS[value];
+  return titleCase(value.replace(/^rule[_-]?/i, ""));
+}
+
+function readableEvidenceSource(
+  provider: string,
+  evidenceKind: string | null | undefined,
+) {
+  const method =
+    provider.toLowerCase() === "twelvelabs"
+      ? "Video behavior analysis"
+      : provider.toLowerCase() === "fixture"
+        ? "Demonstration annotation"
+        : "Recorded video analysis";
+  return `${method} · ${titleCase(evidenceKind)}`;
 }
 
 function duration(value: number) {
@@ -147,18 +177,21 @@ export function AnalysisWorkspace() {
         end: observation.end_seconds,
         title: observation.activity_label || titleCase(observation.behavior),
         detail: observation.evidence,
-        source: `${observation.provider} · ${titleCase(observation.evidence_kind)}`,
+        source: readableEvidenceSource(
+          observation.provider,
+          observation.evidence_kind,
+        ),
       })),
       ...track.events.map((event) => ({
         id: event.event_id,
         kind: "event" as const,
         start: event.start_seconds,
         end: event.end_seconds,
-        title: `${titleCase(event.behavior)} · ${event.severity}`,
+        title: titleCase(event.behavior),
         detail: event.action
-          ? `Constrained response: ${titleCase(event.action)}`
-          : "No response action recorded",
-        source: "Deterministic Python triage",
+          ? `Keeper response: ${titleCase(event.action)}`
+          : "No keeper response was triggered",
+        source: `Welfare rule · ${readableRule(event.rule_fired)}`,
         severity: event.severity,
         rule: event.rule_fired,
       })),
@@ -365,11 +398,11 @@ export function AnalysisWorkspace() {
 
       <section className="analysis-heading">
         <div>
-          <span>Overnight evidence pipeline</span>
-          <h1>Video analysis</h1>
+          <span>Overnight review</span>
+          <h1>What the cameras recorded</h1>
           <p>
-            Live structured observations, spatial detections, deterministic rule
-            results, and coverage gaps from the active source.
+            Review animal activity, welfare events, and camera coverage in plain
+            language. Every alert is still verified by a keeper.
           </p>
         </div>
         <button
@@ -386,19 +419,19 @@ export function AnalysisWorkspace() {
       <section className="analysis-metrics" aria-label="Analysis summary">
         <article>
           <ScanLine size={18} />
-          <div><span>Observations</span><strong>{totalObservations}</strong><small>Structured evidence records</small></div>
+          <div><span>Recorded moments</span><strong>{totalObservations}</strong><small>Animal activity found in video</small></div>
         </article>
         <article>
           <Activity size={18} />
-          <div><span>Spatial detections</span><strong>{totalDetections}</strong><small>Measured across all sources</small></div>
+          <div><span>Tracked regions</span><strong>{totalDetections}</strong><small>Visual movement measurements</small></div>
         </article>
         <article>
           <ShieldCheck size={18} />
-          <div><span>Rule events</span><strong>{dashboard.events.length}</strong><small>Deterministic, non-NONE</small></div>
+          <div><span>Welfare events</span><strong>{dashboard.events.length}</strong><small>Need keeper review</small></div>
         </article>
         <article>
           <CircleAlert size={18} />
-          <div><span>Coverage gaps</span><strong>{dashboard.data_gaps.length}</strong><small>Explicitly recorded</small></div>
+          <div><span>Missing coverage</span><strong>{dashboard.data_gaps.length}</strong><small>Camera or analysis gaps</small></div>
         </article>
       </section>
 
@@ -431,16 +464,56 @@ export function AnalysisWorkspace() {
         </section>
       )}
 
+      <section className="analysis-event-review" aria-label="Welfare events to review">
+        <header>
+          <div>
+            <span>Review first</span>
+            <strong>Welfare events</strong>
+          </div>
+          <small>
+            {feed.some((item) => item.kind === "event")
+              ? "Select an event to inspect its evidence"
+              : "No welfare rules fired for this source"}
+          </small>
+        </header>
+        <div>
+          {feed.some((item) => item.kind === "event") ? (
+            feed
+              .filter((item) => item.kind === "event")
+              .map((item) => (
+                <button
+                  type="button"
+                  key={item.id}
+                  data-selected={selectedItem?.id === item.id}
+                  onClick={() => setSelectedItemId(item.id)}
+                >
+                  <time>{duration(item.start)}</time>
+                  <span>
+                    <strong>{item.title}</strong>
+                    <small>{readableRule(item.rule)}</small>
+                  </span>
+                  <em>{titleCase(item.severity)}</em>
+                </button>
+              ))
+          ) : (
+            <p>
+              <Check size={15} />
+              Continue reviewing recorded moments below.
+            </p>
+          )}
+        </div>
+      </section>
+
       <section className="analysis-work-grid">
         <article className="analysis-panel analysis-feed">
           <header>
             <div>
               <span>Active source</span>
-              <h2>{selectedVideo?.camera_id ?? "No analyzed source"}</h2>
+              <h2>{selectedVideo?.camera_id ?? "No camera selected"}</h2>
             </div>
             <small>
               {selectedVideo
-                ? `${selectedVideo.chunk_count} chunks · ${selectedVideo.observation_count} observations`
+                ? `${selectedVideo.chunk_count} video sections · ${selectedVideo.observation_count} recorded moments`
                 : "Upload a video to begin"}
             </small>
           </header>
@@ -479,7 +552,7 @@ export function AnalysisWorkspace() {
         <aside className="analysis-detail-column">
           <article className="analysis-panel analysis-selected">
             <header>
-              <div><span>Selected record</span><h2>{selectedItem ? titleCase(selectedItem.kind) : "Waiting for evidence"}</h2></div>
+              <div><span>Evidence inspector</span><h2>{selectedItem ? (selectedItem.kind === "event" ? "Welfare event" : "Recorded moment") : "Waiting for evidence"}</h2></div>
               {selectedItem?.severity && <b data-severity={selectedItem.severity}>{selectedItem.severity}</b>}
             </header>
             {selectedItem ? (
@@ -492,9 +565,9 @@ export function AnalysisWorkspace() {
                   </div>
                 </div>
                 <dl>
-                  <div><dt>Window</dt><dd>{duration(selectedItem.start)}–{duration(selectedItem.end)}</dd></div>
-                  <div><dt>Source</dt><dd>{selectedItem.source}</dd></div>
-                  <div><dt>Rule fired</dt><dd>{selectedItem.rule ?? "None"}</dd></div>
+                  <div><dt>When</dt><dd>{duration(selectedItem.start)}–{duration(selectedItem.end)}</dd></div>
+                  <div><dt>How we know</dt><dd>{selectedItem.source}</dd></div>
+                  <div><dt>Welfare rule</dt><dd>{readableRule(selectedItem.rule)}</dd></div>
                   <div><dt>Camera</dt><dd>{selectedVideo?.camera_id ?? "Not recorded"}</dd></div>
                   <div><dt>Animal</dt><dd>{selectedVideo?.animal_names.join(", ") || "Unassigned"}</dd></div>
                 </dl>

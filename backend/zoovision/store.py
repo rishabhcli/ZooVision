@@ -827,6 +827,7 @@ class SQLiteStore:
                            count(DISTINCT d.detection_id) AS detection_count,
                            count(DISTINCT o.observation_id) AS observation_count,
                            count(DISTINCT e.event_id) AS event_count,
+                           group_concat(DISTINCT a.animal_id) AS animal_ids,
                            group_concat(DISTINCT a.name) AS animal_names,
                            group_concat(DISTINCT a.species) AS animal_species
                     FROM video_chunks vc

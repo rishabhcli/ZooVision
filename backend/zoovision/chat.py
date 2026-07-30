@@ -46,6 +46,11 @@ Ground every statement in the supplied context JSON. Rules you must follow:
   and explain why each cited record is relevant.
 - Treat earlier conversation turns as context for follow-up questions. The newest
   user question controls the task when the subject changes.
+- The scope identifies the animal and enclosure currently selected in the
+  console. Resolve phrases such as "this animal", "it", and "this camera" to
+  that scope, and name the selected animal in the answer.
+- Describe citations in keeper-friendly language in the answer. Never expose a
+  raw database id as prose or as a suggested label.
 - Distinguish absence of a recorded event from proof that nothing happened.
 - Be brief and factual. Keeper staff read these during a night shift.
 """.strip()
@@ -151,6 +156,14 @@ class ChatMoment(BaseModel):
     animal_name: str
 
 
+class ChatCitation(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    record_id: str
+    label: str
+    kind: str
+
+
 class ChatReply(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -160,6 +173,7 @@ class ChatReply(BaseModel):
     mode: str
     model: str | None = None
     context_record_count: int
+    citations: list[ChatCitation] = Field(default_factory=list)
     moments: list[ChatMoment] = Field(default_factory=list)
 
 
@@ -306,6 +320,7 @@ class GroundedChat:
                     mode="openai",
                     model=self.model,
                     context_record_count=count,
+                    citations=_resolve_citations(context, answer.cited_ids),
                     moments=_resolve_moments(context, answer.moment_ids),
                 )
             except Exception as error:  # noqa: BLE001 - degrade to the grounded summary
@@ -323,6 +338,7 @@ class GroundedChat:
                     mode="deterministic_fallback",
                     model=None,
                     context_record_count=count,
+                    citations=_resolve_citations(context, fallback.cited_ids),
                     moments=_resolve_moments(context, fallback.moment_ids),
                 )
         if not self.allow_fallback:
@@ -335,6 +351,7 @@ class GroundedChat:
             mode="deterministic",
             model=None,
             context_record_count=count,
+            citations=_resolve_citations(context, answer.cited_ids),
             moments=_resolve_moments(context, answer.moment_ids),
         )
 
@@ -392,8 +409,17 @@ def retrieve_context(
     matched_animal_ids = {
         animal["animal_id"]
         for animal in animals
-        if _record_score(animal, terms, ("animal_id", "name", "species", "enclosure_id")) > 0
+        if _record_score(animal, terms, ("name", "species", "enclosure_id")) > 0
     }
+    scoped_animal_id = context.get("scope", {}).get("animal_id")
+    if scoped_animal_id and _uses_scoped_subject(question):
+        matched_animal_ids = {scoped_animal_id}
+    unresolved_scoped_subject = bool(
+        _uses_scoped_subject(question) and not scoped_animal_id and not matched_animal_ids
+    )
+    if unresolved_scoped_subject:
+        terms = set()
+        content_terms = set()
     matched_enclosures = {
         animal["enclosure_id"] for animal in animals if animal["animal_id"] in matched_animal_ids
     }
@@ -430,9 +456,7 @@ def retrieve_context(
 
     allow_synthetic = _explicitly_requests_demo(query)
     event_source_ids = {
-        source["observation_id"]
-        for event in selected_events
-        for source in event.get("sources", [])
+        source["observation_id"] for event in selected_events for source in event.get("sources", [])
     }
     candidate_moments = [
         moment
@@ -468,6 +492,8 @@ def retrieve_context(
     ]
     if intents["summary"] and not content_terms and not relevant_moments:
         relevant_moments = [moment for _, moment in ranked_moments[:5]]
+    if matched_animal_ids and _asks_about_activity_pattern(question) and not relevant_moments:
+        relevant_moments = [moment for _, moment in ranked_moments[:8]]
     if intents["quiet"] or intents["gaps"] and not intents["moments"]:
         relevant_moments = []
 
@@ -504,7 +530,8 @@ def retrieve_context(
             "resolved_query": query,
             "intents": [name for name, active in intents.items() if active],
             "matched_animal_ids": sorted(matched_animal_ids),
-            "no_match": bool(
+            "no_match": unresolved_scoped_subject
+            or bool(
                 animals
                 and content_terms
                 and not matched_animal_ids
@@ -542,9 +569,7 @@ def summarize(
                 "Try naming an animal, enclosure, behavior, rule, or asking for the shift summary."
             ),
             cited_ids=[],
-            uncertainty=[
-                "No matching record was found; this is not proof that nothing happened."
-            ],
+            uncertainty=["No matching record was found; this is not proof that nothing happened."],
         )
 
     if not animals:
@@ -585,7 +610,29 @@ def summarize(
         lines.append("No deterministic welfare events are recorded for this view.")
 
     if selected_moments and not intents["quiet"]:
-        lines.append(f"{len(selected_moments)} tracked footage moment(s) are available for review.")
+        activity_counts: dict[str, int] = {}
+        for moment in selected_moments:
+            label = moment.get("activity_label") or moment["behavior"].replace("_", " ")
+            activity_counts[label] = activity_counts.get(label, 0) + 1
+        if _asks_about_activity_pattern(asked):
+            subject = animals[0]["name"] if len(animals) == 1 else "The selected animals"
+            activities = sorted(
+                activity_counts,
+                key=lambda label: (-activity_counts[label], label.lower()),
+            )
+            lines.append(
+                f"In the available footage, {subject} was recorded "
+                + _natural_join(activities[:4])
+                + "."
+            )
+            lines.append(
+                "These are recorded moments from the selected camera, not enough evidence "
+                "to establish a usual behavior pattern."
+            )
+        else:
+            lines.append(
+                f"{len(selected_moments)} tracked footage moment(s) are available for review."
+            )
         for moment in selected_moments[:5]:
             label = moment.get("activity_label") or moment["behavior"].replace("_", " ")
             lines.append(
@@ -644,8 +691,7 @@ def _tokens(value: Any) -> set[str]:
         value = " ".join(str(item) for item in value)
     tokens = set(_TOKEN_PATTERN.findall(str(value).lower().replace("_", " ")))
     normalized = {
-        token[:-1] if token.endswith("s") and len(token) > 4 else token
-        for token in tokens
+        token[:-1] if token.endswith("s") and len(token) > 4 else token for token in tokens
     }
     return normalized - _STOP_WORDS
 
@@ -679,6 +725,48 @@ def _looks_like_follow_up(question: str) -> bool:
     )
 
 
+def _uses_scoped_subject(question: str) -> bool:
+    lowered = question.lower()
+    return any(
+        phrase in lowered
+        for phrase in (
+            "this animal",
+            "that animal",
+            "selected animal",
+            "current animal",
+            "this camera",
+            "selected camera",
+        )
+    ) or "it" in _tokens(lowered)
+
+
+def _asks_about_activity_pattern(question: str) -> bool:
+    lowered = question.lower()
+    return any(
+        phrase in lowered
+        for phrase in (
+            "usually do",
+            "usually doing",
+            "normal behavior",
+            "normally do",
+            "normally doing",
+            "what is it doing",
+            "what are they doing",
+            "activity pattern",
+        )
+    )
+
+
+def _natural_join(values: list[str]) -> str:
+    if not values:
+        return "with no activity label"
+    if len(values) == 1:
+        return values[0]
+    if len(values) == 2:
+        return f"{values[0]} and {values[1]}"
+    return f"{', '.join(values[:-1])}, and {values[-1]}"
+
+
 def _explicitly_requests_demo(query: str) -> bool:
     lowered = query.lower()
     return any(term in lowered for term in ("demo", "fixture", "synthetic", "scenario"))
@@ -706,8 +794,7 @@ def _resolve_moments(context: dict[str, Any], moment_ids: list[str]) -> list[Cha
             source_path=moment["source_path"],
             start_seconds=moment["start_seconds"],
             end_seconds=moment["end_seconds"],
-            label=moment.get("activity_label")
-            or moment["behavior"].replace("_", " ").title(),
+            label=moment.get("activity_label") or moment["behavior"].replace("_", " ").title(),
             camera_id=moment["camera_id"],
             enclosure_id=moment["enclosure_id"],
             animal_name=moment["animal_name"],
@@ -715,3 +802,62 @@ def _resolve_moments(context: dict[str, Any], moment_ids: list[str]) -> list[Cha
         for moment in context.get("moments", [])
         if moment["observation_id"] in requested
     ]
+
+
+def _resolve_citations(
+    context: dict[str, Any],
+    cited_ids: list[str],
+) -> list[ChatCitation]:
+    """Turn stable record ids into concise labels suitable for the console."""
+    records: dict[str, ChatCitation] = {}
+    for animal in context.get("animals", []):
+        records[animal["animal_id"]] = ChatCitation(
+            record_id=animal["animal_id"],
+            label=f"{animal['name']} profile",
+            kind="animal",
+        )
+    for event in context.get("events", []):
+        records[event["event_id"]] = ChatCitation(
+            record_id=event["event_id"],
+            label=(
+                f"{event['animal_name']}: {event['behavior'].replace('_', ' ')} event "
+                f"at {_display_time(event['start_ts'])}"
+            ),
+            kind="event",
+        )
+        for source in event.get("sources", []):
+            records[source["observation_id"]] = ChatCitation(
+                record_id=source["observation_id"],
+                label=f"{event['animal_name']}: supporting footage",
+                kind="moment",
+            )
+    for moment in context.get("moments", []):
+        label = moment.get("activity_label") or moment["behavior"].replace("_", " ").title()
+        records[moment["observation_id"]] = ChatCitation(
+            record_id=moment["observation_id"],
+            label=(
+                f"{moment['animal_name']}: {label} at {_display_offset(moment['start_seconds'])}"
+            ),
+            kind="moment",
+        )
+    for gap in context.get("data_gaps", []):
+        records[gap["gap_id"]] = ChatCitation(
+            record_id=gap["gap_id"],
+            label=(
+                f"{gap['enclosure_id']}: {gap['reason'].replace('_', ' ')} "
+                f"at {_display_time(gap['start_ts'])}"
+            ),
+            kind="data_gap",
+        )
+    return [records[record_id] for record_id in cited_ids if record_id in records]
+
+
+def _display_offset(seconds: float) -> str:
+    total = max(0, round(seconds))
+    minutes, remaining = divmod(total, 60)
+    return f"{minutes}:{remaining:02d}"
+
+
+def _display_time(timestamp: str) -> str:
+    match = re.search(r"T(\d{2}):(\d{2})", timestamp)
+    return f"{match.group(1)}:{match.group(2)}" if match else timestamp

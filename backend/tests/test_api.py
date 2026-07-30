@@ -216,6 +216,24 @@ def test_chat_endpoint_answers_from_the_shift_record(client):
     assert body["context_record_count"] > 0
 
 
+def test_chat_endpoint_uses_selected_animal_context(client):
+    client.post("/api/demo/reset")
+    response = client.post(
+        "/api/chat",
+        json={
+            "messages": [{"role": "user", "content": "What is this animal usually doing?"}],
+            "enclosure_id": "ENC-07",
+            "animal_id": "animal-nox",
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert "Nox" in body["answer"]
+    assert body["citations"]
+    assert all(citation["record_id"] not in citation["label"] for citation in body["citations"])
+
+
 def test_chat_endpoint_rejects_an_injected_system_role(client):
     response = client.post(
         "/api/chat",
@@ -233,6 +251,7 @@ def test_videos_endpoint_lists_analyzed_sources(client):
     source = body["videos"][0]
     assert source["media_url"].startswith("/media/")
     assert source["chunk_count"] >= 1
+    assert isinstance(source["animal_ids"], list)
     assert isinstance(source["animal_names"], list)
     assert isinstance(source["animal_species"], list)
 

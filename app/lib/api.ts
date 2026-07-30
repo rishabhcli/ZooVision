@@ -74,6 +74,7 @@ export type VideoSource = {
   detection_count: number;
   observation_count: number;
   event_count: number;
+  animal_ids: string[];
   animal_names: string[];
   animal_species: string[];
 };
@@ -285,17 +286,29 @@ export const api = {
       method: "POST",
       body: JSON.stringify(payload),
     }),
-  chat: (messages: Array<{ role: "user" | "assistant"; content: string }>) =>
+  chat: (
+    messages: Array<{ role: "user" | "assistant"; content: string }>,
+    scope?: { animalId?: string | null; enclosureId?: string | null },
+  ) =>
     request<{
       answer: string;
       cited_ids: string[];
       uncertainty: string[];
       mode: string;
       context_record_count: number;
+      citations: Array<{
+        record_id: string;
+        label: string;
+        kind: string;
+      }>;
       moments: ChatMoment[];
     }>("/api/chat", {
       method: "POST",
-      body: JSON.stringify({ messages }),
+      body: JSON.stringify({
+        messages,
+        animal_id: scope?.animalId || null,
+        enclosure_id: scope?.enclosureId || null,
+      }),
     }),
   recordOutcome: (
     eventId: string,

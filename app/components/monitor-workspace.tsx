@@ -42,13 +42,35 @@ import {
 
 const PLAYBACK_SPEEDS = [0.5, 1, 2] as const;
 const MOTION_BINS = 72;
-const POSTER_BY_CAMERA: Record<string, string> = {
-  "CAM-03Y": "/camera-posters/cam-03y-gorilla.jpg?v=ad815f51",
-  "CAM-05N": "/camera-posters/cam-05n-elephant.jpg?v=dcdd8d17",
-  "CAM-07A": "/camera-posters/cam-07a-lion.jpg?v=46763447",
-  "CAM-BY1": "/media/uploads/backyard-squirrel-staircase-poster.jpg?v=7d576fa3",
-  "CAM-BY2":
-    "/media/uploads/backyard-squirrels-and-birds-poster.jpg?v=71ed3e94",
+const POSTER_BY_SOURCE_PATH: Record<string, string> = {
+  "uploads/badger-provider-probe-30s.mp4":
+    "/camera-posters/source-badger-provider-probe-30s.jpg",
+  "uploads/enc03_mountain_gorilla_15m.mp4":
+    "/camera-posters/source-enc03_mountain_gorilla_15m.jpg",
+  "uploads/enc03_trailcam_night_15m.mp4":
+    "/camera-posters/source-enc03_trailcam_night_15m.jpg",
+  "uploads/enc05_condor_nest_15m.mp4":
+    "/camera-posters/source-enc05_condor_nest_15m.jpg",
+  "uploads/enc05_elephant_15m.mp4":
+    "/camera-posters/source-enc05_elephant_15m.jpg",
+  "uploads/enc07_badger_night_30m.mp4":
+    "/camera-posters/source-enc07_badger_night_30m.jpg",
+  "uploads/enc07_lion_night_30m.mp4":
+    "/camera-posters/source-enc07_lion_night_30m.jpg",
+  "uploads/lion-provider-probe-30s.mp4":
+    "/camera-posters/source-lion-provider-probe-30s.jpg",
+};
+
+const RULE_LABELS: Record<string, string> = {
+  R001_FIGHTING: "Fighting observed",
+  R002_ESCAPE_ATTEMPT: "Escape attempt observed",
+  R003_VOMITING: "Vomiting observed",
+  R004_PACING_20M_NO_WATER_6H:
+    "Sustained pacing with no recent water visit",
+  R005_PACING_10M: "Sustained pacing",
+  R006_INACTIVITY_2SD: "Activity well below the daytime baseline",
+  R007_BASELINE_DELTA_2_5: "Large change from the daytime baseline",
+  R008_WATER_BOWL_TIPPED: "Water bowl appears tipped",
 };
 
 function clamp(value: number, minimum: number, maximum: number) {
@@ -61,6 +83,25 @@ function formatBehavior(value?: string | null) {
     .split("_")
     .map((word) => `${word.charAt(0).toUpperCase()}${word.slice(1)}`)
     .join(" ");
+}
+
+function formatRule(value?: string | null) {
+  if (!value) return "No welfare rule fired";
+  if (RULE_LABELS[value]) return RULE_LABELS[value];
+  return value
+    .replace(/^rule[_-]?/i, "")
+    .split(/[_-]+/)
+    .filter(Boolean)
+    .map((word) => `${word.charAt(0).toUpperCase()}${word.slice(1)}`)
+    .join(" ");
+}
+
+function confidenceSummary(value?: number | null) {
+  if (value == null) return "Confidence was not supplied; keeper review required";
+  const percent = Math.round(value * 100);
+  if (percent >= 85) return `Strong supporting evidence (${percent}%)`;
+  if (percent >= 65) return `Moderate supporting evidence (${percent}%)`;
+  return `Limited supporting evidence (${percent}%); verify the clip`;
 }
 
 function trackRole(index: number) {
@@ -191,12 +232,16 @@ function observationAtTime(
 
 function EvidenceTimeline({
   durationSeconds,
+  onSelectEvent,
+  onSelectObservation,
   onSeek,
   progress,
   selectedEventId,
   track,
 }: {
   durationSeconds: number;
+  onSelectEvent: (id: string, seconds: number) => void;
+  onSelectObservation: (id: string, seconds: number) => void;
   onSeek: (seconds: number) => void;
   progress: number;
   selectedEventId?: string;
@@ -294,9 +339,19 @@ function EvidenceTimeline({
                 className="timeline-span observation-span"
                 key={observation.observation_id}
                 onPointerDown={(event) => {
-                  if (event.button === 0) onSeek(observation.start_seconds);
+                  if (event.button === 0) {
+                    onSelectObservation(
+                      observation.observation_id,
+                      observation.start_seconds,
+                    );
+                  }
                 }}
-                onClick={() => onSeek(observation.start_seconds)}
+                onClick={() =>
+                  onSelectObservation(
+                    observation.observation_id,
+                    observation.start_seconds,
+                  )
+                }
                 style={{
                   left: `${(observation.start_seconds / durationSeconds) * 100}%`,
                   width: `${width}%`,
@@ -335,9 +390,13 @@ function EvidenceTimeline({
                   data-selected={selectedEventId === event.event_id}
                   key={event.event_id}
                   onPointerDown={(pointerEvent) => {
-                    if (pointerEvent.button === 0) onSeek(event.start_seconds);
+                    if (pointerEvent.button === 0) {
+                      onSelectEvent(event.event_id, event.start_seconds);
+                    }
                   }}
-                  onClick={() => onSeek(event.start_seconds)}
+                  onClick={() =>
+                    onSelectEvent(event.event_id, event.start_seconds)
+                  }
                   style={{
                     left: `${(event.start_seconds / durationSeconds) * 100}%`,
                     width: `${width}%`,
@@ -384,6 +443,11 @@ export function MonitorWorkspace() {
   const [track, setTrack] = useState<VideoTrack | null>(null);
   const [trackVisibility, setTrackVisibility] = useState<Record<string, boolean>>({});
   const [videos, setVideos] = useState<VideoSource[]>([]);
+  const [selectedEvidence, setSelectedEvidence] = useState<{
+    kind: "event" | "observation";
+    id: string;
+  } | null>(null);
+  const inspectorRef = useRef<HTMLElement>(null);
   const pendingSeekRef = useRef<{
     sourcePath: string;
     seconds: number;
@@ -463,7 +527,7 @@ export function MonitorWorkspace() {
       .sort((left, right) => right.score - left.score)
       .slice(0, 4);
   }, [currentSeconds, localizedDetections, trackVisibility]);
-  const selectedEvent = useMemo(() => {
+  const playheadEvent = useMemo(() => {
     if (!track) return null;
     return (
       track.events.find(
@@ -473,10 +537,31 @@ export function MonitorWorkspace() {
       ) ?? nearestByStart(track.events, currentSeconds)
     );
   }, [currentSeconds, track]);
-  const selectedObservation = useMemo(() => {
+  const playheadObservation = useMemo(() => {
     if (!track) return null;
     return observationAtTime(track.observations, currentSeconds);
   }, [currentSeconds, track]);
+  const selectedEvent = useMemo(() => {
+    if (!track) return null;
+    if (selectedEvidence?.kind === "event") {
+      return (
+        track.events.find((event) => event.event_id === selectedEvidence.id) ??
+        playheadEvent
+      );
+    }
+    return playheadEvent;
+  }, [playheadEvent, selectedEvidence, track]);
+  const selectedObservation = useMemo(() => {
+    if (!track) return null;
+    if (selectedEvidence?.kind === "observation") {
+      return (
+        track.observations.find(
+          (observation) => observation.observation_id === selectedEvidence.id,
+        ) ?? playheadObservation
+      );
+    }
+    return playheadObservation;
+  }, [playheadObservation, selectedEvidence, track]);
   const orderedTrackIds = useMemo(() => {
     const active = new Set(activeDetections.map((item) => item.track_id));
     return [
@@ -560,10 +645,36 @@ export function MonitorWorkspace() {
 
   useEffect(() => {
     if (!selectedCamera) return;
+    const assistantContext = {
+      animalId: selectedCamera.animal_ids?.[0] ?? null,
+      animalName: selectedCamera.animal_names?.[0] ?? null,
+      enclosureId: selectedCamera.enclosure_id,
+      cameraId: selectedCamera.camera_id,
+      sourcePath: selectedCamera.source_path,
+    };
+    sessionStorage.setItem(
+      "zoovision:assistant-context",
+      JSON.stringify(assistantContext),
+    );
+    window.dispatchEvent(
+      new CustomEvent("zoovision:assistant-context", {
+        detail: assistantContext,
+      }),
+    );
     api
       .videoTrack(selectedCamera.source_path)
       .then((payload) => {
         setTrack(payload);
+        setSelectedEvidence(
+          payload.events[0]
+            ? { kind: "event", id: payload.events[0].event_id }
+            : payload.observations[0]
+              ? {
+                  kind: "observation",
+                  id: payload.observations[0].observation_id,
+                }
+              : null,
+        );
         setDurationSeconds(maximumTrackSeconds(payload));
         setTrackVisibility(
           Object.fromEntries(
@@ -653,8 +764,25 @@ export function MonitorWorkspace() {
     setPlaying(false);
     setProgress(0);
     setTrack(null);
+    setSelectedEvidence(null);
     setCameraIndex(index);
     setShowAllTracks(false);
+  }
+
+  function selectEvidence(
+    kind: "event" | "observation",
+    id: string,
+    seconds: number,
+  ) {
+    setSelectedEvidence({ kind, id });
+    seekToSeconds(seconds);
+    window.requestAnimationFrame(() => {
+      inspectorRef.current?.scrollIntoView({
+        behavior: reduceMotion ? "auto" : "smooth",
+        block: "nearest",
+      });
+      inspectorRef.current?.focus({ preventScroll: true });
+    });
   }
 
   function changeCamera(direction: -1 | 1) {
@@ -689,9 +817,7 @@ export function MonitorWorkspace() {
     );
   }
 
-  const poster =
-    POSTER_BY_CAMERA[selectedCamera.camera_id] ??
-    POSTER_BY_CAMERA["CAM-07A"];
+  const poster = POSTER_BY_SOURCE_PATH[selectedCamera.source_path];
   const isFixtureEvidence =
     selectedObservation?.provider === "fixture" ||
     selectedObservation?.evidence_kind === "synthetic_scenario";
@@ -746,6 +872,54 @@ export function MonitorWorkspace() {
           </div>
         </dl>
       </header>
+
+      <section className="event-log" aria-label="Welfare event log">
+        <header>
+          <div>
+            <span>Review first</span>
+            <strong>Welfare event log</strong>
+          </div>
+          <small>
+            {track.events.length
+              ? `${track.events.length} rule event${track.events.length === 1 ? "" : "s"}`
+              : "No welfare rules fired"}
+          </small>
+        </header>
+        {track.events.length ? (
+          <div className="event-log-list">
+            {track.events.map((event) => (
+              <button
+                type="button"
+                key={event.event_id}
+                data-selected={
+                  selectedEvidence?.kind === "event" &&
+                  selectedEvidence.id === event.event_id
+                }
+                data-severity={event.severity.toLowerCase()}
+                onClick={() =>
+                  selectEvidence("event", event.event_id, event.start_seconds)
+                }
+              >
+                <time>{formatDuration(event.start_seconds)}</time>
+                <span>
+                  <strong>{formatBehavior(event.behavior)}</strong>
+                  <small>
+                    {event.animal_name} · {formatRule(event.rule_fired)}
+                  </small>
+                </span>
+                <em>{formatBehavior(event.severity)}</em>
+                <ChevronRight size={15} />
+              </button>
+            ))}
+          </div>
+        ) : (
+          <p className="event-log-empty">
+            <Check size={15} />
+            Review observations below. This recording has no deterministic
+            welfare event.
+          </p>
+        )}
+      </section>
 
       <div className="monitor-layout">
         <div className="monitor-primary">
@@ -989,6 +1163,12 @@ export function MonitorWorkspace() {
 
           <EvidenceTimeline
             durationSeconds={durationSeconds}
+            onSelectEvent={(id, seconds) =>
+              selectEvidence("event", id, seconds)
+            }
+            onSelectObservation={(id, seconds) =>
+              selectEvidence("observation", id, seconds)
+            }
             onSeek={seekToSeconds}
             progress={progress}
             selectedEventId={selectedEvent?.event_id}
@@ -997,10 +1177,17 @@ export function MonitorWorkspace() {
         </div>
 
         <aside className="evidence-sidebar" aria-label="Evidence inspector">
-          <section className="evidence-inspector">
+          <section
+            className="evidence-inspector"
+            data-focused={selectedEvidence != null}
+            ref={inspectorRef}
+            tabIndex={-1}
+          >
             <header>
               <div>
-                <span>Evidence inspector</span>
+                <span>
+                  {selectedEvidence ? "Selected evidence" : "Evidence inspector"}
+                </span>
                 <strong>
                   {formatWallClock(selectedCamera.first_start_ts, currentSeconds)}
                 </strong>
@@ -1045,11 +1232,9 @@ export function MonitorWorkspace() {
                 </span>
                 <strong>{formatBehavior(selectedEvent?.behavior)}</strong>
                 <p>
-                  {currentEventActive
-                    ? "The playhead is inside this event window."
-                    : selectedEvent
-                      ? "Nearest rule event to the playhead."
-                      : "No deterministic rule fired for this recording."}
+                  {selectedEvent
+                    ? `${formatRule(selectedEvent.rule_fired)} matched the recorded evidence.`
+                    : "No deterministic rule fired for this recording."}
                 </p>
               </div>
             </div>
@@ -1067,7 +1252,7 @@ export function MonitorWorkspace() {
                 </strong>
                 <p>
                   {selectedEvent?.action
-                    ? `Deterministic rule ${selectedEvent.rule_fired} selected this constrained response.`
+                    ? `${formatRule(selectedEvent.rule_fired)} selected this constrained response.`
                     : "Continue routine review; no deterministic welfare rule fired."}
                 </p>
               </div>
@@ -1080,7 +1265,7 @@ export function MonitorWorkspace() {
               </div>
               <div>
                 <dt>Rule fired</dt>
-                <dd>{selectedEvent?.rule_fired ?? "None"}</dd>
+                <dd>{formatRule(selectedEvent?.rule_fired)}</dd>
               </div>
               <div>
                 <dt>Response</dt>
@@ -1098,11 +1283,7 @@ export function MonitorWorkspace() {
               </div>
               <div>
                 <dt>Confidence</dt>
-                <dd>
-                  {selectedEvent?.confidence == null
-                    ? "Not provided"
-                    : `${Math.round(selectedEvent.confidence * 100)}%`}
-                </dd>
+                <dd>{confidenceSummary(selectedEvent?.confidence)}</dd>
               </div>
               <div>
                 <dt>Review state</dt>
@@ -1249,7 +1430,7 @@ export function MonitorWorkspace() {
           {videos.map((cameraSource, index) => {
             const active = index === cameraIndex;
             const sourcePoster =
-              POSTER_BY_CAMERA[cameraSource.camera_id] ?? POSTER_BY_CAMERA["CAM-07A"];
+              POSTER_BY_SOURCE_PATH[cameraSource.source_path];
             return (
               <motion.button
                 type="button"

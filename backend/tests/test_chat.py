@@ -193,6 +193,47 @@ def test_follow_up_uses_the_previous_animal_subject(tmp_path: Path) -> None:
     assert context["retrieval"]["matched_animal_ids"] == ["animal-nox"]
 
 
+def test_selected_animal_resolves_this_animal_and_returns_human_labels(
+    tmp_path: Path,
+) -> None:
+    reply = GroundedChat(_seeded_store(tmp_path)).reply(
+        ChatRequest(
+            messages=[
+                ChatMessage(
+                    role="user",
+                    content="What is this animal usually doing?",
+                )
+            ],
+            enclosure_id="ENC-07",
+            animal_id="animal-nox",
+        )
+    )
+
+    assert "Nox" in reply.answer
+    assert "recorded" in reply.answer
+    assert "usual behavior pattern" in reply.answer
+    assert reply.moments
+    assert reply.citations
+    assert all(citation.record_id not in citation.label for citation in reply.citations)
+    assert any("Nox:" in citation.label for citation in reply.citations)
+
+
+def test_unscoped_this_animal_does_not_guess_between_animals(tmp_path: Path) -> None:
+    reply = GroundedChat(_seeded_store(tmp_path)).reply(
+        ChatRequest(
+            messages=[
+                ChatMessage(
+                    role="user",
+                    content="What is this animal usually doing?",
+                )
+            ]
+        )
+    )
+
+    assert "could not find recorded evidence" in reply.answer
+    assert reply.cited_ids == []
+
+
 def test_retrieval_keeps_synthetic_evidence_only_when_a_selected_event_cites_it(
     tmp_path: Path,
 ) -> None:
@@ -276,6 +317,10 @@ def test_model_answer_is_returned_when_citations_are_valid(tmp_path: Path) -> No
     assert reply.mode == "openai"
     assert reply.model == "gpt-test"
     assert reply.cited_ids == ["evt-1", "obs-1"]
+    assert [citation.label for citation in reply.citations] == [
+        "Nox: pacing event at 02:00",
+        "Nox: Pacing at 0:00",
+    ]
     assert reply.moments[0].observation_id == "obs-1"
     assert reply.moments[0].source_path == "fixtures/badger.mp4"
     assert reply.moments[0].start_seconds == 0
