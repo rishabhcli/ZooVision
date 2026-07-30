@@ -2,12 +2,12 @@
 .env
 .env.*
 !.env.example
-.python-version
 .venv/
 __pycache__/
 .pytest_cache/
 .ruff_cache/
 .mypy_cache/
+.coverage
 *.py[cod]
 
 node_modules/
@@ -20,4 +20,6 @@ test-results/
 data/raw/
 data/clips/
 data/analysis/
+data/*.db
+data/*.db-*
 artifacts/
