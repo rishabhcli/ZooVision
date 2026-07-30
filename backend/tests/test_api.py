@@ -28,6 +28,17 @@ def test_dashboard_preserves_deterministic_evidence(client):
     assert event["delivery_status"] == "shadowed"
 
 
+def test_readiness_does_not_claim_external_providers_are_healthy(client):
+    body = client.get("/api/readiness").json()
+    assert body["status"] == "ready"
+    assert body["external_delivery_ready"] is False
+    assert body["providers"]["openai"]["status"] in {
+        "not_configured",
+        "configured_disabled",
+    }
+    assert all("healthy" not in provider for provider in body["providers"].values())
+
+
 def test_acknowledgement_is_persisted_and_not_repeatable(client):
     client.post("/api/demo/reset")
     event = client.get("/api/dashboard").json()["events"][0]

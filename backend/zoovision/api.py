@@ -74,17 +74,36 @@ def create_app(
 
     @app.get("/api/readiness")
     def readiness() -> dict:
+        provider_states = {
+            "openai": _integration_state(
+                configured=bool(settings.openai_api_key),
+                enabled=settings.openai_enrichment_enabled,
+            ),
+            "twelvelabs": _integration_state(
+                configured=bool(settings.twelvelabs_api_key),
+                enabled=not settings.fixture_mode,
+            ),
+            "neo4j": _integration_state(
+                configured=bool(
+                    settings.neo4j_uri and settings.neo4j_username and settings.neo4j_password
+                ),
+                enabled=not settings.fixture_mode,
+            ),
+            "slack": _integration_state(
+                configured=bool(settings.slack_webhook_url),
+                enabled=settings.alert_delivery_enabled and not settings.fixture_mode,
+            ),
+        }
         return {
             "status": "ready",
             "environment": settings.environment,
             "fixture_mode": settings.fixture_mode,
             "delivery_mode": "shadow" if settings.fixture_mode else "configured",
-            "providers": {
-                "openai": bool(settings.openai_api_key),
-                "twelvelabs": bool(settings.twelvelabs_api_key),
-                "neo4j": bool(settings.neo4j_uri and settings.neo4j_password),
-                "slack": bool(settings.slack_webhook_url),
-            },
+            "external_delivery_ready": (
+                not settings.fixture_mode
+                and provider_states["slack"]["status"] == "enabled_unverified"
+            ),
+            "providers": provider_states,
             "retention_days": {
                 "raw": settings.raw_retention_days,
                 "analysis": settings.analysis_retention_days,
@@ -192,3 +211,13 @@ app = create_app()
 
 def media_root() -> Path:
     return _services()[0].storage_root / "raw"
+
+
+def _integration_state(*, configured: bool, enabled: bool) -> dict[str, object]:
+    if not configured:
+        status = "not_configured"
+    elif not enabled:
+        status = "configured_disabled"
+    else:
+        status = "enabled_unverified"
+    return {"configured": configured, "enabled": enabled, "status": status}

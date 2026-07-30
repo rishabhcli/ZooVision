@@ -85,7 +85,11 @@ export interface Readiness {
   environment: string;
   fixture_mode: boolean;
   delivery_mode: string;
-  providers: Record<string, boolean>;
+  external_delivery_ready: boolean;
+  providers: Record<
+    string,
+    { configured: boolean; enabled: boolean; status: string }
+  >;
   retention_days: Record<string, number>;
 }
 

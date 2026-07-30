@@ -43,6 +43,13 @@ const SEVERITY_ORDER: Record<Severity, number> = {
   NONE: 0
 };
 
+const PROVIDER_LABELS: Record<string, string> = {
+  openai: "OpenAI",
+  twelvelabs: "TwelveLabs",
+  neo4j: "Neo4j",
+  slack: "Slack"
+};
+
 function formatTime(value: string) {
   return new Intl.DateTimeFormat("en-US", {
     hour: "numeric",
@@ -548,11 +555,11 @@ function SystemView({
         <div className="system-panel">
           <span className="eyebrow">Connections</span>
           <h3>Provider readiness</h3>
-          {Object.entries(readiness.providers).map(([name, configured]) => (
+          {Object.entries(readiness.providers).map(([name, provider]) => (
             <div className="provider-row" key={name}>
-              <StatusDot online={configured} />
-              <span>{titleCase(name)}</span>
-              <strong>{configured ? "Configured" : "Not configured"}</strong>
+              <StatusDot online={provider.enabled} />
+              <span>{PROVIDER_LABELS[name] || titleCase(name)}</span>
+              <strong>{titleCase(provider.status)}</strong>
             </div>
           ))}
         </div>

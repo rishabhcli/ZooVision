@@ -20,13 +20,24 @@ class Settings(BaseSettings):
     alert_ack_minutes: int = Field(default=20, alias="ZOOVISION_ALERT_ACK_MINUTES")
 
     openai_api_key: str | None = Field(default=None, alias="OPENAI_API_KEY")
+    openai_enrichment_enabled: bool = Field(
+        default=False,
+        alias="ZOOVISION_OPENAI_ENRICHMENT_ENABLED",
+    )
     openai_merge_model: str = Field(default="gpt-5.6-luna", alias="OPENAI_MERGE_MODEL")
     openai_report_model: str = Field(default="gpt-5.6-terra", alias="OPENAI_REPORT_MODEL")
     twelvelabs_api_key: str | None = Field(default=None, alias="TWELVELABS_API_KEY")
+    twelvelabs_model: str = Field(default="pegasus1.5", alias="TWELVELABS_MODEL")
     neo4j_uri: str | None = Field(default=None, alias="NEO4J_URI")
     neo4j_username: str | None = Field(default=None, alias="NEO4J_USERNAME")
     neo4j_password: str | None = Field(default=None, alias="NEO4J_PASSWORD")
+    neo4j_read_username: str | None = Field(default=None, alias="NEO4J_READ_USERNAME")
+    neo4j_read_password: str | None = Field(default=None, alias="NEO4J_READ_PASSWORD")
     slack_webhook_url: str | None = Field(default=None, alias="SLACK_WEBHOOK_URL")
+    alert_delivery_enabled: bool = Field(
+        default=False,
+        alias="ZOOVISION_ALERT_DELIVERY_ENABLED",
+    )
 
     @property
     def timezone(self) -> ZoneInfo:
