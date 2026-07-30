@@ -8,7 +8,10 @@ export const metadata: Metadata = {
 
 export default function MonitorPage() {
   return (
-    <WorkspaceShell title="Camera review" eyebrow="ENC-07 · Camera 2">
+    <WorkspaceShell
+      title="Overnight evidence workspace"
+      eyebrow="May 12, 2025"
+    >
       <MonitorWorkspace />
     </WorkspaceShell>
   );

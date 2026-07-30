@@ -14,12 +14,12 @@ import {
   Moon,
   Network,
   Paperclip,
-  ScanLine,
   Send,
   Settings,
   ShieldCheck,
   Sparkles,
 } from "lucide-react";
+import Image from "next/image";
 import { usePathname, useRouter } from "next/navigation";
 import {
   FormEvent,
@@ -47,21 +47,23 @@ const routeOptions = [
   { label: "Monitor", href: "/monitor", icon: Monitor },
   { label: "Node graph", href: "/graph", icon: Network },
   { label: "Analysis", href: "/analysis", icon: BarChart3 },
-  { label: "Settings", href: "/settings", icon: Settings },
 ];
 
 const initialChats: Record<string, ChatMessage[]> = {
   "/monitor": [
     {
-      id: "monitor-user",
-      role: "user",
-      body: "What is happening in the selected segment?",
+      id: "monitor-evidence-one",
+      role: "assistant",
+      time: "01:15:42",
+      body: "Movement detected in Savanna Overlook.\n2 tracks, medium confidence.",
+      citations: ["View evidence"],
     },
     {
-      id: "monitor-assistant",
+      id: "monitor-evidence-two",
       role: "assistant",
-      body: "Track 14 shows continuous pacing from 02:00–02:14. Identity confidence is 0.86, so verify the clip before recording an outcome.",
-      citations: ["Track 14", "Clip 02:06"],
+      time: "02:47:18",
+      body: "Fence line activity detected near North Perimeter.\n1 track, high confidence.",
+      citations: ["View evidence"],
     },
   ],
   "/graph": [
@@ -119,7 +121,7 @@ export function WorkspaceShell({
   const pathname = usePathname();
   const router = useRouter();
   const isEvidenceLayout =
-    pathname === "/graph" || pathname === "/analysis";
+    pathname === "/monitor" || pathname === "/graph" || pathname === "/analysis";
   const profileRef = useRef<HTMLDivElement>(null);
   const [chatCollapsed, setChatCollapsed] = useState(false);
   const [profileOpen, setProfileOpen] = useState(false);
@@ -177,7 +179,7 @@ export function WorkspaceShell({
       >
         <motion.aside
           className="chat-rail"
-          animate={{ width: chatCollapsed ? 64 : 326 }}
+          animate={{ width: chatCollapsed ? 56 : isEvidenceLayout ? 220 : 326 }}
           data-collapsed={chatCollapsed}
           aria-label="ZooVision Assistant"
         >
@@ -302,7 +304,7 @@ export function WorkspaceShell({
                 </div>
               </form>
               <p className="chat-disclaimer">
-                Verify source evidence before recording an outcome.
+                AI responses may be inaccurate. Verify all results.
               </p>
             </motion.div>
           )}
@@ -317,11 +319,16 @@ export function WorkspaceShell({
                 onClick={() => router.push("/monitor")}
                 aria-label="Open ZooVision monitor"
               >
-                {!isEvidenceLayout && (
-                  <span className="brand-mark" aria-hidden="true">
-                    <ScanLine size={18} />
-                  </span>
-                )}
+                <span className="brand-mark" aria-hidden="true">
+                  <Image
+                    className="brand-mark-image"
+                    src="/brand/zoovision-icon.png"
+                    alt=""
+                    width={30}
+                    height={30}
+                    priority
+                  />
+                </span>
                 <span>ZooVision</span>
               </button>
               <span className="topbar-divider" />
@@ -451,7 +458,7 @@ export function WorkspaceShell({
                         }}
                       >
                         <Settings size={16} />
-                        <span>Workspace settings</span>
+                        <span>Settings</span>
                       </button>
                     </motion.div>
                   )}
