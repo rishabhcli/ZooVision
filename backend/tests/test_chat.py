@@ -238,6 +238,18 @@ def test_model_failure_still_answers_from_the_record(tmp_path: Path) -> None:
     assert any("unavailable" in item for item in reply.uncertainty)
 
 
+def test_production_chat_does_not_fall_back_locally(tmp_path: Path) -> None:
+    chat = GroundedChat(
+        _seeded_store(tmp_path),
+        client=_StubClient(RuntimeError("provider offline")),
+        model="gpt-test",
+        allow_fallback=False,
+    )
+
+    with pytest.raises(RuntimeError, match="live OpenAI chat is unavailable"):
+        chat.reply(ChatRequest(messages=[ChatMessage(role="user", content="What happened?")]))
+
+
 def test_instructions_forbid_severity_and_treatment() -> None:
     from zoovision.chat import CHAT_INSTRUCTIONS
 

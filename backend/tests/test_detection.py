@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import numpy as np
 import pytest
 from pydantic import ValidationError
@@ -8,6 +10,7 @@ from zoovision.detection import (
     MediaToolingError,
     MotionRegionDetector,
     SampledFrame,
+    YoloV8ObjectDetector,
     probe_video,
     run_media_tool,
 )
@@ -195,3 +198,48 @@ def test_a_short_segment_still_finds_the_body() -> None:
     assert len(frames_with_motion) >= 3, (
         f"a 14-frame segment must still surface the body, got {sorted(frames_with_motion)}"
     )
+
+
+class _FakeYolo:
+    def __init__(self) -> None:
+        self.options = {}
+
+    def predict(self, **options):
+        self.options = options
+        return [
+            SimpleNamespace(
+                boxes=SimpleNamespace(
+                    xyxy=np.array([[32.0, 36.0, 160.0, 126.0]], dtype=np.float32),
+                    conf=np.array([0.91], dtype=np.float32),
+                    cls=np.array([15], dtype=np.float32),
+                ),
+                names={15: "cat"},
+            ),
+            SimpleNamespace(
+                boxes=SimpleNamespace(
+                    xyxy=np.array([[38.0, 36.0, 166.0, 126.0]], dtype=np.float32),
+                    conf=np.array([0.89], dtype=np.float32),
+                    cls=np.array([15], dtype=np.float32),
+                ),
+                names={15: "cat"},
+            ),
+        ]
+
+
+def test_yolov8_detector_preserves_label_model_and_track_provenance() -> None:
+    model = _FakeYolo()
+    frames = [
+        SampledFrame(relative_seconds=0.0, image=np.zeros((180, 320, 3), dtype=np.uint8)),
+        SampledFrame(relative_seconds=0.5, image=np.zeros((180, 320, 3), dtype=np.uint8)),
+    ]
+
+    detections = YoloV8ObjectDetector(model=model).detect(frames, chunk_id="chunk-1")
+
+    assert len(detections) == 2
+    assert {d.source for d in detections} == {DetectionSource.YOLOV8_OBJECT}
+    assert {d.label for d in detections} == {"cat"}
+    assert {d.class_id for d in detections} == {15}
+    assert {d.model for d in detections} == {"yolov8n.pt"}
+    assert len({d.track_id for d in detections}) == 1
+    assert model.options["classes"] == list(range(14, 24))
+    assert model.options["stream"] is True

@@ -1,0 +1,8 @@
+*
+!pyproject.toml
+!uv.lock
+!README.md
+!backend/
+!backend/**
+!deploy/
+!deploy/Dockerfile.api

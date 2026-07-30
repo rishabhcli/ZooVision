@@ -5,12 +5,14 @@ import {
   Camera,
   Check,
   Contrast,
+  Database,
   LayoutDashboard,
   MonitorCog,
   Moon,
   ShieldCheck,
 } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import { api, type ReadinessPayload } from "../lib/api";
 
 type ToggleRowProps = {
   title: string;
@@ -39,6 +41,11 @@ export function SettingsWorkspace() {
     "comfortable",
   );
   const [saved, setSaved] = useState(false);
+  const [readiness, setReadiness] = useState<ReadinessPayload | null>(null);
+
+  useEffect(() => {
+    api.readiness().then(setReadiness).catch(() => setReadiness(null));
+  }, []);
 
   return (
     <div className="page-stack settings-page">
@@ -65,6 +72,39 @@ export function SettingsWorkspace() {
       </header>
 
       <div className="settings-content-grid">
+        <section className="settings-section">
+          <div className="settings-section-heading">
+            <span>
+              <Database size={17} />
+            </span>
+            <div>
+              <h2>Backend connections</h2>
+              <p>Live readiness reported by the ZooVision API.</p>
+            </div>
+          </div>
+          {readiness ? (
+            Object.entries(readiness.providers).map(([provider, state]) => (
+              <div className="settings-device-row" key={provider}>
+                <span className="status-dot" data-connected={state.status === "healthy"} />
+                <span>
+                  <strong>{provider.replaceAll("_", " ")}</strong>
+                  <small>
+                    {state.status}
+                    {provider === "neo4j" && state.read_connected
+                      ? " · live read connection"
+                      : ""}
+                  </small>
+                </span>
+              </div>
+            ))
+          ) : (
+            <div className="settings-policy-note">
+              <ShieldCheck size={16} />
+              <p>Backend readiness is unavailable.</p>
+            </div>
+          )}
+        </section>
+
         <section className="settings-section">
           <div className="settings-section-heading">
             <span>

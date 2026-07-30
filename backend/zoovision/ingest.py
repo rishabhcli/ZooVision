@@ -35,6 +35,7 @@ from .domain import (
     BaselineState,
     Behavior,
     Detection,
+    DetectionSource,
     EvidenceKind,
     Observation,
     ShiftMode,
@@ -500,7 +501,11 @@ class VideoIngestService:
 
     def _analyzer_for(self, detections: list[Detection], request: IngestRequest) -> Any:
         motion = MotionEvidenceAnalyzer(
-            detections,
+            [
+                detection
+                for detection in detections
+                if detection.source is DetectionSource.MOTION_REGION
+            ],
             sample_fps=self.detector_config.sample_fps,
         )
         if not request.use_provider or self.analyzer_factory is None:

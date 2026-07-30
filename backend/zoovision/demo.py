@@ -4,7 +4,7 @@ from datetime import datetime, time, timedelta
 from pathlib import Path
 
 from .baselines import calculate_baseline
-from .detection import detections_for_chunk
+from .detection import DetectorConfig, detections_for_chunk
 from .domain import (
     AckState,
     Behavior,
@@ -28,21 +28,21 @@ ANIMALS = (
     {
         "animal_id": "animal-nox",
         "name": "Nox",
-        "species": "European badger",
+        "species": "African lion",
         "enclosure_id": "ENC-07",
         "baseline_state": "shadow",
     },
     {
         "animal_id": "animal-mara",
         "name": "Mara",
-        "species": "California condor",
+        "species": "African elephant",
         "enclosure_id": "ENC-05",
         "baseline_state": "active",
     },
     {
         "animal_id": "animal-juniper",
         "name": "Juniper",
-        "species": "Domestic cat",
+        "species": "Mountain gorilla",
         "enclosure_id": "ENC-03",
         "baseline_state": "learning",
     },
@@ -111,7 +111,7 @@ def seed_demo(store: SQLiteStore, settings: Settings, *, now: datetime | None = 
             "CAM-07A",
             anchor + timedelta(hours=3, minutes=10),
             anchor + timedelta(hours=3, minutes=25),
-            "enc07_badger_night_30m.mp4",
+            "enc07_lion_night_30m.mp4",
             0,
         ),
         (
@@ -120,7 +120,7 @@ def seed_demo(store: SQLiteStore, settings: Settings, *, now: datetime | None = 
             "CAM-07A",
             anchor + timedelta(hours=3, minutes=25),
             anchor + timedelta(hours=3, minutes=40),
-            "enc07_badger_night_30m.mp4",
+            "enc07_lion_night_30m.mp4",
             900,
         ),
         (
@@ -129,7 +129,7 @@ def seed_demo(store: SQLiteStore, settings: Settings, *, now: datetime | None = 
             "CAM-05N",
             anchor + timedelta(hours=6),
             anchor + timedelta(hours=6, minutes=15),
-            "enc05_condor_nest_15m.mp4",
+            "enc05_elephant_15m.mp4",
             0,
         ),
         (
@@ -138,7 +138,7 @@ def seed_demo(store: SQLiteStore, settings: Settings, *, now: datetime | None = 
             "CAM-03Y",
             anchor + timedelta(hours=8),
             anchor + timedelta(hours=8, minutes=15),
-            "enc03_trailcam_night_15m.mp4",
+            "enc03_mountain_gorilla_15m.mp4",
             15,
         ),
     )
@@ -155,7 +155,14 @@ def seed_demo(store: SQLiteStore, settings: Settings, *, now: datetime | None = 
             content_sha256=_media_fingerprint(path),
             status="ready" if path.exists() else "fixture_missing",
         )
-        store.save_detections(_fixture_detections(path, chunk_id, offset))
+        store.save_detections(
+            _fixture_detections(
+                path,
+                chunk_id,
+                offset,
+                detector_config=settings.detector_config,
+            )
+        )
 
     observations = [
         Observation(
@@ -287,8 +294,14 @@ def seed_demo(store: SQLiteStore, settings: Settings, *, now: datetime | None = 
 FIXTURE_DETECTION_SECONDS = 120.0
 
 
-def _fixture_detections(path: Path, chunk_id: str, offset: float) -> list[Detection]:
-    """Measure real motion regions for a fixture chunk.
+def _fixture_detections(
+    path: Path,
+    chunk_id: str,
+    offset: float,
+    *,
+    detector_config: DetectorConfig,
+) -> list[Detection]:
+    """Measure real object and motion regions for a fixture chunk.
 
     The observations seeded alongside these are synthetic scenarios, but the
     boxes are measured from the actual licensed footage, so the console's
@@ -303,6 +316,7 @@ def _fixture_detections(path: Path, chunk_id: str, offset: float) -> list[Detect
             chunk_id=chunk_id,
             start_seconds=offset,
             duration_seconds=FIXTURE_DETECTION_SECONDS,
+            config=detector_config,
         )
     except (ValueError, OSError):
         return []

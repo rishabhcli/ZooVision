@@ -21,7 +21,12 @@ import {
   UserRound,
   Video,
 } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import {
+  api,
+  type DashboardEvent,
+  type DashboardPayload,
+} from "../lib/api";
 
 type ReviewEvent = {
   id: string;
@@ -31,88 +36,8 @@ type ReviewEvent = {
   type: "camera" | "rule" | "human";
   eventId: string;
   source: string;
+  event: DashboardEvent;
 };
-
-const reviewEvents: ReviewEvent[] = [
-  {
-    id: "baseline",
-    time: "20:30",
-    title: "Night shift baseline established",
-    meta: "Camera evidence",
-    type: "camera",
-    eventId: "EVT-1831",
-    source: "CAM 07",
-  },
-  {
-    id: "pacing",
-    time: "02:00",
-    title: "Pacing started",
-    meta: "Camera evidence",
-    type: "camera",
-    eventId: "EVT-1842",
-    source: "CAM 07 · Savannah Overlook",
-  },
-  {
-    id: "rule",
-    time: "02:14",
-    title: "Rule triggered",
-    meta: "Deterministic rule",
-    type: "rule",
-    eventId: "RULE-10.1",
-    source: "Rule set v1.3",
-  },
-  {
-    id: "clip",
-    time: "02:15",
-    title: "Clip created",
-    meta: "Camera evidence",
-    type: "camera",
-    eventId: "CLIP-1842",
-    source: "CAM 07",
-  },
-  {
-    id: "reviewed",
-    time: "02:18",
-    title: "Reviewed",
-    meta: "Human review",
-    type: "human",
-    eventId: "NOTE-512",
-    source: "Maria Chen",
-  },
-];
-
-const metrics = [
-  {
-    label: "Coverage",
-    value: "100%",
-    detail: "Expected 23:00–05:00",
-    icon: Target,
-  },
-  {
-    label: "Animals",
-    value: "2",
-    detail: "Monitored",
-    icon: PawPrint,
-  },
-  {
-    label: "Review items",
-    value: "1",
-    detail: "Requires review",
-    icon: List,
-  },
-  {
-    label: "Data gaps",
-    value: "0",
-    detail: "Detected",
-    icon: CircleAlert,
-  },
-] as const;
-
-const comparisonRows = [
-  { label: "Pacing", tonight: 72, baseline: 18, tonightValue: "14.0 min", baselineValue: "2.0 min" },
-  { label: "Resting", tonight: 92, baseline: 106, tonightValue: "30.0 min", baselineValue: "42.0 min" },
-  { label: "Water contact", tonight: 9, baseline: 14, tonightValue: "1.0", baselineValue: "2.0" },
-] as const;
 
 function TimelineIcon({ type }: { type: ReviewEvent["type"] }) {
   if (type === "human") return <UserRound size={13} />;
@@ -121,19 +46,98 @@ function TimelineIcon({ type }: { type: ReviewEvent["type"] }) {
 }
 
 export function AnalysisWorkspace() {
-  const [selectedId, setSelectedId] = useState("pacing");
+  const [dashboard, setDashboard] = useState<DashboardPayload | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [selectedId, setSelectedId] = useState("");
   const [briefingReady, setBriefingReady] = useState(false);
-  const selected = useMemo(
+  const [outcomeRecorded, setOutcomeRecorded] = useState(false);
+  const reviewEvents = useMemo<ReviewEvent[]>(
     () =>
-      reviewEvents.find((event) => event.id === selectedId) ?? reviewEvents[1],
-    [selectedId],
+      (dashboard?.events ?? []).map((event) => ({
+        id: event.event_id,
+        time: new Date(event.start_ts).toLocaleTimeString([], {
+          hour: "2-digit",
+          minute: "2-digit",
+        }),
+        title: `${event.behavior.replaceAll("_", " ")} · ${event.severity}`,
+        meta: "Deterministic rule event",
+        type: event.ack_state === "acknowledged" ? "human" : "rule",
+        eventId: event.event_id,
+        source: `${event.enclosure_id} · ${event.rule_fired}`,
+        event,
+      })),
+    [dashboard],
   );
+  const selected = useMemo(
+    () => reviewEvents.find((event) => event.id === selectedId) ?? reviewEvents[0],
+    [reviewEvents, selectedId],
+  );
+  const metrics = [
+    {
+      label: "Coverage",
+      value: dashboard?.data_gaps.length ? "Reduced" : "Complete",
+      detail: "Recorded backend coverage",
+      icon: Target,
+    },
+    {
+      label: "Animals",
+      value: String(dashboard?.animals.length ?? 0),
+      detail: "Monitored",
+      icon: PawPrint,
+    },
+    {
+      label: "Review items",
+      value: String(dashboard?.events.length ?? 0),
+      detail: "Deterministic events",
+      icon: List,
+    },
+    {
+      label: "Data gaps",
+      value: String(dashboard?.data_gaps.length ?? 0),
+      detail: "Recorded",
+      icon: CircleAlert,
+    },
+  ] as const;
+  const comparisonRows = (dashboard?.events ?? []).slice(0, 3).map((event) => {
+    const duration =
+      Math.max(0, Date.parse(event.end_ts) - Date.parse(event.start_ts)) / 60_000;
+    return {
+      label: event.behavior.replaceAll("_", " "),
+      tonight: Math.min(100, Math.max(4, duration * 3)),
+      tonightValue: `${duration.toFixed(1)} min`,
+    };
+  });
+
+  useEffect(() => {
+    api
+      .dashboard()
+      .then(setDashboard)
+      .catch((caught: unknown) =>
+        setLoadError(caught instanceof Error ? caught.message : "Unable to load analysis"),
+      );
+  }, []);
+
+  if (loadError) {
+    return (
+      <div className="graph-loading" role="alert">
+        <p>{loadError}</p>
+      </div>
+    );
+  }
+  if (!dashboard || !selected) {
+    return (
+      <div className="graph-loading" role="status">
+        <span />
+        <p>Loading evidence analysis from the backend…</p>
+      </div>
+    );
+  }
 
   return (
     <div className="review-analysis-page">
       <div className="review-toolbar">
         <button type="button" className="review-filter">
-          <span>ENC-07 · Painted dogs</span>
+          <span>All connected enclosures</span>
           <ChevronDown size={14} />
         </button>
         <button type="button" className="review-filter">
@@ -142,12 +146,14 @@ export function AnalysisWorkspace() {
         </button>
         <button type="button" className="review-filter review-date-filter">
           <CalendarDays size={14} />
-          <span>May 12 · 23:00–05:00</span>
+          <span>Current recorded shift</span>
         </button>
         <button
           type="button"
           className="primary-button review-briefing-button"
-          onClick={() => setBriefingReady(true)}
+          onClick={() => {
+            api.morningReport().then(() => setBriefingReady(true));
+          }}
         >
           {briefingReady ? <Check size={14} /> : <FileText size={14} />}
           {briefingReady ? "Briefing prepared" : "Prepare morning briefing"}
@@ -216,14 +222,14 @@ export function AnalysisWorkspace() {
                 </span>
                 <span>
                   <i className="baseline" />
-                  Daytime baseline
+                  Baseline unavailable in this endpoint
                 </span>
               </div>
             </header>
             <div
               className="review-comparison-chart"
               role="img"
-              aria-label="Pacing was fourteen minutes tonight compared with a two-minute daytime baseline. Resting was thirty minutes compared with forty-two minutes. Water contact was one compared with two."
+              aria-label="Durations of deterministic events recorded by the backend"
             >
               <div className="review-chart-axis">
                 <span>0</span>
@@ -242,16 +248,13 @@ export function AnalysisWorkspace() {
                     >
                       <b>{row.tonightValue}</b>
                     </i>
-                    <i
-                      className="review-bar baseline"
-                      style={{ width: `${row.baseline}%` }}
-                    >
-                      <b>{row.baselineValue}</b>
-                    </i>
                   </div>
                 </div>
               ))}
-              <p>Pacing was 3.1σ above Rex&apos;s daytime-only baseline.</p>
+              <p>
+                Severity and rule provenance come from deterministic backend
+                records. This view does not infer missing baseline values.
+              </p>
             </div>
           </article>
 
@@ -267,27 +270,37 @@ export function AnalysisWorkspace() {
                 <span role="columnheader">Outcome</span>
                 <span role="columnheader">Coverage</span>
               </div>
-              <div className="review-animal-row" role="row">
-                <span role="cell">R</span>
-                <span role="cell">Pacing 14.0 min</span>
-                <span role="cell">2.0 min</span>
-                <span role="cell">Acknowledged</span>
-                <span role="cell">100%</span>
-              </div>
-              <div className="review-animal-row" role="row">
-                <span role="cell">Z</span>
-                <span role="cell">Resting 31.0 min</span>
-                <span role="cell">38.0 min</span>
-                <span role="cell">No events</span>
-                <span role="cell">100%</span>
-              </div>
+              {dashboard.animals.map((animal) => {
+                const event = dashboard.events.find(
+                  (item) => item.animal_id === animal.animal_id,
+                );
+                return (
+                  <div className="review-animal-row" role="row" key={animal.animal_id}>
+                    <span role="cell">{animal.name.slice(0, 1)}</span>
+                    <span role="cell">
+                      {event ? event.behavior.replaceAll("_", " ") : "No notable events"}
+                    </span>
+                    <span role="cell">
+                      {animal.baseline_state} · {animal.baseline_days} days
+                    </span>
+                    <span role="cell">{event?.ack_state ?? "No event"}</span>
+                    <span role="cell">
+                      {dashboard.data_gaps.some(
+                        (gap) => gap.enclosure_id === animal.enclosure_id,
+                      )
+                        ? "Reduced"
+                        : "Complete"}
+                    </span>
+                  </div>
+                );
+              })}
             </div>
             <footer className="review-table-footer">
               <button type="button">
                 Export summary
                 <ExternalLink size={12} />
               </button>
-              <span>1–2 of 2</span>
+              <span>{dashboard.animals.length} animals</span>
               <button type="button" aria-label="Previous animals">
                 <ChevronLeft size={13} />
               </button>
@@ -307,12 +320,21 @@ export function AnalysisWorkspace() {
               </button>
             </header>
 
-            <div className="review-camera-preview" aria-label="CAM 07 evidence preview">
-              <span>CAM 07 · 02:06:42</span>
-              <i className="review-track-box one" />
-              <i className="review-track-box two" />
-              <i className="review-track-box three" />
-              <div className="review-preview-landscape" />
+            <div className="review-camera-preview" aria-label="Source evidence preview">
+              <span>
+                {selected.event.enclosure_id} · {selected.time}
+              </span>
+              {selected.event.media_url ? (
+                <video
+                  src={selected.event.media_url}
+                  muted
+                  playsInline
+                  preload="metadata"
+                  controls
+                />
+              ) : (
+                <div className="review-preview-landscape" />
+              )}
             </div>
 
             <dl className="review-evidence-list">
@@ -330,15 +352,20 @@ export function AnalysisWorkspace() {
               </div>
               <div>
                 <dt>Animal</dt>
-                <dd>Rex</dd>
+                <dd>{selected.event.animal_name}</dd>
               </div>
               <div>
                 <dt>Confidence</dt>
-                <dd>0.91</dd>
+                <dd>{selected.event.confidence.toFixed(2)}</dd>
               </div>
               <div>
                 <dt>Review</dt>
-                <dd>02:18 · Maria Chen</dd>
+                <dd>
+                  {selected.event.ack_state ?? "pending"}
+                  {selected.event.acknowledged_by
+                    ? ` · ${selected.event.acknowledged_by}`
+                    : ""}
+                </dd>
               </div>
             </dl>
 
@@ -346,21 +373,37 @@ export function AnalysisWorkspace() {
               <ShieldCheck size={15} />
               <div>
                 <span>Deterministic rule provenance</span>
-                <strong>pacing &gt; 10 min</strong>
-                <small>v1.3 · fixed rule logic</small>
+                <strong>{selected.event.rule_fired}</strong>
+                <small>{selected.event.rule_version} · fixed rule logic</small>
               </div>
               <ExternalLink size={12} />
             </section>
 
             <div className="review-selected-actions">
-              <button type="button" className="primary-button">
+              <button
+                type="button"
+                className="primary-button"
+                onClick={() => {
+                  if (selected.event.media_url) {
+                    window.location.assign(selected.event.media_url);
+                  }
+                }}
+              >
                 <Play size={13} />
                 Review clip
                 <ExternalLink size={11} />
               </button>
-              <button type="button" className="secondary-button">
+              <button
+                type="button"
+                className="secondary-button"
+                onClick={() => {
+                  api
+                    .recordOutcome(selected.event.event_id, "continued_observation")
+                    .then(() => setOutcomeRecorded(true));
+                }}
+              >
                 <Pencil size={13} />
-                Record outcome
+                {outcomeRecorded ? "Outcome recorded" : "Record outcome"}
               </button>
             </div>
           </article>
@@ -368,24 +411,30 @@ export function AnalysisWorkspace() {
           <article className="review-panel review-status-panel">
             <header>
               <CheckCircle2 size={15} />
-              <strong>Review status · Acknowledged</strong>
+              <strong>
+                Review status · {selected.event.ack_state ?? selected.event.review_state}
+              </strong>
             </header>
             <dl>
               <div>
                 <dt>Reviewer</dt>
-                <dd>Maria Chen</dd>
+                <dd>{selected.event.acknowledged_by ?? "Not acknowledged"}</dd>
               </div>
               <div>
                 <dt>Time</dt>
-                <dd>May 12, 2025 · 02:18:05</dd>
+                <dd>
+                  {selected.event.acknowledged_at
+                    ? new Date(selected.event.acknowledged_at).toLocaleString()
+                    : "Not recorded"}
+                </dd>
               </div>
               <div>
                 <dt>Outcome</dt>
-                <dd>Acknowledged</dd>
+                <dd>{outcomeRecorded ? "continued observation" : "Not recorded here"}</dd>
               </div>
               <div>
                 <dt>Notes</dt>
-                <dd>Animal monitored; no action required.</dd>
+                <dd>Human outcome records remain backend owned.</dd>
               </div>
             </dl>
           </article>

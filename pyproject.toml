@@ -5,19 +5,20 @@ description = "Evidence-backed overnight animal-welfare monitoring"
 readme = "README.md"
 requires-python = ">=3.12,<3.14"
 dependencies = [
+    "bedrock-agentcore==1.19.0",
     "boto3>=1.40,<2",
     "fastapi>=0.116,<1",
     "httpx>=0.28,<1",
     "neo4j>=6,<7",
     "numpy>=2,<3",
     "openai>=2,<3",
-    "opencv-python-headless>=4.10,<5",
     "pydantic>=2.11,<3",
     "pydantic-settings>=2.10,<3",
     "python-multipart>=0.0.20,<1",
     "strands-agents==1.50.2",
     "tenacity>=9,<10",
     "twelvelabs>=1.2,<2",
+    "ultralytics>=8.3,<9",
     "uvicorn[standard]>=0.35,<1",
 ]
 

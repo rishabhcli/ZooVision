@@ -13,7 +13,7 @@ uv run python scripts/prepare_fixture_videos.py
 Prepare one source, or only verify the original downloads:
 
 ```bash
-uv run python scripts/prepare_fixture_videos.py --source condor-nest-camera
+uv run python scripts/prepare_fixture_videos.py --source lion-kruger
 uv run python scripts/prepare_fixture_videos.py --download-only
 ```
 
@@ -21,3 +21,6 @@ The long MP4s are controlled evaluation media made by repeating the source after
 normalizing its timestamps. They resemble continuous fixed-camera feeds, but
 they are not continuous original recordings and are not annotated behavior
 ground truth. Any synthetic observation scenario must be labeled separately.
+The current set features an African lion, an African elephant, and a mountain
+gorilla. Each source was recorded in a national park rather than a domestic or
+backyard setting.

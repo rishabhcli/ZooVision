@@ -25,7 +25,7 @@ from .domain import (
     ShiftMode,
     TriageInput,
 )
-from .graph import GraphEventBundle, Neo4jGraphWriter
+from .graph import GraphEventBundle, GraphObservationBundle, Neo4jGraphWriter
 from .ids import event_id, stable_id
 from .providers import ProviderAnalysis, VideoChunkContext
 from .stitching import stitch_observations
@@ -266,6 +266,16 @@ class SegmentWorkflow:
                     "enclosure-id": chunk.enclosure_id,
                 },
             )
+        if self.graph_writer is not None and analysis.observations:
+            self.graph_writer.write_observations(
+                GraphObservationBundle(
+                    animal_name=request.animal_name,
+                    species=request.species,
+                    camera_id=request.camera_id,
+                    source_path=request.source_path,
+                    observations=analysis.observations,
+                )
+            )
         for observation in analysis.observations:
             self.store.save_observation(observation)
         self.store.upsert_video_chunk(
@@ -381,6 +391,8 @@ class SegmentWorkflow:
                 GraphEventBundle(
                     animal_name=request.animal_name,
                     species=request.species,
+                    camera_id=request.camera_id,
+                    source_path=request.source_path,
                     event=event,
                     sources=[sources[source_id] for source_id in event.source_observation_ids],
                 )

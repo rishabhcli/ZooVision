@@ -1,0 +1,48 @@
+app = "zoovision-welfare-api"
+primary_region = "sjc"
+
+[build]
+  dockerfile = "deploy/Dockerfile.api"
+
+[env]
+  AWS_REGION = "us-east-1"
+  ZOOVISION_ALERT_DELIVERY_ENABLED = "false"
+  ZOOVISION_ANALYSIS_RETENTION_DAYS = "30"
+  ZOOVISION_AWS_STORAGE_ENABLED = "true"
+  ZOOVISION_BEDROCK_MARENGO_MODEL = "twelvelabs.marengo-embed-3-0-v1:0"
+  ZOOVISION_CLIP_RETENTION_DAYS = "90"
+  ZOOVISION_ENV = "production"
+  ZOOVISION_FIXTURE_MODE = "false"
+  ZOOVISION_NIGHT_END = "06:00"
+  ZOOVISION_NIGHT_START = "19:00"
+  ZOOVISION_OPENAI_ENRICHMENT_ENABLED = "true"
+  ZOOVISION_RAW_RETENTION_DAYS = "7"
+  ZOOVISION_STORAGE_ROOT = "/data"
+  ZOOVISION_TIMEZONE = "America/Los_Angeles"
+  ZOOVISION_YOLO_BATCH_SIZE = "4"
+  ZOOVISION_YOLO_DEVICE = "cpu"
+  ZOOVISION_YOLO_MODEL = "/data/models/yolov8n.pt"
+
+[http_service]
+  internal_port = 8000
+  force_https = true
+  auto_stop_machines = "stop"
+  auto_start_machines = true
+  min_machines_running = 1
+  processes = ["app"]
+
+  [[http_service.checks]]
+    grace_period = "45s"
+    interval = "30s"
+    method = "GET"
+    path = "/api/health"
+    timeout = "5s"
+
+[[mounts]]
+  source = "zoovision_data"
+  destination = "/data"
+
+[[vm]]
+  cpu_kind = "shared"
+  cpus = 2
+  memory = "4gb"

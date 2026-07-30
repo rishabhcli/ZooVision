@@ -19,7 +19,6 @@ import {
   ShieldCheck,
   Sparkles,
 } from "lucide-react";
-import Image from "next/image";
 import { usePathname, useRouter } from "next/navigation";
 import {
   FormEvent,
@@ -28,6 +27,7 @@ import {
   useRef,
   useState,
 } from "react";
+import { api } from "../lib/api";
 
 type WorkspaceShellProps = {
   children: ReactNode;
@@ -52,50 +52,26 @@ const routeOptions = [
 const initialChats: Record<string, ChatMessage[]> = {
   "/monitor": [
     {
-      id: "monitor-evidence-one",
+      id: "monitor-intro",
       role: "assistant",
-      time: "01:15:42",
-      body: "Movement detected in Savanna Overlook.\n2 tracks, medium confidence.",
-      citations: ["View evidence"],
-    },
-    {
-      id: "monitor-evidence-two",
-      role: "assistant",
-      time: "02:47:18",
-      body: "Fence line activity detected near North Perimeter.\n1 track, high confidence.",
-      citations: ["View evidence"],
+      body: "Ask about the recorded shift. Answers are grounded in backend evidence.",
+      citations: ["Connected shift record"],
     },
   ],
   "/graph": [
     {
-      id: "graph-evidence-one",
+      id: "graph-intro",
       role: "assistant",
-      time: "01:15:42",
-      body: "Pacing detected for 14 minutes in Savannah Overlook on CAM 07. Exceeds the 10-minute rule threshold.",
-      citations: ["View evidence"],
-    },
-    {
-      id: "graph-evidence-two",
-      role: "assistant",
-      time: "01:33:05",
-      body: "Pattern is consistent with this animal's night-shift baseline. Confidence is moderate.",
-      citations: ["View evidence"],
+      body: "Ask about nodes in the live Neo4j video context graph.",
+      citations: ["Neo4j graph"],
     },
   ],
   "/analysis": [
     {
-      id: "analysis-evidence-one",
+      id: "analysis-intro",
       role: "assistant",
-      time: "02:00:00",
-      body: "Pacing started for Rex in Savannah Overlook (CAM 07). Duration exceeded the 10-minute rule threshold.",
-      citations: ["View evidence"],
-    },
-    {
-      id: "analysis-evidence-two",
-      role: "assistant",
-      time: "02:18:05",
-      body: "Human review completed. Event acknowledged by Maria Chen with outcome noted.",
-      citations: ["View evidence"],
+      body: "Ask for a factual summary of events, rules, reviews, or data gaps.",
+      citations: ["Backend evidence"],
     },
   ],
   "/settings": [
@@ -123,12 +99,13 @@ export function WorkspaceShell({
   const isEvidenceLayout =
     pathname === "/monitor" || pathname === "/graph" || pathname === "/analysis";
   const profileRef = useRef<HTMLDivElement>(null);
-  const [chatCollapsed, setChatCollapsed] = useState(false);
+  const [chatCollapsed, setChatCollapsed] = useState(pathname === "/monitor");
   const [profileOpen, setProfileOpen] = useState(false);
   const [messagesByRoute, setMessagesByRoute] = useState<
     Record<string, ChatMessage[]>
   >({});
   const [draft, setDraft] = useState("");
+  const [chatPending, setChatPending] = useState(false);
 
   useEffect(() => {
     function closeProfile(event: MouseEvent) {
@@ -145,28 +122,57 @@ export function WorkspaceShell({
     initialChats[pathname] ??
     initialChats["/monitor"];
 
-  function handleSubmit(event: FormEvent<HTMLFormElement>) {
+  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const value = draft.trim();
-    if (!value) return;
+    if (!value || chatPending) return;
 
     const timestamp = Date.now();
+    const currentMessages =
+      messagesByRoute[pathname] ??
+      initialChats[pathname] ??
+      initialChats["/monitor"];
     setMessagesByRoute((current) => ({
       ...current,
       [pathname]: [
-        ...(current[pathname] ??
-          initialChats[pathname] ??
-          initialChats["/monitor"]),
+        ...currentMessages,
         { id: `user-${timestamp}`, role: "user", body: value },
-        {
-          id: `assistant-${timestamp}`,
-          role: "assistant",
-          body: "This frontend prototype is using the evidence visible on this page. Connect the read-only evidence service when the backend is ready.",
-          citations: ["Frontend prototype"],
-        },
       ],
     }));
     setDraft("");
+    setChatPending(true);
+    try {
+      const reply = await api.chat(value);
+      setMessagesByRoute((current) => ({
+        ...current,
+        [pathname]: [
+          ...(current[pathname] ?? currentMessages),
+          {
+            id: `assistant-${timestamp}`,
+            role: "assistant",
+            body: reply.answer,
+            citations: reply.cited_ids,
+          },
+        ],
+      }));
+    } catch (caught) {
+      setMessagesByRoute((current) => ({
+        ...current,
+        [pathname]: [
+          ...(current[pathname] ?? currentMessages),
+          {
+            id: `assistant-error-${timestamp}`,
+            role: "assistant",
+            body:
+              caught instanceof Error
+                ? caught.message
+                : "The evidence service is unavailable.",
+          },
+        ],
+      }));
+    } finally {
+      setChatPending(false);
+    }
   }
 
   return (
@@ -297,7 +303,7 @@ export function WorkspaceShell({
                     type="submit"
                     className="send-button"
                     aria-label="Send message"
-                    disabled={!draft.trim()}
+                    disabled={!draft.trim() || chatPending}
                   >
                     <Send size={15} />
                   </button>
@@ -320,13 +326,14 @@ export function WorkspaceShell({
                 aria-label="Open ZooVision monitor"
               >
                 <span className="brand-mark" aria-hidden="true">
-                  <Image
+                  {/* The public asset works in local, Worker, and static preview runtimes. */}
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img
                     className="brand-mark-image"
                     src="/brand/zoovision-icon.png"
                     alt=""
                     width={30}
                     height={30}
-                    priority
                   />
                 </span>
                 <span>ZooVision</span>

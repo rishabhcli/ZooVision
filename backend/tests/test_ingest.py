@@ -193,7 +193,11 @@ def _service(tmp_path: Path) -> tuple[VideoIngestService, SQLiteStore]:
     service = VideoIngestService(
         store=store,
         raw_root=raw_root,
-        detector_config=DetectorConfig(sample_fps=2.0, warmup_frames=1),
+        detector_config=DetectorConfig(
+            sample_fps=2.0,
+            warmup_frames=1,
+            yolo_enabled=False,
+        ),
         now=lambda: START,
     )
     return service, store

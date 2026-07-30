@@ -1,34 +1,42 @@
-"""Read model that shapes stored welfare evidence as a visual graph.
-
-The console renders this with the Neo4j Visualization Library, so nodes and
-relationships are emitted in NVL's shape: flat records with stable ids, a
-caption, and a Neo4j-style label used for colour and legend grouping.
-
-The graph is built from SQLite rather than Neo4j so it renders whether or not an
-Aura instance is reachable. Neo4j remains the system of record for the
-application-owned graph writes; this is a projection of the same facts, and both
-are keyed by the same stable identifiers.
-"""
+"""Shape the live Neo4j welfare graph for the operator console."""
 
 from __future__ import annotations
 
-from typing import Any
+from pathlib import PurePath
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from .store import SQLiteStore
+from .graph import Neo4jGraphReader
 
-#: Node labels the console knows how to colour and filter.
 NODE_LABELS = (
     "Enclosure",
     "Animal",
     "WelfareEvent",
     "Observation",
     "Camera",
+    "Clip",
     "DataGap",
 )
 
 SEVERITY_RANK = {"CRITICAL": 4, "HIGH": 3, "MODERATE": 2, "LOW": 1, "NONE": 0}
+NODE_SIZE = {
+    "Enclosure": 38.0,
+    "Animal": 34.0,
+    "Camera": 26.0,
+    "Clip": 22.0,
+    "DataGap": 20.0,
+    "Observation": 16.0,
+}
+STABLE_KEYS = {
+    "Enclosure": ("enclosure_id", "enclosure"),
+    "Animal": ("animal_id", "animal"),
+    "WelfareEvent": ("event_id", "event"),
+    "Observation": ("observation_id", "observation"),
+    "Camera": ("camera_id", "camera"),
+    "Clip": ("clip_id", "clip"),
+    "DataGap": ("gap_id", "gap"),
+}
 
 
 class GraphNode(BaseModel):
@@ -37,15 +45,12 @@ class GraphNode(BaseModel):
     id: str
     label: str
     caption: str
-    #: Free-form detail rendered in the inspector when a node is selected.
     properties: dict[str, Any] = Field(default_factory=dict)
     severity: str | None = None
     size: float = 24.0
 
 
 class GraphRelationship(BaseModel):
-    # ``from`` is a Python keyword, so the field is aliased for the wire format
-    # NVL expects while staying constructible by name in Python.
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
     id: str
@@ -57,6 +62,7 @@ class GraphRelationship(BaseModel):
 class GraphView(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
+    source: Literal["neo4j"] = "neo4j"
     nodes: list[GraphNode]
     relationships: list[GraphRelationship]
     enclosures: list[str]
@@ -65,195 +71,120 @@ class GraphView(BaseModel):
 
 
 def build_graph_view(
-    store: SQLiteStore,
+    reader: Neo4jGraphReader,
     *,
     enclosure_id: str | None = None,
     include_observations: bool = True,
 ) -> GraphView:
-    """Project the store into an NVL-ready graph, optionally scoped to one enclosure."""
-    animals = store.dump_table("animals")
-    events = store.dump_table("events")
-    observations = store.dump_table("observations")
-    chunks = store.dump_table("video_chunks")
-    gaps = store.dump_table("data_gaps")
-    event_sources = store.dump_table("event_sources")
-
-    enclosures = sorted({animal["enclosure_id"] for animal in animals})
-    if enclosure_id is not None:
-        animals = [a for a in animals if a["enclosure_id"] == enclosure_id]
-        events = [e for e in events if e["enclosure_id"] == enclosure_id]
-        gaps = [g for g in gaps if g["enclosure_id"] == enclosure_id]
-        chunks = [c for c in chunks if c["enclosure_id"] == enclosure_id]
-
-    event_ids = {event["event_id"] for event in events}
-    chunk_ids = {chunk["chunk_id"] for chunk in chunks}
-    sourced_observation_ids = {
-        link["observation_id"] for link in event_sources if link["event_id"] in event_ids
-    }
-    observations = [
-        observation
-        for observation in observations
-        if observation["observation_id"] in sourced_observation_ids
-        or observation["chunk_id"] in chunk_ids
-    ]
-
+    """Read and serialize the configured Neo4j context graph without a local fallback."""
+    raw = reader.visual_graph(
+        enclosure_id=enclosure_id,
+        include_observations=include_observations,
+    )
     nodes: list[GraphNode] = []
+    element_to_stable: dict[str, str] = {}
+
+    for item in raw["nodes"]:
+        labels = [str(value) for value in item.get("labels", [])]
+        label = next(
+            (value for value in NODE_LABELS if value in labels),
+            labels[0] if labels else "Node",
+        )
+        properties = _json_properties(dict(item.get("properties", {})))
+        node_id = _stable_node_id(label, properties, str(item["element_id"]))
+        element_to_stable[str(item["element_id"])] = node_id
+        severity = _string_or_none(properties.get("severity"))
+        size = NODE_SIZE.get(label, 24.0)
+        if label == "WelfareEvent":
+            size = 22.0 + 4.0 * SEVERITY_RANK.get(severity or "NONE", 0)
+        nodes.append(
+            GraphNode(
+                id=node_id,
+                label=label,
+                caption=_caption(label, properties),
+                properties=properties,
+                severity=severity,
+                size=size,
+            )
+        )
+
     relationships: list[GraphRelationship] = []
-    seen_nodes: set[str] = set()
-
-    def add_node(node: GraphNode) -> None:
-        if node.id not in seen_nodes:
-            seen_nodes.add(node.id)
-            nodes.append(node)
-
-    def add_relationship(source: str, target: str, caption: str) -> None:
-        if source in seen_nodes and target in seen_nodes:
-            relationships.append(
-                GraphRelationship(
-                    id=f"{caption}:{source}->{target}",
-                    from_=source,
-                    to=target,
-                    caption=caption,
-                )
-            )
-
-    for enclosure in sorted({animal["enclosure_id"] for animal in animals}):
-        add_node(
-            GraphNode(
-                id=f"enclosure:{enclosure}",
-                label="Enclosure",
-                caption=enclosure,
-                size=38.0,
-                properties={"enclosure_id": enclosure},
+    for item in raw["relationships"]:
+        source = element_to_stable.get(str(item["source_element_id"]))
+        target = element_to_stable.get(str(item["target_element_id"]))
+        if source is None or target is None:
+            continue
+        relationship_type = str(item["type"])
+        relationships.append(
+            GraphRelationship(
+                id=f"{relationship_type}:{source}->{target}",
+                from_=source,
+                to=target,
+                caption=relationship_type,
             )
         )
 
-    for animal in animals:
-        node_id = f"animal:{animal['animal_id']}"
-        add_node(
-            GraphNode(
-                id=node_id,
-                label="Animal",
-                caption=animal["name"],
-                size=34.0,
-                properties={
-                    "animal_id": animal["animal_id"],
-                    "species": animal["species"],
-                    "baseline_state": animal["baseline_state"],
-                    "enclosure_id": animal["enclosure_id"],
-                },
-            )
-        )
-        add_relationship(node_id, f"enclosure:{animal['enclosure_id']}", "HOUSED_IN")
-
-    for chunk in chunks:
-        camera_id = f"camera:{chunk['camera_id']}"
-        add_node(
-            GraphNode(
-                id=camera_id,
-                label="Camera",
-                caption=chunk["camera_id"],
-                size=26.0,
-                properties={
-                    "camera_id": chunk["camera_id"],
-                    "enclosure_id": chunk["enclosure_id"],
-                },
-            )
-        )
-        add_relationship(camera_id, f"enclosure:{chunk['enclosure_id']}", "MONITORS")
-
-    for event in events:
-        node_id = f"event:{event['event_id']}"
-        add_node(
-            GraphNode(
-                id=node_id,
-                label="WelfareEvent",
-                caption=_titlecase(event["behavior"]),
-                severity=event["severity"],
-                size=22.0 + 4.0 * SEVERITY_RANK.get(event["severity"], 0),
-                properties={
-                    "event_id": event["event_id"],
-                    "behavior": event["behavior"],
-                    "severity": event["severity"],
-                    "rule_fired": event["rule_fired"],
-                    "rule_version": event["rule_version"],
-                    "action": event["action"],
-                    "shift_mode": event["shift_mode"],
-                    "review_state": event["review_state"],
-                    "start_ts": event["start_ts"],
-                    "end_ts": event["end_ts"],
-                    "confidence": event["confidence"],
-                },
-            )
-        )
-        add_relationship(f"animal:{event['animal_id']}", node_id, "HAS_EVENT")
-
-    if include_observations:
-        chunk_by_id = {chunk["chunk_id"]: chunk for chunk in chunks}
-        for observation in observations:
-            node_id = f"observation:{observation['observation_id']}"
-            add_node(
-                GraphNode(
-                    id=node_id,
-                    label="Observation",
-                    caption=_titlecase(observation["behavior"]),
-                    size=16.0,
-                    properties={
-                        "observation_id": observation["observation_id"],
-                        "behavior": observation["behavior"],
-                        "evidence": observation["evidence"],
-                        "evidence_kind": observation["evidence_kind"],
-                        "provider": observation["provider"],
-                        "provider_model": observation["provider_model"],
-                        "confidence": observation["confidence"],
-                        "start_ts": observation["start_ts"],
-                        "end_ts": observation["end_ts"],
-                        "chunk_id": observation["chunk_id"],
-                    },
-                )
-            )
-            chunk = chunk_by_id.get(observation["chunk_id"])
-            if chunk is not None:
-                add_relationship(f"camera:{chunk['camera_id']}", node_id, "CAPTURED")
-        for link in event_sources:
-            if link["event_id"] in event_ids:
-                add_relationship(
-                    f"observation:{link['observation_id']}",
-                    f"event:{link['event_id']}",
-                    "SOURCE_FOR",
-                )
-
-    for gap in gaps:
-        node_id = f"gap:{gap['gap_id']}"
-        add_node(
-            GraphNode(
-                id=node_id,
-                label="DataGap",
-                caption=_titlecase(gap["reason"]),
-                size=20.0,
-                properties={
-                    "gap_id": gap["gap_id"],
-                    "reason": gap["reason"],
-                    "detail": gap["detail"],
-                    "start_ts": gap["start_ts"],
-                    "end_ts": gap["end_ts"],
-                    "enclosure_id": gap["enclosure_id"],
-                },
-            )
-        )
-        add_relationship(node_id, f"enclosure:{gap['enclosure_id']}", "COVERAGE_GAP")
-
-    counts: dict[str, int] = {label: 0 for label in NODE_LABELS}
+    counts = {label: 0 for label in NODE_LABELS}
     for node in nodes:
         counts[node.label] = counts.get(node.label, 0) + 1
 
     return GraphView(
         nodes=nodes,
         relationships=relationships,
-        enclosures=enclosures,
+        enclosures=sorted(str(value) for value in raw["enclosures"]),
         scope=enclosure_id,
         counts=counts,
     )
+
+
+def _stable_node_id(label: str, properties: dict[str, Any], element_id: str) -> str:
+    stable = STABLE_KEYS.get(label)
+    if stable is not None and properties.get(stable[0]) is not None:
+        return f"{stable[1]}:{properties[stable[0]]}"
+    return f"neo4j:{element_id}"
+
+
+def _caption(label: str, properties: dict[str, Any]) -> str:
+    if label == "Animal":
+        return str(properties.get("name") or properties.get("animal_id") or "Animal")
+    if label == "Enclosure":
+        return str(properties.get("enclosure_id") or "Enclosure")
+    if label in {"WelfareEvent", "Observation"}:
+        return _titlecase(_string_or_none(properties.get("behavior")))
+    if label == "Camera":
+        return str(properties.get("camera_id") or "Camera")
+    if label == "Clip":
+        source_path = _string_or_none(properties.get("source_path"))
+        if source_path:
+            return PurePath(source_path).name
+        return str(properties.get("clip_id") or "Clip")
+    if label == "DataGap":
+        return _titlecase(_string_or_none(properties.get("reason")))
+    return label
+
+
+def _json_properties(properties: dict[str, Any]) -> dict[str, Any]:
+    return {key: _json_value(value) for key, value in properties.items()}
+
+
+def _json_value(value: Any) -> Any:
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    if isinstance(value, dict):
+        return {str(key): _json_value(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_value(item) for item in value]
+    iso_format = getattr(value, "iso_format", None)
+    if callable(iso_format):
+        return iso_format()
+    isoformat = getattr(value, "isoformat", None)
+    if callable(isoformat):
+        return isoformat()
+    return str(value)
+
+
+def _string_or_none(value: Any) -> str | None:
+    return None if value is None else str(value)
 
 
 def _titlecase(value: str | None) -> str:

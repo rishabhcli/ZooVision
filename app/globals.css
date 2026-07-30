@@ -1,6 +1,8 @@
 @import "tailwindcss";
 
 :root {
+  --font-sans: "Manrope Variable";
+  --font-mono: "JetBrains Mono Variable";
   --canvas: #0a0d12;
   --canvas-raised: #0f131a;
   --panel: #141922;
@@ -45,9 +47,7 @@ body {
 }
 
 body {
-  font-family:
-    Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI",
-    sans-serif;
+  font-family: var(--font-sans), sans-serif;
   font-size: 13px;
   font-weight: 430;
   line-height: 1.5;
@@ -96,7 +96,7 @@ h1,
 h2,
 h3,
 strong {
-  letter-spacing: -0.02em;
+  letter-spacing: 0;
 }
 
 h1,
@@ -5211,6 +5211,40 @@ body {
   cursor: pointer;
 }
 
+.neo4j-graph-controls {
+  position: absolute;
+  z-index: 4;
+  top: 14px;
+  left: 14px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.neo4j-graph-controls > span,
+.neo4j-graph-controls select {
+  min-height: 30px;
+  padding: 0 9px;
+  color: #d7dce3;
+  background: rgba(12, 15, 19, 0.94);
+  border: 1px solid #343a43;
+  border-radius: 4px;
+  font-size: 9px;
+}
+
+.neo4j-graph-controls > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.neo4j-graph-controls > span i {
+  width: 6px;
+  height: 6px;
+  background: #31bd83;
+  border-radius: 50%;
+}
+
 .node-zoom-controls {
   position: absolute;
   bottom: 16px;
@@ -5932,6 +5966,14 @@ body {
   color: #c3c9d1;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 7px;
+}
+
+.review-camera-preview > video {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
 }
 
 .review-track-box {

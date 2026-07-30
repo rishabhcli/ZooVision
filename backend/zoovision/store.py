@@ -72,6 +72,16 @@ CREATE TABLE IF NOT EXISTS event_sources (
     PRIMARY KEY (event_id, observation_id)
 );
 
+CREATE TABLE IF NOT EXISTS event_narratives (
+    event_id TEXT PRIMARY KEY REFERENCES events(event_id) ON DELETE CASCADE,
+    headline TEXT NOT NULL,
+    factual_summary TEXT NOT NULL,
+    uncertainty_json TEXT NOT NULL,
+    cited_source_ids_json TEXT NOT NULL,
+    model TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS baseline_profiles (
     animal_id TEXT NOT NULL REFERENCES animals(animal_id),
     behavior TEXT NOT NULL,
@@ -97,6 +107,8 @@ CREATE TABLE IF NOT EXISTS alerts (
     acknowledged_at TEXT,
     acknowledged_by TEXT,
     delivery_attempts_json TEXT NOT NULL DEFAULT '[]'
+    ,scheduler_schedule_name TEXT
+    ,scheduler_schedule_arn TEXT
 );
 
 CREATE TABLE IF NOT EXISTS outcomes (
@@ -141,7 +153,10 @@ CREATE TABLE IF NOT EXISTS detections (
     box_width REAL NOT NULL,
     box_height REAL NOT NULL,
     score REAL NOT NULL,
-    source TEXT NOT NULL
+    source TEXT NOT NULL,
+    label TEXT,
+    class_id INTEGER,
+    model TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_detections_chunk_time
@@ -160,6 +175,27 @@ class SQLiteStore:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with self.connect() as connection:
             connection.executescript(SCHEMA)
+            self._migrate_detection_provenance(connection)
+            self._migrate_alert_scheduler(connection)
+
+    @staticmethod
+    def _migrate_detection_provenance(connection: sqlite3.Connection) -> None:
+        """Add YOLO provenance columns to databases created before object detection."""
+        columns = {row["name"] for row in connection.execute("PRAGMA table_info(detections)")}
+        for name, sql_type in (
+            ("label", "TEXT"),
+            ("class_id", "INTEGER"),
+            ("model", "TEXT"),
+        ):
+            if name not in columns:
+                connection.execute(f"ALTER TABLE detections ADD COLUMN {name} {sql_type}")
+
+    @staticmethod
+    def _migrate_alert_scheduler(connection: sqlite3.Connection) -> None:
+        columns = {row["name"] for row in connection.execute("PRAGMA table_info(alerts)")}
+        for name in ("scheduler_schedule_name", "scheduler_schedule_arn"):
+            if name not in columns:
+                connection.execute(f"ALTER TABLE alerts ADD COLUMN {name} TEXT")
 
     @contextmanager
     def connect(self) -> Iterable[sqlite3.Connection]:
@@ -373,6 +409,9 @@ class SQLiteStore:
                 detection.box.height,
                 detection.score,
                 detection.source.value,
+                detection.label,
+                detection.class_id,
+                detection.model,
             )
             for detection in detections
         ]
@@ -383,11 +422,20 @@ class SQLiteStore:
                 """
                 INSERT INTO detections(
                     detection_id, chunk_id, track_id, relative_seconds,
-                    box_x, box_y, box_width, box_height, score, source
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    box_x, box_y, box_width, box_height, score, source,
+                    label, class_id, model
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(detection_id) DO UPDATE SET
                     track_id = excluded.track_id,
-                    score = excluded.score
+                    box_x = excluded.box_x,
+                    box_y = excluded.box_y,
+                    box_width = excluded.box_width,
+                    box_height = excluded.box_height,
+                    score = excluded.score,
+                    source = excluded.source,
+                    label = excluded.label,
+                    class_id = excluded.class_id,
+                    model = excluded.model
                 """,
                 rows,
             )
@@ -409,6 +457,9 @@ class SQLiteStore:
                     },
                     "score": row["score"],
                     "source": row["source"],
+                    "label": row["label"],
+                    "class_id": row["class_id"],
+                    "model": row["model"],
                 }
                 for row in connection.execute(
                     """
@@ -482,25 +533,84 @@ class SQLiteStore:
         channel: str,
         delivery_status: str,
         ack_state: str,
+        scheduler_schedule_name: str | None = None,
+        scheduler_schedule_arn: str | None = None,
     ) -> None:
         with self.connect() as connection:
             connection.execute(
                 """
                 INSERT INTO alerts(
-                    alert_id, event_id, channel, delivery_status, ack_state
-                ) VALUES (?, ?, ?, ?, ?)
+                    alert_id, event_id, channel, delivery_status, ack_state,
+                    scheduler_schedule_name, scheduler_schedule_arn
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(alert_id) DO UPDATE SET
                     delivery_status = excluded.delivery_status,
-                    ack_state = excluded.ack_state
+                    ack_state = excluded.ack_state,
+                    scheduler_schedule_name = excluded.scheduler_schedule_name,
+                    scheduler_schedule_arn = excluded.scheduler_schedule_arn
                 """,
-                (alert_id, event_id, channel, delivery_status, ack_state),
+                (
+                    alert_id,
+                    event_id,
+                    channel,
+                    delivery_status,
+                    ack_state,
+                    scheduler_schedule_name,
+                    scheduler_schedule_arn,
+                ),
             )
+
+    def save_event_narrative(
+        self,
+        *,
+        event_id: str,
+        headline: str,
+        factual_summary: str,
+        uncertainty: list[str],
+        cited_source_ids: list[str],
+        model: str,
+        created_at: str,
+    ) -> None:
+        with self.connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO event_narratives(
+                    event_id, headline, factual_summary, uncertainty_json,
+                    cited_source_ids_json, model, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(event_id) DO UPDATE SET
+                    headline = excluded.headline,
+                    factual_summary = excluded.factual_summary,
+                    uncertainty_json = excluded.uncertainty_json,
+                    cited_source_ids_json = excluded.cited_source_ids_json,
+                    model = excluded.model,
+                    created_at = excluded.created_at
+                """,
+                (
+                    event_id,
+                    headline,
+                    factual_summary,
+                    json.dumps(uncertainty),
+                    json.dumps(cited_source_ids),
+                    model,
+                    created_at,
+                ),
+            )
+
+    def alert_schedule_name(self, alert_id: str) -> str | None:
+        with self.connect() as connection:
+            row = connection.execute(
+                "SELECT scheduler_schedule_name FROM alerts WHERE alert_id = ?",
+                (alert_id,),
+            ).fetchone()
+            return row["scheduler_schedule_name"] if row else None
 
     def reset_demo(self) -> None:
         with self.connect() as connection:
             for table in (
                 "outcomes",
                 "alerts",
+                "event_narratives",
                 "event_sources",
                 "events",
                 "observations",
@@ -644,6 +754,19 @@ class SQLiteStore:
                     (event_id,),
                 )
             ]
+            narrative = connection.execute(
+                "SELECT * FROM event_narratives WHERE event_id = ?",
+                (event_id,),
+            ).fetchone()
+            result["narrative"] = (
+                {
+                    **dict(narrative),
+                    "uncertainty": json.loads(narrative["uncertainty_json"]),
+                    "cited_source_ids": json.loads(narrative["cited_source_ids_json"]),
+                }
+                if narrative
+                else None
+            )
             return result
 
     def video_sources(self) -> list[dict]:
@@ -719,6 +842,9 @@ class SQLiteStore:
                     },
                     "score": row["score"],
                     "source": row["source"],
+                    "label": row["label"],
+                    "class_id": row["class_id"],
+                    "model": row["model"],
                 }
                 for row in connection.execute(
                     f"""
@@ -751,10 +877,16 @@ class SQLiteStore:
                 events.append(
                     {
                         "event_id": row["event_id"],
+                        "animal_id": row["animal_id"],
                         "animal_name": row["animal_name"],
+                        "enclosure_id": row["enclosure_id"],
                         "behavior": row["behavior"],
                         "severity": row["severity"],
                         "rule_fired": row["rule_fired"],
+                        "rule_version": row["rule_version"],
+                        "action": row["action"],
+                        "confidence": row["confidence"],
+                        "review_state": row["review_state"],
                         "ack_state": row["ack_state"],
                         "start_ts": row["start_ts"],
                         "end_ts": row["end_ts"],
@@ -851,6 +983,7 @@ class SQLiteStore:
             "detections",
             "events",
             "event_sources",
+            "event_narratives",
             "baseline_profiles",
             "alerts",
             "outcomes",

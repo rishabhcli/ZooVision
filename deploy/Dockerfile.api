@@ -1,0 +1,32 @@
+FROM ghcr.io/astral-sh/uv:0.8.22 AS uv
+
+FROM python:3.13-slim-bookworm
+
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PATH="/app/.venv/bin:${PATH}" \
+    YOLO_CONFIG_DIR="/data/ultralytics"
+
+RUN apt-get update \
+    && apt-get install --no-install-recommends -y ffmpeg libgl1 libglib2.0-0 \
+    && rm -rf /var/lib/apt/lists/* \
+    && groupadd --system zoovision \
+    && useradd --system --gid zoovision --create-home zoovision \
+    && mkdir -p /app /data/ultralytics \
+    && chown -R zoovision:zoovision /app /data
+
+COPY --from=uv /uv /uvx /bin/
+
+WORKDIR /app
+COPY pyproject.toml uv.lock README.md ./
+COPY backend ./backend
+RUN uv sync --frozen --no-dev --no-editable
+
+USER zoovision
+EXPOSE 8000
+VOLUME ["/data"]
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
+    CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=3)"
+
+CMD ["uvicorn", "zoovision.api:app", "--app-dir", "backend", "--host", "0.0.0.0", "--port", "8000", "--proxy-headers", "--forwarded-allow-ips=172.16.0.0/12"]

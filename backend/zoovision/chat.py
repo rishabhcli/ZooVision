@@ -185,10 +185,12 @@ class GroundedChat:
         *,
         client: Any | None = None,
         model: str | None = None,
+        allow_fallback: bool = True,
     ):
         self.store = store
         self.client = client
         self.model = model
+        self.allow_fallback = allow_fallback
 
     def reply(self, request: ChatRequest) -> ChatReply:
         context = build_context(
@@ -209,6 +211,8 @@ class GroundedChat:
                     context_record_count=count,
                 )
             except Exception as error:  # noqa: BLE001 - degrade to the grounded summary
+                if not self.allow_fallback:
+                    raise RuntimeError("live OpenAI chat is unavailable") from error
                 fallback = summarize(context, request.messages[-1].content)
                 fallback.uncertainty.append(
                     f"The language model was unavailable ({type(error).__name__}); "
@@ -220,6 +224,8 @@ class GroundedChat:
                     model=None,
                     context_record_count=count,
                 )
+        if not self.allow_fallback:
+            raise RuntimeError("live OpenAI chat is not configured")
         answer = summarize(context, request.messages[-1].content)
         return ChatReply(
             **answer.model_dump(),

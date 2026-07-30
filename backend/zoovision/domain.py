@@ -70,12 +70,13 @@ class ReviewState(StrEnum):
 class DetectionSource(StrEnum):
     """Provenance of a spatial box.
 
-    ``MOTION_REGION`` is the only implemented source. It marks pixels that
-    changed against a learned fixed-camera background. It is not an animal
-    classifier and must never be presented as species or behavior recognition.
+    ``MOTION_REGION`` marks pixels that changed against a learned fixed-camera
+    background. ``YOLOV8_OBJECT`` is a model-produced object candidate. Neither
+    source may be presented as animal identity, behavior, or diagnosis.
     """
 
     MOTION_REGION = "motion_region"
+    YOLOV8_OBJECT = "yolov8_object"
 
 
 class BoundingBox(BaseModel):
@@ -100,7 +101,7 @@ class BoundingBox(BaseModel):
 
 
 class Detection(BaseModel):
-    """One motion region measured in one sampled frame of a video chunk."""
+    """One localized region in one sampled frame of a video chunk."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -111,6 +112,9 @@ class Detection(BaseModel):
     box: BoundingBox
     score: float = Field(ge=0.0, le=1.0)
     source: DetectionSource = DetectionSource.MOTION_REGION
+    label: str | None = Field(default=None, min_length=1, max_length=120)
+    class_id: int | None = Field(default=None, ge=0)
+    model: str | None = Field(default=None, min_length=1, max_length=160)
 
 
 class Observation(BaseModel):

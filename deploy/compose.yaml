@@ -1,0 +1,49 @@
+services:
+  api:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.api
+    env_file:
+      - .env.production
+    environment:
+      ZOOVISION_ENV: production
+      ZOOVISION_FIXTURE_MODE: "false"
+      ZOOVISION_STORAGE_ROOT: /data
+      ZOOVISION_YOLO_MODEL: /data/models/yolov8n.pt
+    restart: unless-stopped
+    expose:
+      - "8000"
+    volumes:
+      - zoovision-data:/data
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=3)"
+      interval: 30s
+      timeout: 5s
+      start_period: 30s
+      retries: 3
+
+  caddy:
+    image: caddy:2.10.2-alpine
+    env_file:
+      - .env.production
+    restart: unless-stopped
+    depends_on:
+      api:
+        condition: service_healthy
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+
+volumes:
+  zoovision-data:
+  caddy-data:
+  caddy-config:

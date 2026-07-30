@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hmac
 from datetime import UTC, datetime
 from functools import lru_cache
 from pathlib import Path
@@ -7,12 +8,13 @@ from typing import Literal
 
 from fastapi import FastAPI, File, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from .chat import ChatReply, ChatRequest, GroundedChat
 from .demo import seed_demo
+from .graph import Neo4jGraphReader, Neo4jGraphWriter
 from .graphview import GraphView, build_graph_view
 from .ids import stable_id
 from .ingest import IngestJob, IngestRequest, VideoIngestService
@@ -76,6 +78,8 @@ def build_chat_service(settings: Settings, store: SQLiteStore) -> GroundedChat:
     from the shift record itself rather than failing.
     """
     if not settings.openai_api_key:
+        if settings.production_mode:
+            raise RuntimeError("production requires live OpenAI chat")
         return GroundedChat(store)
     try:
         from openai import OpenAI
@@ -84,8 +88,11 @@ def build_chat_service(settings: Settings, store: SQLiteStore) -> GroundedChat:
             store,
             client=OpenAI(api_key=settings.openai_api_key),
             model=settings.openai_merge_model,
+            allow_fallback=not settings.production_mode,
         )
     except Exception:  # noqa: BLE001 - a missing client must not break startup
+        if settings.production_mode:
+            raise
         return GroundedChat(store)
 
 
@@ -93,6 +100,7 @@ def build_ingest_service(
     settings: Settings,
     store: SQLiteStore,
     raw_root: Path,
+    graph_writer: Neo4jGraphWriter | None = None,
 ) -> VideoIngestService:
     def analyzer_factory():
         from .providers import TwelveLabsAnalyzer
@@ -106,15 +114,39 @@ def build_ingest_service(
         store=store,
         raw_root=raw_root,
         analyzer_factory=analyzer_factory if settings.twelvelabs_api_key else None,
+        detector_config=settings.detector_config,
         fixture_mode=settings.fixture_mode,
         delivery_enabled=settings.alert_delivery_enabled,
         webhook_configured=bool(settings.slack_webhook_url),
+        graph_writer=graph_writer,
+    )
+
+
+def build_graph_reader(settings: Settings) -> Neo4jGraphReader | None:
+    username = settings.neo4j_read_username or settings.neo4j_username
+    password = settings.neo4j_read_password or settings.neo4j_password
+    if not (settings.neo4j_uri and username and password):
+        return None
+    return Neo4jGraphReader(settings.neo4j_uri, username, password)
+
+
+def build_graph_writer(settings: Settings) -> Neo4jGraphWriter | None:
+    if settings.fixture_mode:
+        return None
+    if not (settings.neo4j_uri and settings.neo4j_username and settings.neo4j_password):
+        return None
+    return Neo4jGraphWriter(
+        settings.neo4j_uri,
+        settings.neo4j_username,
+        settings.neo4j_password,
     )
 
 
 def create_app(
     settings: Settings | None = None,
     store: SQLiteStore | None = None,
+    graph_reader: Neo4jGraphReader | None = None,
+    graph_writer: Neo4jGraphWriter | None = None,
 ) -> FastAPI:
     if settings is None or store is None:
         settings, store = _services()
@@ -122,7 +154,13 @@ def create_app(
         store.initialize()
         if store.dump_table("animals") == [] and settings.fixture_mode:
             seed_demo(store, settings)
-    app = FastAPI(title="ZooVision API", version="0.1.0")
+    app = FastAPI(
+        title="ZooVision API",
+        version="0.1.0",
+        docs_url=None if settings.production_mode else "/docs",
+        redoc_url=None if settings.production_mode else "/redoc",
+        openapi_url=None if settings.production_mode else "/openapi.json",
+    )
     app.add_middleware(
         CORSMiddleware,
         allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
@@ -130,12 +168,33 @@ def create_app(
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+    @app.middleware("http")
+    async def require_trusted_proxy(request, call_next):
+        protected = request.url.path.startswith(("/api/", "/media/"))
+        health_check = request.url.path == "/api/health"
+        if protected and not health_check and settings.proxy_shared_secret:
+            supplied = request.headers.get("x-zoovision-proxy-secret", "")
+            if not hmac.compare_digest(supplied, settings.proxy_shared_secret):
+                return JSONResponse(
+                    status_code=401,
+                    content={"detail": "trusted frontend proxy required"},
+                    headers={"cache-control": "no-store"},
+                )
+        return await call_next(request)
+
     raw_root = settings.storage_root / "raw"
     upload_root = raw_root / "uploads"
     upload_root.mkdir(parents=True, exist_ok=True)
     app.mount("/media", StaticFiles(directory=raw_root), name="media")
     chat_service = build_chat_service(settings, store)
-    ingest_service = build_ingest_service(settings, store, raw_root)
+    graph_reader = graph_reader or build_graph_reader(settings)
+    graph_writer = graph_writer or build_graph_writer(settings)
+    ingest_service = build_ingest_service(settings, store, raw_root, graph_writer)
+    if graph_reader is not None:
+        app.router.add_event_handler("shutdown", graph_reader.close)
+    if graph_writer is not None:
+        app.router.add_event_handler("shutdown", graph_writer.close)
 
     @app.get("/api/health")
     def health() -> dict:
@@ -144,6 +203,15 @@ def create_app(
     @app.get("/api/readiness")
     def readiness() -> dict:
         provider_states = {
+            "yolov8": {
+                "status": (
+                    "enabled_local_unverified" if settings.yolo_enabled else "configured_disabled"
+                ),
+                "configured": bool(settings.yolo_model),
+                "enabled": settings.yolo_enabled,
+                "model": settings.yolo_model,
+                "device": settings.yolo_device,
+            },
             "openai": _integration_state(
                 configured=bool(settings.openai_api_key),
                 enabled=settings.openai_enrichment_enabled,
@@ -156,11 +224,9 @@ def create_app(
                 configured=settings.aws_storage_configured,
                 enabled=settings.aws_storage_enabled,
             ),
-            "neo4j": _integration_state(
-                configured=bool(
-                    settings.neo4j_uri and settings.neo4j_username and settings.neo4j_password
-                ),
-                enabled=not settings.fixture_mode,
+            "neo4j": _neo4j_integration_state(
+                graph_reader,
+                write_enabled=graph_writer is not None,
             ),
             "slack": _integration_state(
                 configured=bool(settings.slack_webhook_url),
@@ -220,11 +286,16 @@ def create_app(
         enclosure_id: str | None = Query(default=None, max_length=120),
         include_observations: bool = Query(default=True),
     ) -> GraphView:
-        return build_graph_view(
-            store,
-            enclosure_id=enclosure_id,
-            include_observations=include_observations,
-        )
+        if graph_reader is None:
+            raise HTTPException(status_code=503, detail="Neo4j graph is not configured")
+        try:
+            return build_graph_view(
+                graph_reader,
+                enclosure_id=enclosure_id,
+                include_observations=include_observations,
+            )
+        except Exception as error:
+            raise HTTPException(status_code=503, detail="Neo4j graph is unavailable") from error
 
     @app.post("/api/chat", response_model=ChatReply)
     def chat(payload: ChatRequest) -> ChatReply:
@@ -281,10 +352,20 @@ def create_app(
 
     @app.post("/api/ingest/jobs", response_model=IngestJob)
     def start_ingest(payload: IngestStartRequest) -> IngestJob:
+        if settings.production_mode and not payload.use_provider:
+            raise HTTPException(
+                status_code=422,
+                detail="production ingest requires live provider analysis",
+            )
         try:
             ingest_service.resolve_source(payload.source_name)
         except FileNotFoundError as error:
             raise HTTPException(status_code=404, detail=str(error)) from error
+        if payload.use_provider and not settings.twelvelabs_api_key:
+            raise HTTPException(
+                status_code=503,
+                detail="TwelveLabs is not configured",
+            )
         start_ts = payload.start_ts or datetime.now(settings.timezone)
         if start_ts.tzinfo is None:
             start_ts = start_ts.replace(tzinfo=settings.timezone)
@@ -300,7 +381,7 @@ def create_app(
                 shift_mode=payload.shift_mode,
                 segment_seconds=payload.segment_seconds,
                 max_segments=payload.max_segments,
-                use_provider=payload.use_provider and bool(settings.twelvelabs_api_key),
+                use_provider=payload.use_provider,
             )
         )
 
@@ -419,3 +500,33 @@ def _integration_state(*, configured: bool, enabled: bool) -> dict[str, object]:
     else:
         status = "enabled_unverified"
     return {"configured": configured, "enabled": enabled, "status": status}
+
+
+def _neo4j_integration_state(
+    graph_reader: Neo4jGraphReader | None,
+    *,
+    write_enabled: bool,
+) -> dict[str, object]:
+    if graph_reader is None:
+        return {
+            "configured": False,
+            "enabled": False,
+            "status": "not_configured",
+            "read_connected": False,
+            "write_enabled": False,
+        }
+    try:
+        graph_reader.verify_connectivity()
+    except Exception:  # noqa: BLE001 - readiness must report, not expose driver details
+        status = "unavailable"
+        connected = False
+    else:
+        status = "healthy"
+        connected = True
+    return {
+        "configured": True,
+        "enabled": True,
+        "status": status,
+        "read_connected": connected,
+        "write_enabled": write_enabled,
+    }

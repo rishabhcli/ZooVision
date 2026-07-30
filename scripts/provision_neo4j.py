@@ -30,6 +30,7 @@ def main() -> None:
     store.initialize()
     animals = {row["animal_id"]: row for row in store.dump_table("animals")}
     observations = {row["observation_id"]: row for row in store.dump_table("observations")}
+    chunks = {row["chunk_id"]: row for row in store.dump_table("video_chunks")}
     sources_by_event: dict[str, list[str]] = {}
     for row in store.dump_table("event_sources"):
         sources_by_event.setdefault(row["event_id"], []).append(row["observation_id"])
@@ -62,9 +63,12 @@ def main() -> None:
                 for source_id in source_ids
             ]
             animal = animals[event.animal_id]
+            source_chunk = chunks[source_models[0].chunk_id]
             bundle = GraphEventBundle(
                 animal_name=animal["name"],
                 species=animal["species"],
+                camera_id=source_chunk["camera_id"],
+                source_path=source_chunk["source_path"],
                 event=event,
                 sources=source_models,
             )

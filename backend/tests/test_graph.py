@@ -12,23 +12,32 @@ from zoovision.domain import (
 )
 from zoovision.graph import (
     EVENT_CARDINALITY_CYPHER,
+    READ_ENCLOSURES_CYPHER,
+    READ_GRAPH_CYPHER,
     SCHEMA_QUERIES,
     WRITE_EVENT_CYPHER,
+    WRITE_OBSERVATIONS_CYPHER,
     GraphEventBundle,
+    GraphObservationBundle,
+    Neo4jGraphReader,
     Neo4jGraphWriter,
 )
 
 
 class FakeResult:
-    def __init__(self, record=None):
+    def __init__(self, record=None, records=None):
         self.record = record
+        self.records = records or []
 
     def consume(self):
         return None
 
     def single(self, *, strict):
-        assert strict is True
+        assert isinstance(strict, bool)
         return self.record
+
+    def __iter__(self):
+        return iter(self.records)
 
 
 class FakeTransaction:
@@ -39,6 +48,21 @@ class FakeTransaction:
         self.queries.append((query, parameters))
         if query == EVENT_CARDINALITY_CYPHER:
             return FakeResult({"events": 1, "observations": 2})
+        if query == READ_ENCLOSURES_CYPHER:
+            return FakeResult(records=[{"enclosure_id": "ENC-01"}])
+        if query == READ_GRAPH_CYPHER:
+            return FakeResult(
+                {
+                    "nodes": [
+                        {
+                            "element_id": "4:1",
+                            "labels": ["Enclosure"],
+                            "properties": {"enclosure_id": "ENC-01"},
+                        }
+                    ],
+                    "relationships": [],
+                }
+            )
         return FakeResult()
 
     @property
@@ -114,6 +138,8 @@ def bundle():
     return GraphEventBundle(
         animal_name="Nox",
         species="European badger",
+        camera_id="CAM-01",
+        source_path="fixtures/nox.mp4",
         event=event,
         sources=[observation],
     )
@@ -124,8 +150,31 @@ def test_graph_writer_uses_static_idempotent_merge_query():
     Neo4jGraphWriter("unused", "unused", "unused", driver=driver).write_event(bundle())
     assert driver.transaction.query == WRITE_EVENT_CYPHER
     assert "MERGE (event:WelfareEvent {event_id: $event_id})" in WRITE_EVENT_CYPHER
+    assert "MERGE (clip:Clip {clip_id: source.chunk_id})" in WRITE_EVENT_CYPHER
+    assert "MERGE (camera:Camera {camera_id: $camera_id})" in WRITE_EVENT_CYPHER
     assert driver.transaction.parameters["event_id"] == "evt-1"
     assert driver.transaction.parameters["sources"][0]["observation_id"] == "obs-1"
+
+
+def test_graph_writer_indexes_observations_without_an_event():
+    driver = FakeDriver()
+    event_bundle = bundle()
+    observation_bundle = GraphObservationBundle(
+        animal_name=event_bundle.animal_name,
+        species=event_bundle.species,
+        camera_id=event_bundle.camera_id,
+        source_path=event_bundle.source_path,
+        observations=event_bundle.sources,
+    )
+
+    Neo4jGraphWriter("unused", "unused", "unused", driver=driver).write_observations(
+        observation_bundle
+    )
+
+    assert driver.transaction.query == WRITE_OBSERVATIONS_CYPHER
+    assert "MERGE (observation:Observation" in WRITE_OBSERVATIONS_CYPHER
+    assert "MERGE (animal)-[:HAS_OBSERVATION]->(observation)" in WRITE_OBSERVATIONS_CYPHER
+    assert driver.transaction.parameters["observations"][0]["observation_id"] == "obs-1"
 
 
 def test_graph_bundle_requires_exact_event_sources():
@@ -154,3 +203,19 @@ def test_graph_schema_rejects_invalid_vector_dimension():
 def test_graph_writer_reports_event_cardinality():
     writer = Neo4jGraphWriter("unused", "unused", "unused", driver=FakeDriver())
     assert writer.event_cardinality("evt-1") == {"events": 1, "observations": 2}
+
+
+def test_graph_reader_uses_fixed_scoped_query():
+    driver = FakeDriver()
+    reader = Neo4jGraphReader("unused", "unused", "unused", driver=driver)
+
+    graph = reader.visual_graph(enclosure_id="ENC-01", include_observations=False)
+
+    assert graph["enclosures"] == ["ENC-01"]
+    assert graph["nodes"][0]["properties"]["enclosure_id"] == "ENC-01"
+    query, parameters = driver.transaction.queries[-1]
+    assert query == READ_GRAPH_CYPHER
+    assert parameters == {
+        "enclosure_id": "ENC-01",
+        "include_observations": False,
+    }

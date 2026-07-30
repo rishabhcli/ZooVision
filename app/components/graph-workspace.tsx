@@ -9,11 +9,9 @@ export function GraphWorkspace() {
       <section className="node-evidence-frame">
         <header className="node-evidence-bar">
           <span>
-            <strong>Evidence graph</strong>
+            <strong>Neo4j video context graph</strong>
             <i>·</i>
-            Savannah Overlook
-            <i>·</i>
-            May 12, 2025
+            Backend connected evidence
           </span>
           <button type="button" aria-label="Expand evidence graph">
             <Maximize2 size={15} />

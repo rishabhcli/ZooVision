@@ -27,9 +27,13 @@ class FakeAnalyzer:
 class FakeGraphWriter:
     def __init__(self):
         self.bundles = []
+        self.observation_bundles = []
 
     def write_event(self, bundle):
         self.bundles.append(bundle)
+
+    def write_observations(self, bundle):
+        self.observation_bundles.append(bundle)
 
 
 def request(*, mode=ShiftMode.NIGHT):
@@ -110,6 +114,7 @@ def test_night_workflow_uses_deterministic_triage_and_graph_write(tmp_path):
     assert store.dump_table("alerts")[0]["delivery_status"] == "shadowed"
     assert store.dump_table("video_chunks")[0]["status"] == "analyzed"
     assert len(graph_writer.bundles) == 1
+    assert len(graph_writer.observation_bundles) == 1
 
 
 def test_day_workflow_never_triages_or_creates_alert(tmp_path):

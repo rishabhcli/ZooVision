@@ -1,5 +1,7 @@
 import type { Metadata } from "next";
 import { headers } from "next/headers";
+import "@fontsource-variable/jetbrains-mono";
+import "@fontsource-variable/manrope";
 import "./globals.css";
 
 const description =
