@@ -28,6 +28,30 @@ from .domain import BoundingBox, Detection, DetectionSource
 from .ids import stable_id
 
 
+class MediaToolingError(RuntimeError):
+    """A required media tool is missing from PATH.
+
+    Distinct from a bad video: the operator needs to install something, not
+    replace the footage, and an ingest job should say which.
+    """
+
+
+def run_media_tool(args: list[str], *, timeout: int) -> subprocess.CompletedProcess[str]:
+    """Run ffmpeg/ffprobe, turning an absent binary into a clear failure."""
+    try:
+        return subprocess.run(
+            args,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            check=False,
+        )
+    except FileNotFoundError as error:
+        raise MediaToolingError(
+            f"{args[0]} is required for video ingest but was not found on PATH"
+        ) from error
+
+
 @dataclass(frozen=True)
 class SampledFrame:
     """One decoded frame plus its offset from the start of the chunk."""
@@ -207,7 +231,7 @@ def probe_video(path: str | Path) -> VideoProbe:
     source = Path(path)
     if not source.is_file():
         raise FileNotFoundError(f"video not found: {source}")
-    completed = subprocess.run(
+    completed = run_media_tool(
         [
             "ffprobe",
             "-v",
@@ -220,10 +244,7 @@ def probe_video(path: str | Path) -> VideoProbe:
             "default=noprint_wrappers=1:nokey=0",
             str(source),
         ],
-        capture_output=True,
-        text=True,
         timeout=60,
-        check=False,
     )
     if completed.returncode != 0:
         raise ValueError(f"ffprobe could not read {source.name}")

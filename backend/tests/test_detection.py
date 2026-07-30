@@ -5,9 +5,11 @@ import pytest
 from pydantic import ValidationError
 from zoovision.detection import (
     DetectorConfig,
+    MediaToolingError,
     MotionRegionDetector,
     SampledFrame,
     probe_video,
+    run_media_tool,
 )
 from zoovision.domain import BoundingBox, DetectionSource
 
@@ -157,3 +159,23 @@ def test_probe_video_rejects_a_file_that_is_not_video(tmp_path) -> None:
     broken.write_bytes(b"this is not a video container")
     with pytest.raises(ValueError):
         probe_video(broken)
+
+
+def test_missing_media_tool_reports_the_tool_not_a_bad_video(monkeypatch, tmp_path) -> None:
+    """An absent binary is an operator problem, not a footage problem."""
+
+    def absent(*args, **kwargs):
+        raise FileNotFoundError(2, "No such file or directory", "ffprobe")
+
+    monkeypatch.setattr("zoovision.detection.subprocess.run", absent)
+    source = tmp_path / "clip.mp4"
+    source.write_bytes(b"\x00\x00\x00\x18ftypmp42")
+
+    with pytest.raises(MediaToolingError, match="not found on PATH"):
+        probe_video(source)
+
+
+def test_run_media_tool_passes_through_a_normal_failure(tmp_path) -> None:
+    completed = run_media_tool(["ffprobe", "-v", "error", str(tmp_path / "nope.mp4")], timeout=30)
+
+    assert completed.returncode != 0

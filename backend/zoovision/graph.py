@@ -16,6 +16,8 @@ SCHEMA_QUERIES = (
     "FOR (event:WelfareEvent) REQUIRE event.event_id IS UNIQUE",
     "CREATE CONSTRAINT observation_id_unique IF NOT EXISTS "
     "FOR (observation:Observation) REQUIRE observation.observation_id IS UNIQUE",
+    "CREATE CONSTRAINT camera_id_unique IF NOT EXISTS "
+    "FOR (camera:Camera) REQUIRE camera.camera_id IS UNIQUE",
     "CREATE CONSTRAINT clip_id_unique IF NOT EXISTS FOR (clip:Clip) REQUIRE clip.clip_id IS UNIQUE",
 )
 
@@ -25,6 +27,8 @@ MERGE (animal:Animal {animal_id: $animal_id})
 SET animal.name = $animal_name,
     animal.species = $species
 MERGE (animal)-[:HOUSED_IN]->(enclosure)
+MERGE (camera:Camera {camera_id: $camera_id})
+MERGE (camera)-[:MONITORS]->(enclosure)
 MERGE (event:WelfareEvent {event_id: $event_id})
 SET event.behavior = $behavior,
     event.severity = $severity,
@@ -49,6 +53,13 @@ SET observation.chunk_id = source.chunk_id,
     observation.evidence_kind = source.evidence_kind,
     observation.provider = source.provider,
     observation.provider_model = source.provider_model
+MERGE (clip:Clip {clip_id: source.chunk_id})
+SET clip.source_path = $source_path,
+    clip.start_ts = datetime(source.start_ts),
+    clip.end_ts = datetime(source.end_ts)
+MERGE (camera)-[:CAPTURED]->(clip)
+MERGE (clip)-[:RECORDED_IN]->(enclosure)
+MERGE (observation)-[:EVIDENCE_FROM]->(clip)
 MERGE (observation)-[:SOURCE_FOR]->(event)
 MERGE (observation)-[:OBSERVED_IN]->(enclosure)
 """
@@ -70,12 +81,68 @@ ORDER BY event.start_ts DESC
 LIMIT $limit
 """
 
+READ_ENCLOSURES_CYPHER = """
+MATCH (enclosure:Enclosure)
+WHERE enclosure.enclosure_id IS NOT NULL
+RETURN DISTINCT enclosure.enclosure_id AS enclosure_id
+ORDER BY enclosure_id
+"""
+
+READ_GRAPH_CYPHER = """
+MATCH (enclosure:Enclosure)
+WHERE $enclosure_id IS NULL OR enclosure.enclosure_id = $enclosure_id
+OPTIONAL MATCH (animal:Animal)-[:HOUSED_IN]->(enclosure)
+OPTIONAL MATCH (animal)-[:HAS_EVENT]->(event:WelfareEvent)
+OPTIONAL MATCH (observation:Observation)-[:SOURCE_FOR]->(event)
+OPTIONAL MATCH (direct_observation:Observation)-[:OBSERVED_IN]->(enclosure)
+OPTIONAL MATCH (camera:Camera)-[:MONITORS]->(enclosure)
+OPTIONAL MATCH (clip:Clip)-[:RECORDED_IN]->(enclosure)
+WITH collect(DISTINCT enclosure)
+   + collect(DISTINCT animal)
+   + collect(DISTINCT event)
+   + collect(DISTINCT observation)
+   + collect(DISTINCT direct_observation)
+   + collect(DISTINCT camera)
+   + collect(DISTINCT clip) AS candidates
+UNWIND candidates AS candidate
+WITH collect(DISTINCT candidate) AS all_nodes
+WITH [
+  node IN all_nodes
+  WHERE node IS NOT NULL
+    AND ($include_observations OR NOT 'Observation' IN labels(node))
+] AS nodes
+CALL {
+  WITH nodes
+  UNWIND nodes AS source
+  OPTIONAL MATCH (source)-[relationship]->(target)
+  WHERE target IN nodes
+  RETURN collect(DISTINCT relationship) AS relationships
+}
+RETURN [
+  node IN nodes | {
+    element_id: elementId(node),
+    labels: labels(node),
+    properties: properties(node)
+  }
+] AS nodes,
+[
+  relationship IN relationships | {
+    element_id: elementId(relationship),
+    type: type(relationship),
+    source_element_id: elementId(startNode(relationship)),
+    target_element_id: elementId(endNode(relationship))
+  }
+] AS relationships
+"""
+
 
 class GraphEventBundle(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     animal_name: str
     species: str
+    camera_id: str
+    source_path: str
     event: EventRecord
     sources: list[Observation]
 
@@ -93,6 +160,8 @@ class GraphEventBundle(BaseModel):
             "animal_id": event.animal_id,
             "animal_name": self.animal_name,
             "species": self.species,
+            "camera_id": self.camera_id,
+            "source_path": self.source_path,
             "enclosure_id": event.enclosure_id,
             "event_id": event.event_id,
             "behavior": event.behavior.value,
@@ -175,6 +244,33 @@ class Neo4jGraphReader:
         driver: Any | None = None,
     ):
         self.driver = driver or GraphDatabase.driver(uri, auth=(username, password))
+
+    def verify_connectivity(self) -> None:
+        self.driver.verify_connectivity()
+
+    def visual_graph(
+        self,
+        *,
+        enclosure_id: str | None = None,
+        include_observations: bool = True,
+    ) -> dict[str, list[dict]]:
+        def read(tx: Any) -> dict[str, list[dict]]:
+            enclosures = [
+                str(record["enclosure_id"]) for record in tx.run(READ_ENCLOSURES_CYPHER)
+            ]
+            graph_record = tx.run(
+                READ_GRAPH_CYPHER,
+                enclosure_id=enclosure_id,
+                include_observations=include_observations,
+            ).single(strict=True)
+            return {
+                "nodes": list(graph_record["nodes"]),
+                "relationships": list(graph_record["relationships"]),
+                "enclosures": enclosures,
+            }
+
+        with self.driver.session() as session:
+            return session.execute_read(read)
 
     def animal_timeline(self, animal_id: str, *, limit: int = 50) -> list[dict]:
         bounded_limit = max(1, min(limit, 200))

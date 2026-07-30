@@ -24,6 +24,15 @@ jobs:
           cache: npm
           cache-dependency-path: frontend/package-lock.json
 
+      # Segmenting and probing real containers is part of the product, so the
+      # tools have to be present for the suite to exercise those paths.
+      - name: Install FFmpeg
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ffmpeg
+          ffmpeg -version | head -1
+          ffprobe -version | head -1
+
       - name: Install Python dependencies
         run: uv sync --frozen --dev
 

@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import hashlib
 import shutil
-import subprocess
 import tempfile
 import threading
 from collections.abc import Callable
@@ -30,6 +29,7 @@ from .detection import (
     VideoProbe,
     detections_for_chunk,
     probe_video,
+    run_media_tool,
 )
 from .domain import (
     BaselineState,
@@ -263,7 +263,7 @@ def segment_video(
     """
     destination.mkdir(parents=True, exist_ok=True)
     pattern = destination / "segment_%04d.mp4"
-    completed = subprocess.run(
+    completed = run_media_tool(
         [
             "ffmpeg",
             "-nostdin",
@@ -283,10 +283,7 @@ def segment_video(
             "1",
             str(pattern),
         ],
-        capture_output=True,
-        text=True,
         timeout=900,
-        check=False,
     )
     pieces = sorted(destination.glob("segment_*.mp4"))
     if completed.returncode != 0 and not pieces:
@@ -518,7 +515,7 @@ def _provider_ready(piece: Path) -> Path:
     if piece.stat().st_size <= PROVIDER_PAYLOAD_LIMIT_BYTES:
         return piece
     proxy = piece.with_name(f"{piece.stem}_proxy.mp4")
-    completed = subprocess.run(
+    completed = run_media_tool(
         [
             "ffmpeg",
             "-nostdin",
@@ -538,10 +535,7 @@ def _provider_ready(piece: Path) -> Path:
             "-an",
             str(proxy),
         ],
-        capture_output=True,
-        text=True,
         timeout=600,
-        check=False,
     )
     if completed.returncode == 0 and proxy.is_file() and proxy.stat().st_size > 0:
         return proxy
