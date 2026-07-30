@@ -142,6 +142,46 @@ export type ReadinessPayload = {
   >;
 };
 
+export type IngestSegment = {
+  index: number;
+  chunk_id: string;
+  start_ts: string;
+  duration_seconds: number;
+  route: string;
+  observation_count: number;
+  detection_count: number;
+  event_ids: string[];
+  rules_fired: string[];
+  data_gap_id: string | null;
+};
+
+export type IngestJob = {
+  job_id: string;
+  status: string;
+  source_name: string;
+  animal_id: string;
+  enclosure_id: string;
+  created_at: string;
+  updated_at: string;
+  analyzer: string;
+  total_segments: number;
+  completed_segments: number;
+  detection_count: number;
+  event_ids: string[];
+  rules_fired: string[];
+  data_gap_ids: string[];
+  segments: IngestSegment[];
+  probe: {
+    duration_seconds: number;
+    width: number;
+    height: number;
+    fps: number;
+    codec: string;
+    has_audio: boolean;
+  } | null;
+  error: string | null;
+};
+
 export type ChatMoment = {
   observation_id: string;
   source_path: string;
@@ -185,7 +225,67 @@ export const api = {
       `/api/videos/track?source_path=${encodeURIComponent(sourcePath)}`,
     ),
   morningReport: () => request<Record<string, unknown>>("/api/morning-report"),
-  chat: (content: string) =>
+  ingestJobs: () => request<{ jobs: IngestJob[] }>("/api/ingest/jobs"),
+  uploadVideo: async (file: File) => {
+    const chunkSize = 2 * 1024 * 1024;
+    const chunkCount = Math.ceil(file.size / chunkSize);
+    const uploadId = crypto.randomUUID();
+    let completed:
+      | { source_name: string; bytes: number; media_url: string }
+      | undefined;
+
+    for (let index = 0; index < chunkCount; index += 1) {
+      const body = new FormData();
+      body.append(
+        "file",
+        file.slice(index * chunkSize, Math.min(file.size, (index + 1) * chunkSize)),
+        `${file.name}.part`,
+      );
+      body.append("upload_id", uploadId);
+      body.append("filename", file.name);
+      body.append("chunk_index", String(index));
+      body.append("chunk_count", String(chunkCount));
+      body.append("total_bytes", String(file.size));
+      const response = await fetch("/api/ingest/upload/chunks", {
+        method: "POST",
+        body,
+      });
+      if (!response.ok) {
+        const payload = (await response.json().catch(() => null)) as {
+          detail?: string;
+        } | null;
+        throw new Error(payload?.detail || `Upload failed (${response.status})`);
+      }
+      const payload = (await response.json()) as
+        | { complete: false }
+        | {
+            complete: true;
+            source_name: string;
+            bytes: number;
+            media_url: string;
+          };
+      if (payload.complete) completed = payload;
+    }
+    if (!completed) throw new Error("Upload did not complete");
+    return completed;
+  },
+  startIngest: (payload: {
+    source_name: string;
+    animal_id: string;
+    animal_name: string;
+    species: string;
+    enclosure_id: string;
+    camera_id: string;
+    shift_mode: "day" | "night";
+    segment_seconds: number;
+    max_segments: number;
+    use_provider: boolean;
+  }) =>
+    request<IngestJob>("/api/ingest/jobs", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
+  chat: (messages: Array<{ role: "user" | "assistant"; content: string }>) =>
     request<{
       answer: string;
       cited_ids: string[];
@@ -195,9 +295,7 @@ export const api = {
       moments: ChatMoment[];
     }>("/api/chat", {
       method: "POST",
-      body: JSON.stringify({
-        messages: [{ role: "user", content }],
-      }),
+      body: JSON.stringify({ messages }),
     }),
   recordOutcome: (
     eventId: string,

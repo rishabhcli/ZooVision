@@ -1,13 +1,15 @@
 from __future__ import annotations
 
 import hmac
+import shutil
 from datetime import UTC, datetime
 from functools import lru_cache
 from pathlib import Path
 from typing import Literal
+from uuid import UUID
 
 import boto3
-from fastapi import FastAPI, File, HTTPException, Query, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -34,7 +36,14 @@ from .store import SQLiteStore
 #: Container types the ingest path accepts. ffprobe still validates the bytes.
 ALLOWED_UPLOAD_SUFFIXES = {".mp4", ".mov", ".mkv", ".webm", ".avi", ".m4v"}
 MAX_UPLOAD_BYTES = 2 * 1024 * 1024 * 1024
+MAX_UPLOAD_CHUNK_BYTES = 2 * 1024 * 1024
+MAX_UPLOAD_CHUNKS = MAX_UPLOAD_BYTES // MAX_UPLOAD_CHUNK_BYTES
 UPLOADED_FILE = File(...)
+UPLOAD_ID_FORM = Form(..., min_length=36, max_length=36)
+UPLOAD_NAME_FORM = Form(..., min_length=1, max_length=255)
+UPLOAD_CHUNK_INDEX_FORM = Form(..., ge=0, lt=MAX_UPLOAD_CHUNKS)
+UPLOAD_CHUNK_COUNT_FORM = Form(..., ge=1, le=MAX_UPLOAD_CHUNKS)
+UPLOAD_TOTAL_BYTES_FORM = Form(..., ge=1, le=MAX_UPLOAD_BYTES)
 
 
 class AckRequest(BaseModel):
@@ -463,6 +472,93 @@ def create_app(
         return {
             "source_name": name,
             "bytes": written,
+            "media_url": f"/media/uploads/{name}",
+        }
+
+    @app.post("/api/ingest/upload/chunks")
+    async def upload_video_chunk(
+        file: UploadFile = UPLOADED_FILE,
+        upload_id: str = UPLOAD_ID_FORM,
+        filename: str = UPLOAD_NAME_FORM,
+        chunk_index: int = UPLOAD_CHUNK_INDEX_FORM,
+        chunk_count: int = UPLOAD_CHUNK_COUNT_FORM,
+        total_bytes: int = UPLOAD_TOTAL_BYTES_FORM,
+    ) -> dict:
+        """Receive a bounded upload part and assemble it after the final part.
+
+        Keeping each proxied request small avoids body-stream loss and gateway
+        timeouts in the production Worker while retaining the same aggregate
+        size and filename checks as the single-request endpoint.
+        """
+        try:
+            canonical_upload_id = str(UUID(upload_id))
+        except ValueError as error:
+            raise HTTPException(status_code=422, detail="upload_id must be a UUID") from error
+        if canonical_upload_id != upload_id.lower():
+            raise HTTPException(status_code=422, detail="upload_id must use canonical UUID form")
+        if chunk_index >= chunk_count:
+            raise HTTPException(status_code=422, detail="chunk_index must be below chunk_count")
+
+        name = Path(filename).name
+        suffix = Path(name).suffix.lower()
+        if not name or suffix not in ALLOWED_UPLOAD_SUFFIXES:
+            raise HTTPException(
+                status_code=415,
+                detail=f"supported video types are {sorted(ALLOWED_UPLOAD_SUFFIXES)}",
+            )
+
+        parts_root = upload_root / ".parts"
+        upload_parts = parts_root / canonical_upload_id
+        upload_parts.mkdir(parents=True, exist_ok=True)
+        part_path = upload_parts / f"{chunk_index:04d}.part"
+        written = 0
+        try:
+            with part_path.open("wb") as handle:
+                while chunk := await file.read(1024 * 1024):
+                    written += len(chunk)
+                    if written > MAX_UPLOAD_CHUNK_BYTES:
+                        raise HTTPException(
+                            status_code=413,
+                            detail="upload chunk exceeds the size limit",
+                        )
+                    handle.write(chunk)
+        except HTTPException:
+            part_path.unlink(missing_ok=True)
+            raise
+
+        received_parts = sorted(upload_parts.glob("*.part"))
+        if len(received_parts) < chunk_count:
+            return {
+                "complete": False,
+                "upload_id": canonical_upload_id,
+                "received_chunks": len(received_parts),
+                "chunk_count": chunk_count,
+            }
+        if len(received_parts) != chunk_count:
+            shutil.rmtree(upload_parts, ignore_errors=True)
+            raise HTTPException(status_code=409, detail="upload contains unexpected chunks")
+
+        assembled_bytes = sum(part.stat().st_size for part in received_parts)
+        if assembled_bytes != total_bytes or assembled_bytes > MAX_UPLOAD_BYTES:
+            shutil.rmtree(upload_parts, ignore_errors=True)
+            raise HTTPException(status_code=422, detail="assembled upload size does not match")
+
+        destination = upload_root / name
+        temporary = upload_root / f".{canonical_upload_id}.assembling"
+        try:
+            with temporary.open("wb") as output:
+                for part in received_parts:
+                    with part.open("rb") as source:
+                        shutil.copyfileobj(source, output, length=1024 * 1024)
+            temporary.replace(destination)
+        finally:
+            temporary.unlink(missing_ok=True)
+            shutil.rmtree(upload_parts, ignore_errors=True)
+
+        return {
+            "complete": True,
+            "source_name": name,
+            "bytes": assembled_bytes,
             "media_url": f"/media/uploads/{name}",
         }
 

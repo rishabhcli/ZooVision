@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { createServer } from "node:net";
+import { createConnection } from "node:net";
 import { fileURLToPath } from "node:url";
 
 const projectRoot = fileURLToPath(new URL("..", import.meta.url));
@@ -12,14 +12,25 @@ function requestedPort(name, fallback) {
   return Number.isInteger(value) && value > 0 && value < 65536 ? value : fallback;
 }
 
-function portIsAvailable(port) {
+function portIsListening(port, address) {
   return new Promise((resolve) => {
-    const server = createServer();
-    server.once("error", () => resolve(false));
-    server.listen(port, host, () => {
-      server.close(() => resolve(true));
-    });
+    const socket = createConnection({ port, host: address });
+    const finish = (listening) => {
+      socket.destroy();
+      resolve(listening);
+    };
+    socket.setTimeout(250, () => finish(false));
+    socket.once("connect", () => finish(true));
+    socket.once("error", () => finish(false));
   });
+}
+
+async function portIsAvailable(port) {
+  const [ipv4, ipv6] = await Promise.all([
+    portIsListening(port, "127.0.0.1"),
+    portIsListening(port, "::1"),
+  ]);
+  return !ipv4 && !ipv6;
 }
 
 async function findAvailablePort(start) {

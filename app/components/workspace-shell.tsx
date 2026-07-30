@@ -56,8 +56,8 @@ const initialChats: Record<string, ChatMessage[]> = {
     {
       id: "monitor-intro",
       role: "assistant",
-      body: "Ask about the recorded shift. Answers are grounded in backend evidence.",
-      citations: ["Connected shift record"],
+      body: "Ask what happened or describe a moment to find. I can open the matching footage.",
+      citations: ["TwelveLabs moments", "Connected shift record"],
     },
   ],
   "/graph": [
@@ -144,7 +144,14 @@ export function WorkspaceShell({
     setDraft("");
     setChatPending(true);
     try {
-      const reply = await api.chat(value);
+      const history = currentMessages
+        .filter((message) => !message.id.endsWith("-intro"))
+        .map((message) => ({ role: message.role, content: message.body }))
+        .slice(-11);
+      const reply = await api.chat([
+        ...history,
+        { role: "user" as const, content: value },
+      ]);
       setMessagesByRoute((current) => ({
         ...current,
         [pathname]: [
@@ -214,6 +221,7 @@ export function WorkspaceShell({
             <button
               type="button"
               className="icon-button chat-toggle"
+              data-testid="chat-toggle"
               onClick={() => setChatCollapsed((current) => !current)}
               aria-label={
                 chatCollapsed ? "Expand assistant" : "Collapse assistant"
@@ -288,6 +296,7 @@ export function WorkspaceShell({
                             <button
                               type="button"
                               key={moment.observation_id}
+                              data-testid="chat-moment"
                               title={`Open ${moment.camera_id} at ${moment.start_seconds.toFixed(1)} seconds`}
                               onClick={() => {
                                 const detail = {

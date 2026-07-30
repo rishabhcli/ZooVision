@@ -161,6 +161,19 @@ of being written off as a gap. Poll `GET /api/ingest/jobs/{job_id}` for progress
 Only night segments can raise an event. Day segments refine context. A provider
 failure becomes a recorded `DataGap`, and the motion track survives it.
 
+### Precompute the stage demo
+
+With `TWELVELABS_API_KEY` configured, precompute dense, seekable activity
+moments for all three bundled camera recordings:
+
+```bash
+uv run python scripts/preprocess_demo.py --segment-seconds 120
+```
+
+The command backs up the SQLite database before processing and uses stable
+chunk IDs, so reruns are idempotent. To recover only transient provider gaps,
+run it again with `--only-gaps`.
+
 Models may extract, normalize, merge, or phrase facts. They cannot assign or
 override severity. A provider failure or invalid schema becomes a `DataGap`.
 Only night events can page, and delivery additionally requires an active

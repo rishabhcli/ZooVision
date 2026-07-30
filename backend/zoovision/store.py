@@ -535,6 +535,18 @@ class SQLiteStore:
                 ),
             )
 
+    def clear_provider_gaps(self, chunk_id: str) -> int:
+        """Remove stale provider gaps after the same stable chunk succeeds."""
+        with self.connect() as connection:
+            cursor = connection.execute(
+                """
+                DELETE FROM data_gaps
+                WHERE chunk_id = ? AND reason LIKE 'provider_%'
+                """,
+                (chunk_id,),
+            )
+            return cursor.rowcount
+
     def save_alert(
         self,
         *,

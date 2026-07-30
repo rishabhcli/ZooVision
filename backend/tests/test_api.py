@@ -318,6 +318,57 @@ def test_upload_strips_directory_components_from_the_filename(client):
     assert response.json()["source_name"] == "escape.mp4"
 
 
+def test_chunked_upload_assembles_the_original_bytes(client, tmp_path):
+    upload_id = "1f36754e-b18d-4e62-81d8-cbbd8a171ec7"
+    payload = b"\x00\x00\x00\x18ftypmp42" + b"video-payload"
+    parts = [payload[:10], payload[10:]]
+    common = {
+        "upload_id": upload_id,
+        "filename": "../../chunked-clip.mp4",
+        "chunk_count": "2",
+        "total_bytes": str(len(payload)),
+    }
+
+    first = client.post(
+        "/api/ingest/upload/chunks",
+        data={**common, "chunk_index": "0"},
+        files={"file": ("chunk.part", parts[0], "application/octet-stream")},
+    )
+    second = client.post(
+        "/api/ingest/upload/chunks",
+        data={**common, "chunk_index": "1"},
+        files={"file": ("chunk.part", parts[1], "application/octet-stream")},
+    )
+
+    assert first.status_code == 200
+    assert first.json()["complete"] is False
+    assert second.status_code == 200
+    assert second.json() == {
+        "complete": True,
+        "source_name": "chunked-clip.mp4",
+        "bytes": len(payload),
+        "media_url": "/media/uploads/chunked-clip.mp4",
+    }
+    assert (tmp_path / "raw" / "uploads" / "chunked-clip.mp4").read_bytes() == payload
+    assert not (tmp_path / "raw" / "uploads" / ".parts" / upload_id).exists()
+
+
+def test_chunked_upload_rejects_a_noncanonical_upload_id(client):
+    response = client.post(
+        "/api/ingest/upload/chunks",
+        data={
+            "upload_id": "not-a-uuid",
+            "filename": "clip.mp4",
+            "chunk_index": "0",
+            "chunk_count": "1",
+            "total_bytes": "4",
+        },
+        files={"file": ("chunk.part", b"test", "application/octet-stream")},
+    )
+
+    assert response.status_code == 422
+
+
 def test_ingest_job_404s_when_unknown(client):
     assert client.get("/api/ingest/jobs/job_missing").status_code == 404
     assert client.get("/api/ingest/jobs").json() == {"jobs": []}

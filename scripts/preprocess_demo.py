@@ -53,6 +53,11 @@ def _arguments() -> argparse.Namespace:
     )
     parser.add_argument("--segment-seconds", type=int, default=120)
     parser.add_argument("--source", action="append", dest="sources")
+    parser.add_argument(
+        "--only-gaps",
+        action="store_true",
+        help="Retry only stable chunks whose current status is coverage_gap.",
+    )
     return parser.parse_args()
 
 
@@ -99,6 +104,9 @@ def main() -> None:
     total_observations = 0
     total_events = 0
     total_gaps = 0
+    chunk_statuses = {
+        row["chunk_id"]: row["status"] for row in store.dump_table("video_chunks")
+    }
 
     for item in selected:
         source_path = item["source_path"]
@@ -133,10 +141,10 @@ def main() -> None:
                     ordinal,
                     round(offset, 3),
                 )
+                if arguments.only_gaps and chunk_statuses.get(chunk_id) != "coverage_gap":
+                    continue
                 analyzable = _provider_ready(piece)
-                workflow = SegmentWorkflow(analyzer=analyzer, store=store)
-                result = workflow.run(
-                    SegmentWorkflowInput(
+                request = SegmentWorkflowInput(
                         chunk=VideoChunkContext(
                             chunk_id=chunk_id,
                             animal_id=item["animal_id"],
@@ -157,7 +165,9 @@ def main() -> None:
                         delivery_enabled=False,
                         webhook_configured=False,
                     )
-                )
+                result = SegmentWorkflow(analyzer=analyzer, store=store).run(request)
+                if result.data_gap_id is not None:
+                    result = SegmentWorkflow(analyzer=analyzer, store=store).run(request)
                 total_observations += result.observation_count
                 total_events += len(result.event_ids)
                 total_gaps += int(result.data_gap_id is not None)

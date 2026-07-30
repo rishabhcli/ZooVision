@@ -88,22 +88,46 @@ export const api = {
       body: JSON.stringify(payload)
     }),
   uploadVideo: async (file: File) => {
-    const form = new FormData();
-    form.append("file", file);
-    const response = await fetch("/api/ingest/upload", {
-      method: "POST",
-      body: form
-    });
-    if (!response.ok) {
-      const body = await response
-        .json()
-        .catch(() => ({ detail: response.statusText }));
-      throw new Error(body.detail || "Upload failed");
+    const chunkSize = 2 * 1024 * 1024;
+    const chunkCount = Math.ceil(file.size / chunkSize);
+    const uploadId = crypto.randomUUID();
+    let completed:
+      | { source_name: string; bytes: number; media_url: string }
+      | undefined;
+
+    for (let index = 0; index < chunkCount; index += 1) {
+      const form = new FormData();
+      form.append(
+        "file",
+        file.slice(index * chunkSize, Math.min(file.size, (index + 1) * chunkSize)),
+        `${file.name}.part`
+      );
+      form.append("upload_id", uploadId);
+      form.append("filename", file.name);
+      form.append("chunk_index", String(index));
+      form.append("chunk_count", String(chunkCount));
+      form.append("total_bytes", String(file.size));
+      const response = await fetch("/api/ingest/upload/chunks", {
+        method: "POST",
+        body: form
+      });
+      if (!response.ok) {
+        const body = await response
+          .json()
+          .catch(() => ({ detail: response.statusText }));
+        throw new Error(body.detail || "Upload failed");
+      }
+      const payload = (await response.json()) as
+        | { complete: false }
+        | {
+            complete: true;
+            source_name: string;
+            bytes: number;
+            media_url: string;
+          };
+      if (payload.complete) completed = payload;
     }
-    return response.json() as Promise<{
-      source_name: string;
-      bytes: number;
-      media_url: string;
-    }>;
+    if (!completed) throw new Error("Upload did not complete");
+    return completed;
   }
 };

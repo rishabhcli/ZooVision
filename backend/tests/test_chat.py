@@ -11,6 +11,7 @@ from zoovision.chat import (
     ChatRequest,
     GroundedChat,
     build_context,
+    retrieve_context,
     summarize,
 )
 from zoovision.domain import (
@@ -140,6 +141,79 @@ def test_deterministic_answer_quotes_the_rule_and_cites_the_event(tmp_path: Path
     assert reply.context_record_count > 0
 
 
+def test_retrieval_does_not_return_unrelated_tags_for_unknown_question(tmp_path: Path) -> None:
+    context = retrieve_context(
+        build_context(_seeded_store(tmp_path)),
+        [ChatMessage(role="user", content="What is tomorrow's weather?")],
+    )
+
+    assert context["events"] == []
+    assert context["moments"] == []
+    assert context["data_gaps"] == []
+
+
+def test_unknown_question_admits_no_matching_record_instead_of_dumping_events(
+    tmp_path: Path,
+) -> None:
+    reply = GroundedChat(_seeded_store(tmp_path)).reply(
+        ChatRequest(messages=[ChatMessage(role="user", content="What is tomorrow's weather?")])
+    )
+
+    assert "could not find recorded evidence" in reply.answer
+    assert "R005_PACING_10M" not in reply.answer
+    assert reply.cited_ids == []
+
+
+def test_unknown_animal_does_not_turn_summary_language_into_a_record_dump(
+    tmp_path: Path,
+) -> None:
+    reply = GroundedChat(_seeded_store(tmp_path)).reply(
+        ChatRequest(messages=[ChatMessage(role="user", content="What happened to the giraffe?")])
+    )
+
+    assert "could not find recorded evidence" in reply.answer
+    assert "Nox" not in reply.answer
+    assert reply.cited_ids == []
+
+
+def test_follow_up_uses_the_previous_animal_subject(tmp_path: Path) -> None:
+    context = retrieve_context(
+        build_context(_seeded_store(tmp_path)),
+        [
+            ChatMessage(role="user", content="What happened to Nox?"),
+            ChatMessage(
+                role="assistant",
+                content="Nox had a recorded pacing event.",
+            ),
+            ChatMessage(role="user", content="What rule supports that?"),
+        ],
+    )
+
+    assert [event["event_id"] for event in context["events"]] == ["evt-1"]
+    assert context["retrieval"]["matched_animal_ids"] == ["animal-nox"]
+
+
+def test_retrieval_keeps_synthetic_evidence_only_when_a_selected_event_cites_it(
+    tmp_path: Path,
+) -> None:
+    full_context = build_context(_seeded_store(tmp_path))
+    unrelated = dict(full_context["moments"][0])
+    unrelated["observation_id"] = "obs-unrelated-demo"
+    unrelated["animal_id"] = "animal-quiet"
+    unrelated["animal_name"] = "Juniper"
+    unrelated["enclosure_id"] = "ENC-03"
+    unrelated["behavior"] = "resting"
+    unrelated["activity_label"] = "Resting"
+    full_context["moments"].append(unrelated)
+
+    context = retrieve_context(
+        full_context,
+        [ChatMessage(role="user", content="What happened to Nox?")],
+    )
+
+    assert [moment["observation_id"] for moment in context["moments"]] == ["obs-1"]
+
+
 def test_deterministic_answer_names_quiet_animals_and_gaps(tmp_path: Path) -> None:
     reply = GroundedChat(_seeded_store(tmp_path)).reply(
         ChatRequest(messages=[ChatMessage(role="user", content="Give me the shift summary.")])
@@ -207,6 +281,7 @@ def test_model_answer_is_returned_when_citations_are_valid(tmp_path: Path) -> No
     assert reply.moments[0].start_seconds == 0
     # The record must never be retained by the provider.
     assert client.responses.calls[0]["store"] is False
+    assert client.responses.calls[0]["reasoning"] == {"effort": "medium"}
 
 
 def test_model_answer_citing_an_unknown_record_falls_back_to_the_record(tmp_path: Path) -> None:

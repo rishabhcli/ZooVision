@@ -46,6 +46,8 @@ const POSTER_BY_CAMERA: Record<string, string> = {
   "CAM-03Y": "/camera-posters/cam-03y-gorilla.jpg",
   "CAM-05N": "/camera-posters/cam-05n-elephant.jpg",
   "CAM-07A": "/camera-posters/cam-07a-lion.jpg",
+  "CAM-BY1": "/media/uploads/backyard-squirrel-staircase-poster.jpg",
+  "CAM-BY2": "/media/uploads/backyard-squirrels-and-birds-poster.jpg",
 };
 
 function clamp(value: number, minimum: number, maximum: number) {
@@ -161,6 +163,29 @@ function nearestByStart<T extends { start_seconds: number }>(
       ? item
       : nearest,
   );
+}
+
+function observationAtTime(
+  observations: VideoTrack["observations"],
+  currentSeconds: number,
+) {
+  const active = observations
+    .filter(
+      (observation) =>
+        currentSeconds >= observation.start_seconds &&
+        currentSeconds <= observation.end_seconds,
+    )
+    .sort((left, right) => {
+      const leftLive = left.provider === "twelvelabs" ? 1 : 0;
+      const rightLive = right.provider === "twelvelabs" ? 1 : 0;
+      if (leftLive !== rightLive) return rightLive - leftLive;
+      return (
+        left.end_seconds -
+        left.start_seconds -
+        (right.end_seconds - right.start_seconds)
+      );
+    });
+  return active[0] ?? nearestByStart(observations, currentSeconds);
 }
 
 function EvidenceTimeline({
@@ -449,13 +474,7 @@ export function MonitorWorkspace() {
   }, [currentSeconds, track]);
   const selectedObservation = useMemo(() => {
     if (!track) return null;
-    return (
-      track.observations.find(
-        (observation) =>
-          currentSeconds >= observation.start_seconds &&
-          currentSeconds <= observation.end_seconds,
-      ) ?? nearestByStart(track.observations, currentSeconds)
-    );
+    return observationAtTime(track.observations, currentSeconds);
   }, [currentSeconds, track]);
   const orderedTrackIds = useMemo(() => {
     const active = new Set(activeDetections.map((item) => item.track_id));
@@ -755,6 +774,7 @@ export function MonitorWorkspace() {
                 poster={poster}
                 preload="auto"
                 autoPlay
+                loop
                 muted
                 playsInline
                 onLoadedMetadata={(event) => {

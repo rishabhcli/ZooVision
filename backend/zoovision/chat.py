@@ -14,6 +14,7 @@ console's chat always responds rather than presenting an error.
 from __future__ import annotations
 
 import json
+import re
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -37,8 +38,80 @@ Ground every statement in the supplied context JSON. Rules you must follow:
 - Cite the ids of the context records you used in cited_ids.
 - When the question asks where or when something happened, select up to five
   relevant observation ids in moment_ids. Only select ids present in moments.
+- Prefer `provider_structured` moments for footage lookup. Use
+  `synthetic_scenario` moments only when the user explicitly asks about a demo
+  scenario or the deterministic rule event that cites it.
+- Answer the user's actual question instead of listing every available tag or
+  record. Synthesize the smallest useful answer, connect evidence across records,
+  and explain why each cited record is relevant.
+- Treat earlier conversation turns as context for follow-up questions. The newest
+  user question controls the task when the subject changes.
+- Distinguish absence of a recorded event from proof that nothing happened.
 - Be brief and factual. Keeper staff read these during a night shift.
 """.strip()
+
+_TOKEN_PATTERN = re.compile(r"[a-z0-9]+")
+_STOP_WORDS = {
+    "a",
+    "about",
+    "an",
+    "and",
+    "are",
+    "at",
+    "be",
+    "did",
+    "do",
+    "does",
+    "for",
+    "from",
+    "give",
+    "had",
+    "has",
+    "have",
+    "i",
+    "in",
+    "is",
+    "it",
+    "me",
+    "of",
+    "on",
+    "or",
+    "please",
+    "show",
+    "that",
+    "the",
+    "their",
+    "there",
+    "this",
+    "to",
+    "was",
+    "were",
+    "what",
+    "which",
+    "who",
+    "with",
+}
+_SUMMARY_PHRASES = ("summary", "summarise", "summarize", "overview", "what happened", "report")
+_GAP_PHRASES = ("gap", "missing", "coverage", "camera loss", "unavailable")
+_QUIET_PHRASES = ("no event", "no recorded event", "quiet animal", "nothing recorded")
+_MOMENT_PHRASES = ("footage", "clip", "video", "where", "when", "find", "moment")
+_EVENT_PHRASES = ("event", "severity", "rule", "evidence", "support", "highest")
+_INTENT_TERMS = {
+    "event",
+    "evidence",
+    "happened",
+    "highest",
+    "overview",
+    "recorded",
+    "report",
+    "rule",
+    "severity",
+    "shift",
+    "summarise",
+    "summarize",
+    "summary",
+    "tonight",
+}
 
 
 class ChatMessage(BaseModel):
@@ -216,11 +289,12 @@ class GroundedChat:
         self.allow_fallback = allow_fallback
 
     def reply(self, request: ChatRequest) -> ChatReply:
-        context = build_context(
+        full_context = build_context(
             self.store,
             enclosure_id=request.enclosure_id,
             animal_id=request.animal_id,
         )
+        context = retrieve_context(full_context, request.messages)
         count = context_record_count(context)
         if self.client is not None and self.model:
             try:
@@ -237,7 +311,7 @@ class GroundedChat:
             except Exception as error:  # noqa: BLE001 - degrade to the grounded summary
                 if not self.allow_fallback:
                     raise RuntimeError("live OpenAI chat is unavailable") from error
-                fallback = summarize(context, request.messages[-1].content)
+                fallback = summarize(context, request.messages)
                 fallback.uncertainty.append(
                     f"The language model was unavailable ({type(error).__name__}); "
                     "this answer was assembled directly from the shift record."
@@ -253,7 +327,7 @@ class GroundedChat:
                 )
         if not self.allow_fallback:
             raise RuntimeError("live OpenAI chat is not configured")
-        answer = summarize(context, request.messages[-1].content)
+        answer = summarize(context, request.messages)
         return ChatReply(
             answer=answer.answer,
             cited_ids=answer.cited_ids,
@@ -277,7 +351,7 @@ class GroundedChat:
                 default=str,
             ),
             text_format=ChatAnswer,
-            reasoning={"effort": "low"},
+            reasoning={"effort": "medium"},
             max_output_tokens=900,
             store=False,
         )
@@ -295,7 +369,157 @@ class GroundedChat:
         return answer
 
 
-def summarize(context: dict[str, Any], question: str) -> ChatAnswer:
+def retrieve_context(
+    context: dict[str, Any],
+    messages: list[ChatMessage],
+) -> dict[str, Any]:
+    """Select records that can answer the current turn before synthesis.
+
+    This is intentionally lexical and deterministic. It prevents a broad shift
+    record from turning into arbitrary "top tags", while the language model is
+    still responsible for phrasing and multi-turn synthesis.
+    """
+    question = messages[-1].content
+    previous_users = [message.content for message in messages[:-1] if message.role == "user"]
+    query = question
+    if _looks_like_follow_up(question) and previous_users:
+        query = f"{previous_users[-1]} {question}"
+
+    intents = _query_intents(query)
+    terms = _tokens(query)
+    content_terms = terms - _INTENT_TERMS
+    animals = context.get("animals", [])
+    matched_animal_ids = {
+        animal["animal_id"]
+        for animal in animals
+        if _record_score(animal, terms, ("animal_id", "name", "species", "enclosure_id")) > 0
+    }
+    matched_enclosures = {
+        animal["enclosure_id"] for animal in animals if animal["animal_id"] in matched_animal_ids
+    }
+    broad = intents["summary"] or intents["quiet"]
+
+    ranked_events = _rank_records(
+        context.get("events", []),
+        terms,
+        (
+            "animal_id",
+            "animal_name",
+            "enclosure_id",
+            "behavior",
+            "rule_fired",
+            "action",
+            "explanation_facts",
+        ),
+    )
+    if matched_animal_ids:
+        ranked_events = [
+            (score + 20, event)
+            for score, event in ranked_events
+            if event["animal_id"] in matched_animal_ids
+        ]
+    if broad:
+        if matched_animal_ids:
+            selected_events = [event for _, event in ranked_events][:20]
+        elif content_terms:
+            selected_events = [event for score, event in ranked_events if score > 0][:12]
+        else:
+            selected_events = context.get("events", [])[:20]
+    else:
+        selected_events = [event for score, event in ranked_events if score > 0][:12]
+
+    allow_synthetic = _explicitly_requests_demo(query)
+    event_source_ids = {
+        source["observation_id"]
+        for event in selected_events
+        for source in event.get("sources", [])
+    }
+    candidate_moments = [
+        moment
+        for moment in context.get("moments", [])
+        if allow_synthetic
+        or moment.get("evidence_kind") != "synthetic_scenario"
+        or moment["observation_id"] in event_source_ids
+    ]
+    ranked_moments = _rank_records(
+        candidate_moments,
+        terms,
+        (
+            "animal_id",
+            "animal_name",
+            "species",
+            "enclosure_id",
+            "camera_id",
+            "behavior",
+            "activity_label",
+            "evidence",
+        ),
+    )
+    if matched_animal_ids:
+        ranked_moments = [
+            (score + 20, moment)
+            for score, moment in ranked_moments
+            if moment["animal_id"] in matched_animal_ids
+        ]
+    relevant_moments = [
+        moment
+        for score, moment in ranked_moments
+        if score > 0 or moment["observation_id"] in event_source_ids
+    ]
+    if intents["summary"] and not content_terms and not relevant_moments:
+        relevant_moments = [moment for _, moment in ranked_moments[:5]]
+    if intents["quiet"] or intents["gaps"] and not intents["moments"]:
+        relevant_moments = []
+
+    gaps = context.get("data_gaps", [])
+    if not intents["gaps"]:
+        if matched_enclosures:
+            gaps = [gap for gap in gaps if gap["enclosure_id"] in matched_enclosures]
+        elif not intents["summary"] or content_terms:
+            gaps = [
+                gap
+                for gap in gaps
+                if _record_score(
+                    gap,
+                    terms,
+                    ("gap_id", "enclosure_id", "reason", "detail", "start_ts", "end_ts"),
+                )
+                > 0
+            ]
+
+    selected_animals = animals
+    if matched_animal_ids and not intents["quiet"]:
+        selected_animals = [
+            animal for animal in animals if animal["animal_id"] in matched_animal_ids
+        ]
+
+    return {
+        **context,
+        "animals": selected_animals,
+        "events": selected_events,
+        "moments": relevant_moments[:20],
+        "data_gaps": gaps[:12],
+        "retrieval": {
+            "query": question,
+            "resolved_query": query,
+            "intents": [name for name, active in intents.items() if active],
+            "matched_animal_ids": sorted(matched_animal_ids),
+            "no_match": bool(
+                animals
+                and content_terms
+                and not matched_animal_ids
+                and not selected_events
+                and not relevant_moments
+                and not gaps
+            ),
+        },
+    }
+
+
+def summarize(
+    context: dict[str, Any],
+    question: str | list[ChatMessage],
+) -> ChatAnswer:
     """Assemble a factual answer straight from the record, with no model.
 
     This keeps the console useful when the language model is unreachable, and it
@@ -306,27 +530,22 @@ def summarize(context: dict[str, Any], question: str) -> ChatAnswer:
     animals = context.get("animals", [])
     gaps = context.get("data_gaps", [])
     moments = context.get("moments", [])
-    asked = question.lower()
+    asked = question[-1].content.lower() if isinstance(question, list) else question.lower()
+    intents = _query_intents(asked)
+    selected = events
+    selected_moments = moments
 
-    focus = [
-        event
-        for event in events
-        if event["animal_name"].lower() in asked or event["behavior"].replace("_", " ") in asked
-    ]
-    selected = focus or events
-    matching_moments = [
-        moment
-        for moment in moments
-        if any(
-            term and term in asked
-            for term in (
-                moment["animal_name"].lower(),
-                moment["behavior"].replace("_", " "),
-                (moment.get("activity_label") or "").lower(),
-            )
+    if context.get("retrieval", {}).get("no_match"):
+        return ChatAnswer(
+            answer=(
+                "I could not find recorded evidence that answers that question. "
+                "Try naming an animal, enclosure, behavior, rule, or asking for the shift summary."
+            ),
+            cited_ids=[],
+            uncertainty=[
+                "No matching record was found; this is not proof that nothing happened."
+            ],
         )
-    ]
-    selected_moments = matching_moments or moments
 
     if not animals:
         return ChatAnswer(
@@ -337,7 +556,21 @@ def summarize(context: dict[str, Any], question: str) -> ChatAnswer:
 
     lines: list[str] = []
     cited: list[str] = []
-    if selected:
+    quiet = [animal for animal in animals if animal["event_count"] == 0]
+
+    if intents["quiet"]:
+        if quiet:
+            lines.append(
+                "Animals with no deterministic welfare events recorded in this view: "
+                + ", ".join(sorted(animal["name"] for animal in quiet))
+                + "."
+            )
+            cited.extend(animal["animal_id"] for animal in quiet)
+        else:
+            lines.append("Every animal in this view has at least one recorded welfare event.")
+    elif intents["gaps"] and not selected and not selected_moments:
+        lines.append("I found no event or footage record relevant to that question.")
+    elif selected:
         lines.append(f"{len(selected)} recorded event(s) match this view:")
         for event in selected[:6]:
             lines.append(
@@ -348,10 +581,10 @@ def summarize(context: dict[str, Any], question: str) -> ChatAnswer:
                 f"Review state: {event.get('acknowledgement') or 'unknown'}."
             )
             cited.append(event["event_id"])
-    else:
+    elif not intents["gaps"]:
         lines.append("No deterministic welfare events are recorded for this view.")
 
-    if selected_moments:
+    if selected_moments and not intents["quiet"]:
         lines.append(f"{len(selected_moments)} tracked footage moment(s) are available for review.")
         for moment in selected_moments[:5]:
             label = moment.get("activity_label") or moment["behavior"].replace("_", " ")
@@ -361,8 +594,7 @@ def summarize(context: dict[str, Any], question: str) -> ChatAnswer:
             )
             cited.append(moment["observation_id"])
 
-    quiet = [animal for animal in animals if animal["event_count"] == 0]
-    if quiet:
+    if quiet and intents["summary"] and not intents["quiet"]:
         lines.append(
             "Animals with no recorded events: "
             + ", ".join(sorted(animal["name"] for animal in quiet))
@@ -381,12 +613,75 @@ def summarize(context: dict[str, Any], question: str) -> ChatAnswer:
             cited.append(gap["gap_id"])
         uncertainty.append("Recorded coverage gaps mean the record may be incomplete.")
 
+    if not cited and not gaps:
+        lines = [
+            "I could not find recorded evidence that answers that question.",
+            "Try naming an animal, enclosure, behavior, rule, or asking for the shift summary.",
+        ]
+        uncertainty.append("No matching record was found; this is not proof that nothing happened.")
+
     return ChatAnswer(
         answer="\n".join(lines)[:1800],
         cited_ids=cited[:20],
         uncertainty=uncertainty,
         moment_ids=[moment["observation_id"] for moment in selected_moments[:5]],
     )
+
+
+def _query_intents(query: str) -> dict[str, bool]:
+    lowered = query.lower()
+    return {
+        "summary": any(phrase in lowered for phrase in _SUMMARY_PHRASES),
+        "gaps": any(phrase in lowered for phrase in _GAP_PHRASES),
+        "quiet": any(phrase in lowered for phrase in _QUIET_PHRASES),
+        "moments": any(phrase in lowered for phrase in _MOMENT_PHRASES),
+        "events": any(phrase in lowered for phrase in _EVENT_PHRASES),
+    }
+
+
+def _tokens(value: Any) -> set[str]:
+    if isinstance(value, list):
+        value = " ".join(str(item) for item in value)
+    tokens = set(_TOKEN_PATTERN.findall(str(value).lower().replace("_", " ")))
+    normalized = {
+        token[:-1] if token.endswith("s") and len(token) > 4 else token
+        for token in tokens
+    }
+    return normalized - _STOP_WORDS
+
+
+def _record_score(record: dict[str, Any], terms: set[str], fields: tuple[str, ...]) -> int:
+    if not terms:
+        return 0
+    score = 0
+    for index, field in enumerate(fields):
+        overlap = terms & _tokens(record.get(field, ""))
+        if overlap:
+            score += len(overlap) * max(1, 5 - index // 2)
+    return score
+
+
+def _rank_records(
+    records: list[dict[str, Any]],
+    terms: set[str],
+    fields: tuple[str, ...],
+) -> list[tuple[int, dict[str, Any]]]:
+    ranked = [(_record_score(record, terms, fields), record) for record in records]
+    return sorted(ranked, key=lambda item: item[0], reverse=True)
+
+
+def _looks_like_follow_up(question: str) -> bool:
+    lowered = question.strip().lower()
+    return (
+        len(_tokens(lowered)) <= 3
+        or lowered.startswith(("and ", "what about", "how about", "why ", "when ", "where "))
+        or any(word in _tokens(lowered) for word in ("it", "that", "them", "those"))
+    )
+
+
+def _explicitly_requests_demo(query: str) -> bool:
+    lowered = query.lower()
+    return any(term in lowered for term in ("demo", "fixture", "synthetic", "scenario"))
 
 
 def _citable_ids(context: dict[str, Any]) -> set[str]:
