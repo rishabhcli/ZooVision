@@ -1,6 +1,12 @@
 from datetime import UTC, datetime, timedelta
 
-from zoovision.domain import AlertAction, Behavior, EventRecord, Severity
+from zoovision.domain import (
+    AlertAction,
+    Behavior,
+    EventRecord,
+    Severity,
+    ShiftMode,
+)
 from zoovision.store import SQLiteStore
 
 
@@ -26,6 +32,9 @@ def test_repeat_event_write_is_idempotent(tmp_path):
         action=AlertAction.OBSERVE,
         confidence=0.9,
         source_observation_ids=["obs-1"],
+        explanation_facts=["Continuous pacing lasted 14.0 minutes."],
+        rule_version="2026-07-30.v1",
+        shift_mode=ShiftMode.NIGHT,
         created_at=datetime.now(UTC),
     )
     store.save_event(event)

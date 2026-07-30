@@ -53,6 +53,18 @@ class AlertAction(StrEnum):
     OBSERVE = "observe"
 
 
+class EvidenceKind(StrEnum):
+    PROVIDER_STRUCTURED = "provider_structured"
+    HUMAN_REVIEWED = "human_reviewed"
+    SYNTHETIC_SCENARIO = "synthetic_scenario"
+
+
+class ReviewState(StrEnum):
+    UNREVIEWED = "unreviewed"
+    CONFIRMED = "confirmed"
+    DISMISSED = "dismissed"
+
+
 class Observation(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -68,6 +80,7 @@ class Observation(BaseModel):
     provider: str
     provider_model: str
     provider_item_id: str | None = None
+    evidence_kind: EvidenceKind = EvidenceKind.PROVIDER_STRUCTURED
 
     @model_validator(mode="after")
     def validate_interval(self) -> Observation:
@@ -159,6 +172,10 @@ class EventRecord(BaseModel):
     confidence: float
     baseline_delta_z: float | None = None
     source_observation_ids: list[str]
+    explanation_facts: list[str]
+    rule_version: str
+    shift_mode: ShiftMode
+    review_state: ReviewState = ReviewState.UNREVIEWED
     created_at: datetime
 
 
