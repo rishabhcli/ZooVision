@@ -126,11 +126,13 @@ class MotionEvidenceAnalyzer:
         sample_fps: float = 2.0,
         min_inactivity_minutes: float = 2.0,
         min_activity_seconds: float = 4.0,
+        merge_gap_seconds: float = 2.0,
     ):
         self.detections = detections
         self.sample_fps = sample_fps
         self.min_inactivity_minutes = min_inactivity_minutes
         self.min_activity_seconds = min_activity_seconds
+        self.merge_gap_seconds = merge_gap_seconds
 
     def safe_analyze_file(self, path: str | Path, chunk: VideoChunkContext) -> ProviderAnalysis:
         del path
@@ -195,10 +197,16 @@ class MotionEvidenceAnalyzer:
         if duration_seconds - cursor >= self.min_inactivity_minutes * 60:
             spans.append(("still", cursor, duration_seconds))
         if active:
+            # A body is routinely missed for a few sampled frames while it pauses
+            # or blends into the background. Merging across a real duration rather
+            # than a multiple of the sampling step keeps one continuous movement
+            # as one span; splitting on the step fragments it into slivers that
+            # the activity floor then discards, reporting no motion at all.
+            merge_gap = max(self.merge_gap_seconds, step * 3)
             run_start = active[0]
             previous = active[0]
             for moment in active[1:]:
-                if moment - previous > step * 3:
+                if moment - previous > merge_gap:
                     spans.append(("motion", run_start, previous + step))
                     run_start = moment
                 previous = moment

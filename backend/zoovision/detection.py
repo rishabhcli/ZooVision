@@ -82,6 +82,12 @@ class DetectorConfig(BaseModel):
     warmup_frames: int = Field(default=5, ge=0)
     history: int = Field(default=90, ge=1)
     var_threshold: float = Field(default=32.0, gt=0)
+    #: Explicit MOG2 adaptation rate. OpenCV's automatic rate is derived from
+    #: how many frames it has seen, so a short segment adapts almost instantly
+    #: and absorbs the body it is supposed to find: a 10-second segment
+    #: surfaced 1 of 21 frames where a fixed rate surfaced all 20. Pinning it
+    #: makes sensitivity a property of the configuration, not of segment length.
+    learning_rate: float = Field(default=0.01, gt=0, le=1)
     iou_match_threshold: float = Field(default=0.15, ge=0, le=1)
     track_gap_tolerance_seconds: float = Field(default=2.0, ge=0)
 
@@ -105,7 +111,7 @@ class MotionRegionDetector:
 
         for index, frame in enumerate(frames):
             gray = _to_gray(frame.image)
-            mask = subtractor.apply(gray)
+            mask = subtractor.apply(gray, learningRate=config.learning_rate)
             if index < config.warmup_frames:
                 continue
             # MOG2 paints shadows at 127; keep only confident foreground.

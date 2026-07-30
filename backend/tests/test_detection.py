@@ -179,3 +179,19 @@ def test_run_media_tool_passes_through_a_normal_failure(tmp_path) -> None:
     completed = run_media_tool(["ffprobe", "-v", "error", str(tmp_path / "nope.mp4")], timeout=30)
 
     assert completed.returncode != 0
+
+
+def test_a_short_segment_still_finds_the_body() -> None:
+    """Sensitivity must not depend on how many frames a segment happens to hold.
+
+    OpenCV's automatic MOG2 rate adapts from its own frame count, so a short
+    segment absorbs the body it is meant to find. The detector pins the rate.
+    """
+    short = _frames_with_moving_body(count=14)
+
+    detections = MotionRegionDetector().detect(short, chunk_id="chunk-1")
+
+    frames_with_motion = {d.relative_seconds for d in detections}
+    assert len(frames_with_motion) >= 3, (
+        f"a 14-frame segment must still surface the body, got {sorted(frames_with_motion)}"
+    )

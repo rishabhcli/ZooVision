@@ -1,9 +1,10 @@
 from __future__ import annotations
 
-import subprocess
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+import cv2
+import numpy as np
 import pytest
 from zoovision.detection import DetectorConfig
 from zoovision.domain import (
@@ -49,29 +50,31 @@ def _detection(seconds: float, track: str = "trk-1") -> Detection:
 
 
 def _make_video(path: Path, *, seconds: int = 8) -> Path:
-    """Render a small real video so ffmpeg/OpenCV paths are exercised for real."""
-    subprocess.run(
-        [
-            "ffmpeg",
-            "-nostdin",
-            "-v",
-            "error",
-            "-y",
-            "-f",
-            "lavfi",
-            "-i",
-            f"testsrc=size=320x240:rate=10:duration={seconds}",
-            "-c:v",
-            "libx264",
-            "-pix_fmt",
-            "yuv420p",
-            "-g",
-            "20",
-            str(path),
-        ],
-        check=True,
-        timeout=120,
+    """Write a real file containing one unmistakably moving body.
+
+    Frames are drawn here rather than sourced from an ffmpeg synthetic pattern:
+    ``testsrc`` renders differently across ffmpeg builds, so whether the
+    detector found motion in it varied by machine. A bright block crossing a
+    dark field is decisive on any build, which keeps this test about the ingest
+    pipeline instead of about the encoder.
+    """
+    width, height, fps = 320, 240, 10
+    writer = cv2.VideoWriter(
+        str(path),
+        cv2.VideoWriter_fourcc(*"mp4v"),
+        fps,
+        (width, height),
     )
+    if not writer.isOpened():  # pragma: no cover - environment guard
+        raise RuntimeError("OpenCV could not open a video writer")
+    try:
+        for index in range(fps * seconds):
+            frame = np.full((height, width, 3), 30, dtype=np.uint8)
+            left = 20 + (index * 8) % (width - 110)
+            cv2.rectangle(frame, (left, 90), (left + 70, 160), (245, 245, 245), -1)
+            writer.write(frame)
+    finally:
+        writer.release()
     return path
 
 
@@ -321,3 +324,39 @@ def test_ingest_request_rejects_a_path_in_the_source_name() -> None:
             camera_id="CAM-01",
             start_ts=START,
         )
+
+
+def test_intermittent_detections_stay_one_span_instead_of_vanishing() -> None:
+    """A steadily moving body is routinely missed for a few sampled frames.
+
+    Splitting a run on the sampling step fragments continuous movement into
+    slivers that the activity floor then discards, so real motion would be
+    reported as no motion at all.
+    """
+    # Two seconds of motion, sampled at 2 fps, with single dropped samples.
+    moments = [0.0, 0.5, 1.5, 2.0, 3.0, 3.5, 4.5, 5.0, 6.0, 6.5, 7.5, 8.0]
+    analyzer = MotionEvidenceAnalyzer(
+        [_detection(t) for t in moments],
+        sample_fps=2.0,
+        min_inactivity_minutes=1.0,
+    )
+
+    spans = analyzer._motion_spans(600.0)
+    motion = [span for span in spans if span[0] == "motion"]
+
+    assert len(motion) == 1, f"gaps of one sample must not split the run: {motion}"
+    assert motion[0][1] == 0.0
+    assert motion[0][2] >= 8.0
+
+
+def test_a_genuine_pause_still_separates_two_motion_spans() -> None:
+    analyzer = MotionEvidenceAnalyzer(
+        [_detection(t) for t in [i * 0.5 for i in range(12)] + [60.0 + i * 0.5 for i in range(12)]],
+        sample_fps=2.0,
+        min_inactivity_minutes=1.0,
+        merge_gap_seconds=2.0,
+    )
+
+    motion = [span for span in analyzer._motion_spans(600.0) if span[0] == "motion"]
+
+    assert len(motion) == 2, "a minute of stillness is not one continuous movement"
