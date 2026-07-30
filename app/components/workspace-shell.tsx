@@ -3,18 +3,30 @@
 import { AnimatePresence, MotionConfig, motion } from "motion/react";
 import {
   BarChart3,
+  Bot,
   ChevronDown,
+  ChevronLeft,
+  ChevronRight,
   CircleUserRound,
+  MessageSquareText,
   Monitor,
   Moon,
   Network,
+  Paperclip,
   ScanLine,
+  Send,
   Settings,
   ShieldCheck,
-  X,
+  Sparkles,
 } from "lucide-react";
 import { usePathname, useRouter } from "next/navigation";
-import { ReactNode, useEffect, useRef, useState } from "react";
+import {
+  FormEvent,
+  ReactNode,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
 
 type WorkspaceShellProps = {
   children: ReactNode;
@@ -22,11 +34,74 @@ type WorkspaceShellProps = {
   eyebrow: string;
 };
 
+type ChatMessage = {
+  id: string;
+  role: "user" | "assistant";
+  body: string;
+  citations?: string[];
+};
+
 const routeOptions = [
   { label: "Monitor", href: "/monitor", icon: Monitor },
   { label: "Node graph", href: "/graph", icon: Network },
   { label: "Analysis", href: "/analysis", icon: BarChart3 },
+  { label: "Settings", href: "/settings", icon: Settings },
 ];
+
+const initialChats: Record<string, ChatMessage[]> = {
+  "/monitor": [
+    {
+      id: "monitor-user",
+      role: "user",
+      body: "What is happening in the selected segment?",
+    },
+    {
+      id: "monitor-assistant",
+      role: "assistant",
+      body: "Track 14 shows continuous pacing from 02:00–02:14. Identity confidence is 0.86, so verify the clip before recording an outcome.",
+      citations: ["Track 14", "Clip 02:06"],
+    },
+  ],
+  "/graph": [
+    {
+      id: "graph-user",
+      role: "user",
+      body: "What changed for Rex tonight?",
+    },
+    {
+      id: "graph-assistant",
+      role: "assistant",
+      body: "The graph connects a 14-minute pacing observation to the deterministic pacing > 10 min rule and its source clip.",
+      citations: ["EVT-1842", "Rule 10.1"],
+    },
+  ],
+  "/analysis": [
+    {
+      id: "analysis-user",
+      role: "user",
+      body: "Summarize the enclosure tonight.",
+    },
+    {
+      id: "analysis-assistant",
+      role: "assistant",
+      body: "Coverage is complete. Rex has one acknowledged review item; Zuri has no notable events in the monitored window.",
+      citations: ["Overnight review", "Coverage"],
+    },
+  ],
+  "/settings": [
+    {
+      id: "settings-user",
+      role: "user",
+      body: "What do these preferences affect?",
+    },
+    {
+      id: "settings-assistant",
+      role: "assistant",
+      body: "These controls change the frontend on this device. They do not change deterministic rules, severity, or paging policy.",
+      citations: ["Device preferences"],
+    },
+  ],
+};
 
 export function WorkspaceShell({
   children,
@@ -36,8 +111,12 @@ export function WorkspaceShell({
   const pathname = usePathname();
   const router = useRouter();
   const profileRef = useRef<HTMLDivElement>(null);
+  const [chatCollapsed, setChatCollapsed] = useState(false);
   const [profileOpen, setProfileOpen] = useState(false);
-  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [messagesByRoute, setMessagesByRoute] = useState<
+    Record<string, ChatMessage[]>
+  >({});
+  const [draft, setDraft] = useState("");
 
   useEffect(() => {
     function closeProfile(event: MouseEvent) {
@@ -49,12 +128,168 @@ export function WorkspaceShell({
     return () => document.removeEventListener("mousedown", closeProfile);
   }, []);
 
+  const messages =
+    messagesByRoute[pathname] ??
+    initialChats[pathname] ??
+    initialChats["/monitor"];
+
+  function handleSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const value = draft.trim();
+    if (!value) return;
+
+    const timestamp = Date.now();
+    setMessagesByRoute((current) => ({
+      ...current,
+      [pathname]: [
+        ...(current[pathname] ??
+          initialChats[pathname] ??
+          initialChats["/monitor"]),
+        { id: `user-${timestamp}`, role: "user", body: value },
+        {
+          id: `assistant-${timestamp}`,
+          role: "assistant",
+          body: "This frontend prototype is using the evidence visible on this page. Connect the read-only evidence service when the backend is ready.",
+          citations: ["Frontend prototype"],
+        },
+      ],
+    }));
+    setDraft("");
+  }
+
   return (
     <MotionConfig
       reducedMotion="user"
-      transition={{ type: "spring", visualDuration: 0.3, bounce: 0.06 }}
+      transition={{ type: "spring", visualDuration: 0.32, bounce: 0.05 }}
     >
       <main className="app-frame">
+        <motion.aside
+          className="chat-rail"
+          animate={{ width: chatCollapsed ? 64 : 326 }}
+          data-collapsed={chatCollapsed}
+          aria-label="ZooVision Assistant"
+        >
+          <div className="chat-rail-header">
+            <span className="assistant-mark" aria-hidden="true">
+              <Sparkles size={16} />
+            </span>
+            <AnimatePresence initial={false}>
+              {!chatCollapsed && (
+                <motion.div
+                  className="chat-heading"
+                  initial={{ opacity: 0, x: -8 }}
+                  animate={{ opacity: 1, x: 0 }}
+                  exit={{ opacity: 0, x: -8 }}
+                >
+                  <strong>ZooVision Assistant</strong>
+                  <span>Evidence on this page</span>
+                </motion.div>
+              )}
+            </AnimatePresence>
+            <button
+              type="button"
+              className="icon-button chat-toggle"
+              onClick={() => setChatCollapsed((current) => !current)}
+              aria-label={
+                chatCollapsed ? "Expand assistant" : "Collapse assistant"
+              }
+              aria-expanded={!chatCollapsed}
+            >
+              {chatCollapsed ? (
+                <ChevronRight size={17} />
+              ) : (
+                <ChevronLeft size={17} />
+              )}
+            </button>
+          </div>
+
+          {chatCollapsed ? (
+            <button
+              type="button"
+              className="collapsed-chat-content"
+              onClick={() => setChatCollapsed(false)}
+              aria-label="Expand assistant"
+            >
+              <MessageSquareText size={18} />
+              <span>AI</span>
+            </button>
+          ) : (
+            <motion.div
+              className="chat-body"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+            >
+              <div className="chat-context">
+                <span className="status-dot" />
+                <span>{eyebrow}</span>
+              </div>
+              <div className="message-list" aria-live="polite">
+                {messages.map((message) => (
+                  <article
+                    className={`chat-message ${message.role}`}
+                    key={message.id}
+                  >
+                    <span className="message-avatar" aria-hidden="true">
+                      {message.role === "assistant" ? (
+                        <Bot size={14} />
+                      ) : (
+                        <CircleUserRound size={14} />
+                      )}
+                    </span>
+                    <div>
+                      <div className="message-meta">
+                        <strong>
+                          {message.role === "assistant" ? "ZooVision" : "You"}
+                        </strong>
+                        <span>05:41</span>
+                      </div>
+                      <p className="message-copy">{message.body}</p>
+                      {message.citations && (
+                        <div className="citation-row">
+                          {message.citations.map((citation) => (
+                            <button type="button" key={citation}>
+                              {citation}
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  </article>
+                ))}
+              </div>
+              <form className="chat-composer" onSubmit={handleSubmit}>
+                <textarea
+                  value={draft}
+                  onChange={(event) => setDraft(event.target.value)}
+                  placeholder="Ask about this page…"
+                  aria-label="Ask ZooVision Assistant"
+                  rows={2}
+                />
+                <div className="composer-actions">
+                  <button
+                    type="button"
+                    className="icon-button"
+                    aria-label="Attach evidence"
+                  >
+                    <Paperclip size={16} />
+                  </button>
+                  <button
+                    type="submit"
+                    className="send-button"
+                    aria-label="Send message"
+                    disabled={!draft.trim()}
+                  >
+                    <Send size={15} />
+                  </button>
+                </div>
+              </form>
+              <p className="chat-disclaimer">
+                Verify source evidence before recording an outcome.
+              </p>
+            </motion.div>
+          )}
+        </motion.aside>
+
         <section className="workspace">
           <header className="topbar">
             <div className="topbar-left">
@@ -151,7 +386,7 @@ export function WorkspaceShell({
                         role="menuitem"
                         onClick={() => {
                           setProfileOpen(false);
-                          setSettingsOpen(true);
+                          router.push("/settings");
                         }}
                       >
                         <Settings size={16} />
@@ -174,73 +409,6 @@ export function WorkspaceShell({
           </footer>
         </section>
       </main>
-
-      <AnimatePresence>
-        {settingsOpen && (
-          <motion.div
-            className="modal-backdrop"
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            onMouseDown={(event) => {
-              if (event.currentTarget === event.target) setSettingsOpen(false);
-            }}
-          >
-            <motion.section
-              className="settings-modal"
-              role="dialog"
-              aria-modal="true"
-              aria-labelledby="settings-title"
-              initial={{ opacity: 0, y: 18, scale: 0.98 }}
-              animate={{ opacity: 1, y: 0, scale: 1 }}
-              exit={{ opacity: 0, y: 18, scale: 0.98 }}
-            >
-              <div className="modal-header">
-                <div>
-                  <span className="section-kicker">Device preferences</span>
-                  <h2 id="settings-title">Workspace settings</h2>
-                </div>
-                <button
-                  type="button"
-                  className="icon-button"
-                  onClick={() => setSettingsOpen(false)}
-                  aria-label="Close settings"
-                >
-                  <X size={18} />
-                </button>
-              </div>
-              <label className="settings-row">
-                <span>
-                  <strong>Compact graph labels</strong>
-                  <small>Reduce labels until a node is selected.</small>
-                </span>
-                <input type="checkbox" defaultChecked />
-              </label>
-              <label className="settings-row">
-                <span>
-                  <strong>Camera overlays</strong>
-                  <small>Show observed tracks on recorded footage.</small>
-                </span>
-                <input type="checkbox" defaultChecked />
-              </label>
-              <label className="settings-row">
-                <span>
-                  <strong>Reduce motion</strong>
-                  <small>Also follows your operating system preference.</small>
-                </span>
-                <input type="checkbox" />
-              </label>
-              <button
-                className="primary-button modal-action"
-                type="button"
-                onClick={() => setSettingsOpen(false)}
-              >
-                Save on this device
-              </button>
-            </motion.section>
-          </motion.div>
-        )}
-      </AnimatePresence>
     </MotionConfig>
   );
 }

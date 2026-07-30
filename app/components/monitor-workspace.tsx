@@ -9,12 +9,16 @@ import {
   Clock3,
   ExternalLink,
   Eye,
+  Grid3X3,
   Maximize2,
   Pause,
   Play,
   RotateCcw,
   ScanLine,
+  SkipBack,
+  SkipForward,
   Video,
+  ZoomIn,
 } from "lucide-react";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import { useRouter } from "next/navigation";
@@ -24,6 +28,7 @@ import {
   PointerEvent,
   useEffect,
   useMemo,
+  useRef,
   useState,
 } from "react";
 
@@ -58,7 +63,26 @@ const cameraOptions = [
   },
 ];
 
-const scrubberTicks = Array.from({ length: 41 }, (_, index) => index);
+const scrubberTicks = Array.from({ length: 19 }, (_, index) => index);
+
+const chapterCopy = [
+  {
+    title: "Coverage begins",
+    description: "Recorded segment starts with complete camera coverage.",
+  },
+  {
+    title: "Track 14 identified",
+    description: "Identity linked to Rex with 0.86 confidence.",
+  },
+  {
+    title: "Pacing sustained",
+    description: "Continuous movement remains visible through the segment.",
+  },
+  {
+    title: "Rule threshold crossed",
+    description: "Deterministic pacing > 10 min rule is preserved.",
+  },
+];
 
 function formatTime(progress: number) {
   const totalSeconds = Math.round(15 * 60 * (progress / 100));
@@ -83,12 +107,19 @@ function ChapterScrubber({
   );
   const [hoveredTick, setHoveredTick] = useState<number | null>(null);
   const focusTick = hoveredTick ?? activeTick;
+  const focusedChapter =
+    chapterCopy[
+      Math.min(
+        chapterCopy.length - 1,
+        Math.floor((focusTick / scrubberTicks.length) * chapterCopy.length),
+      )
+    ];
 
   function tickFromPointer(event: PointerEvent<HTMLDivElement>) {
     const bounds = event.currentTarget.getBoundingClientRect();
     const ratio = Math.min(
       1,
-      Math.max(0, (event.clientX - bounds.left) / bounds.width),
+      Math.max(0, (event.clientY - bounds.top) / bounds.height),
     );
     return Math.round(ratio * (scrubberTicks.length - 1));
   }
@@ -99,8 +130,8 @@ function ChapterScrubber({
 
   function handleKeyboard(event: KeyboardEvent<HTMLDivElement>) {
     let next = activeTick;
-    if (event.key === "ArrowLeft") next = Math.max(0, activeTick - 1);
-    else if (event.key === "ArrowRight")
+    if (event.key === "ArrowUp") next = Math.max(0, activeTick - 1);
+    else if (event.key === "ArrowDown")
       next = Math.min(scrubberTicks.length - 1, activeTick + 1);
     else if (event.key === "Home") next = 0;
     else if (event.key === "End") next = scrubberTicks.length - 1;
@@ -111,16 +142,7 @@ function ChapterScrubber({
   }
 
   return (
-    <div className="chapter-scrubber-wrap">
-      <span
-        className="scrubber-preview"
-        style={{ left: `${(focusTick / (scrubberTicks.length - 1)) * 100}%` }}
-      >
-        <small>{hoveredTick === null ? "Playhead" : "Preview"}</small>
-        <strong>
-          {formatTime((focusTick / (scrubberTicks.length - 1)) * 100)}
-        </strong>
-      </span>
+    <div className="chapter-scrubber-panel">
       <div
         className="chapter-scrubber"
         role="slider"
@@ -136,15 +158,15 @@ function ChapterScrubber({
       >
         {scrubberTicks.map((tick) => {
           const distance = Math.abs(tick - focusTick);
-          const height =
-            distance === 0 ? 26 : distance === 1 ? 20 : distance === 2 ? 14 : 8;
+          const width =
+            distance === 0 ? 42 : distance === 1 ? 32 : distance === 2 ? 22 : 12;
           const isElapsed = tick <= activeTick;
 
           return (
             <motion.i
               key={tick}
               className={isElapsed ? "elapsed" : undefined}
-              animate={{ height }}
+              animate={{ width }}
               transition={
                 reduceMotion
                   ? { duration: 0 }
@@ -155,10 +177,25 @@ function ChapterScrubber({
         })}
         <span
           className="scrubber-position"
-          style={{ left: `${progress}%` }}
+          style={{ top: `${progress}%` }}
           aria-hidden="true"
         />
       </div>
+      <AnimatePresence mode="wait" initial={false}>
+        <motion.div
+          key={focusedChapter.title}
+          className="chapter-preview-card"
+          initial={reduceMotion ? false : { opacity: 0, x: 6 }}
+          animate={{ opacity: 1, x: 0 }}
+          exit={reduceMotion ? undefined : { opacity: 0, x: -4 }}
+        >
+          <small>
+            {formatTime((focusTick / (scrubberTicks.length - 1)) * 100)}
+          </small>
+          <strong>{focusedChapter.title}</strong>
+          <p>{focusedChapter.description}</p>
+        </motion.div>
+      </AnimatePresence>
     </div>
   );
 }
@@ -171,6 +208,7 @@ export function MonitorWorkspace() {
   const [cameraIndex, setCameraIndex] = useState(1);
   const [selectedTrack, setSelectedTrack] = useState<"rex" | "zuri">("rex");
   const [outcomeSaved, setOutcomeSaved] = useState(false);
+  const galleryRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     if (!playing) return;
@@ -206,9 +244,6 @@ export function MonitorWorkspace() {
     [selectedTrack],
   );
   const selectedCamera = cameraOptions[cameraIndex];
-  const galleryNeighbors = [1, 2].map(
-    (offset) => cameraOptions[(cameraIndex + offset) % cameraOptions.length],
-  );
 
   function changeCamera(direction: number) {
     setCameraIndex(
@@ -216,6 +251,18 @@ export function MonitorWorkspace() {
         (current + direction + cameraOptions.length) % cameraOptions.length,
     );
   }
+
+  useEffect(() => {
+    const viewport = galleryRef.current;
+    const card = viewport?.querySelector<HTMLElement>(
+      `[data-camera-index="${cameraIndex}"]`,
+    );
+    if (!viewport || !card) return;
+    viewport.scrollTo({
+      left: Math.max(0, card.offsetLeft - 2),
+      behavior: reduceMotion ? "auto" : "smooth",
+    });
+  }, [cameraIndex, reduceMotion]);
 
   return (
     <div className="page-stack monitor-page">
@@ -327,34 +374,6 @@ export function MonitorWorkspace() {
             <span className="camera-timecode">{formatTime(progress)}</span>
           </div>
 
-          <div className="playback-controls">
-            <button
-              type="button"
-              className="playback-button"
-              onClick={() => setPlaying((current) => !current)}
-              aria-label={playing ? "Pause segment" : "Play segment"}
-            >
-              {playing ? <Pause size={17} /> : <Play size={17} />}
-            </button>
-            <button
-              type="button"
-              className="icon-button"
-              aria-label="Restart segment"
-              onClick={() => setProgress(0)}
-            >
-              <RotateCcw size={15} />
-            </button>
-            <ChapterScrubber progress={progress} onChange={setProgress} />
-            <span className="playback-time">{formatTime(progress)}</span>
-            <button
-              type="button"
-              className="icon-button"
-              aria-label="Fullscreen"
-            >
-              <Maximize2 size={16} />
-            </button>
-          </div>
-
           <div
             className="timeline-editor"
             style={
@@ -364,82 +383,160 @@ export function MonitorWorkspace() {
             }
           >
             <div className="timeline-head">
-              <span>Observed activity</span>
-              <small>Source-aligned · 15 minute segment</small>
-            </div>
-            <div className="timeline-ruler">
-              <span />
-              {["02:00", "02:03", "02:06", "02:09", "02:12", "02:15"].map(
-                (time) => (
-                  <time key={time}>{time}</time>
-                ),
-              )}
-            </div>
-            <div className="timeline-editor-body">
-              <div className="timeline-editor-row">
-                <span className="timeline-row-label">
-                  <strong>Behavior</strong>
-                  <small>Track 14</small>
-                </span>
-                <div className="timeline-editor-track">
-                  <button
-                    type="button"
-                    className="timeline-clip pacing"
-                    style={{ left: "2%", width: "89%" }}
-                    onClick={() => setSelectedTrack("rex")}
-                  >
-                    <span>Pacing</span>
-                    <small>14 min · confidence 0.91</small>
-                  </button>
-                </div>
+              <div>
+                <span>Observed activity</span>
+                <small>Source-aligned · 15 minute segment</small>
               </div>
-              <div className="timeline-editor-row">
-                <span className="timeline-row-label">
-                  <strong>Context</strong>
-                  <small>Object region</small>
+              <div className="timeline-transport">
+                <button
+                  type="button"
+                  className="icon-button"
+                  aria-label="Jump to segment start"
+                  onClick={() => setProgress(0)}
+                >
+                  <SkipBack size={14} />
+                </button>
+                <button
+                  type="button"
+                  className="playback-button"
+                  onClick={() => setPlaying((current) => !current)}
+                  aria-label={playing ? "Pause segment" : "Play segment"}
+                >
+                  {playing ? <Pause size={16} /> : <Play size={16} />}
+                </button>
+                <button
+                  type="button"
+                  className="icon-button"
+                  aria-label="Jump to segment end"
+                  onClick={() => setProgress(100)}
+                >
+                  <SkipForward size={14} />
+                </button>
+                <span className="playback-time">
+                  {formatTime(progress)} / 02:15:00
                 </span>
-                <div className="timeline-editor-track">
+                <input
+                  className="video-scrubber"
+                  type="range"
+                  min="0"
+                  max="100"
+                  step="0.1"
+                  value={progress}
+                  onChange={(event) => setProgress(Number(event.target.value))}
+                  aria-label="Segment timeline"
+                />
+                <button
+                  type="button"
+                  className="icon-button"
+                  aria-label="Toggle timeline grid"
+                >
+                  <Grid3X3 size={14} />
+                </button>
+                <button
+                  type="button"
+                  className="icon-button"
+                  aria-label="Zoom timeline"
+                >
+                  <ZoomIn size={14} />
+                </button>
+                <button
+                  type="button"
+                  className="icon-button"
+                  aria-label="Restart segment"
+                  onClick={() => setProgress(0)}
+                >
+                  <RotateCcw size={14} />
+                </button>
+                <button
+                  type="button"
+                  className="icon-button"
+                  aria-label="Fullscreen"
+                >
+                  <Maximize2 size={15} />
+                </button>
+              </div>
+            </div>
+            <div className="timeline-editor-layout">
+              <div className="timeline-track-workspace">
+                <div className="timeline-ruler">
+                  <span />
+                  {["02:00", "02:03", "02:06", "02:09", "02:12", "02:15"].map(
+                    (time) => (
+                      <time key={time}>{time}</time>
+                    ),
+                  )}
+                </div>
+                <div className="timeline-editor-body">
+                  <div className="timeline-editor-row">
+                    <span className="timeline-row-label">
+                      <strong>Behavior</strong>
+                      <small>Track 14</small>
+                    </span>
+                    <div className="timeline-editor-track">
+                      <button
+                        type="button"
+                        className="timeline-clip pacing"
+                        style={{ left: "2%", width: "89%" }}
+                        onClick={() => setSelectedTrack("rex")}
+                      >
+                        <span>Pacing</span>
+                        <small>14 min · confidence 0.91</small>
+                      </button>
+                    </div>
+                  </div>
+                  <div className="timeline-editor-row">
+                    <span className="timeline-row-label">
+                      <strong>Context</strong>
+                      <small>Object region</small>
+                    </span>
+                    <div className="timeline-editor-track">
+                      <span
+                        className="timeline-clip context"
+                        style={{ left: "19%", width: "27%" }}
+                      >
+                        <span>Water station</span>
+                        <small>in frame</small>
+                      </span>
+                    </div>
+                  </div>
+                  <div className="timeline-editor-row">
+                    <span className="timeline-row-label">
+                      <strong>Behavior</strong>
+                      <small>Track 21</small>
+                    </span>
+                    <div className="timeline-editor-track">
+                      <button
+                        type="button"
+                        className="timeline-clip resting"
+                        style={{ left: "57%", width: "37%" }}
+                        onClick={() => setSelectedTrack("zuri")}
+                      >
+                        <span>Resting</span>
+                        <small>confidence 0.94</small>
+                      </button>
+                    </div>
+                  </div>
+                  <div className="timeline-editor-row frame-row">
+                    <span className="timeline-row-label">
+                      <strong>Frames</strong>
+                      <small>3 minute intervals</small>
+                    </span>
+                    <div className="frame-strip" aria-hidden="true">
+                      {Array.from({ length: 6 }).map((_, index) => (
+                        <i key={index}>
+                          <ScanLine size={13} />
+                          <span />
+                        </i>
+                      ))}
+                    </div>
+                  </div>
                   <span
-                    className="timeline-clip context"
-                    style={{ left: "19%", width: "27%" }}
-                  >
-                    <span>Water station</span>
-                    <small>in frame</small>
-                  </span>
+                    className="timeline-editor-playhead"
+                    aria-hidden="true"
+                  />
                 </div>
               </div>
-              <div className="timeline-editor-row">
-                <span className="timeline-row-label">
-                  <strong>Behavior</strong>
-                  <small>Track 21</small>
-                </span>
-                <div className="timeline-editor-track">
-                  <button
-                    type="button"
-                    className="timeline-clip resting"
-                    style={{ left: "57%", width: "37%" }}
-                    onClick={() => setSelectedTrack("zuri")}
-                  >
-                    <span>Resting</span>
-                    <small>confidence 0.94</small>
-                  </button>
-                </div>
-              </div>
-              <div className="timeline-editor-row frame-row">
-                <span className="timeline-row-label">
-                  <strong>Frames</strong>
-                  <small>3 minute intervals</small>
-                </span>
-                <div className="frame-strip" aria-hidden="true">
-                  {Array.from({ length: 6 }).map((_, index) => (
-                    <i key={index}>
-                      <ScanLine size={13} />
-                      <span />
-                    </i>
-                  ))}
-                </div>
-              </div>
-              <span className="timeline-editor-playhead" aria-hidden="true" />
+              <ChapterScrubber progress={progress} onChange={setProgress} />
             </div>
           </div>
         </div>
@@ -551,64 +648,51 @@ export function MonitorWorkspace() {
           </div>
         </div>
 
-        <div className="camera-gallery-layout">
-          <AnimatePresence mode="wait" initial={false}>
-            <motion.button
-              key={selectedCamera.id}
-              type="button"
-              className="camera-gallery-feature"
-              data-camera={selectedCamera.variant}
-              initial={reduceMotion ? false : { opacity: 0, x: 18 }}
-              animate={{ opacity: 1, x: 0 }}
-              exit={reduceMotion ? undefined : { opacity: 0, x: -18 }}
-              onClick={() => changeCamera(1)}
-              aria-label={`Current source: ${selectedCamera.label}. Show next camera.`}
-            >
-              <span className="gallery-scan-grid" aria-hidden="true" />
-              <span className="gallery-feature-index">
-                CAM {String(cameraIndex + 1).padStart(2, "0")}
-              </span>
-              <span className="gallery-feature-copy">
-                <small>{selectedCamera.enclosure}</small>
-                <strong>{selectedCamera.view}</strong>
-                <span>
-                  {selectedCamera.label} · analysis complete
-                </span>
-              </span>
-              <span className="gallery-feature-action">
-                Next view <ChevronRight size={15} />
-              </span>
-            </motion.button>
-          </AnimatePresence>
-
-          <div className="camera-gallery-neighbors">
-            {galleryNeighbors.map((option) => {
-              const index = cameraOptions.findIndex(
-                (camera) => camera.id === option.id,
-              );
+        <div
+          className="camera-carousel-viewport"
+          ref={galleryRef}
+          role="radiogroup"
+          aria-label="Recorded camera sources"
+        >
+          <div className="camera-carousel-track">
+            {cameraOptions.map((option, index) => {
+              const active = index === cameraIndex;
               return (
-                <button
+                <motion.button
+                  layout
                   key={option.id}
                   type="button"
-                  className="camera-gallery-preview"
+                  role="radio"
+                  aria-checked={active}
+                  className="camera-gallery-card"
                   data-camera={option.variant}
+                  data-camera-index={index}
+                  data-active={active}
                   onClick={() => setCameraIndex(index)}
+                  whileTap={reduceMotion ? undefined : { scale: 0.985 }}
                 >
-                  <span className="gallery-preview-frame">
-                    <Camera size={16} />
-                    <i />
+                  <span className="camera-gallery-card-grid" aria-hidden="true" />
+                  <span className="camera-gallery-card-index">
+                    CAM {String(index + 1).padStart(2, "0")}
                   </span>
-                  <span>
-                    <small>
-                      CAM {String(index + 1).padStart(2, "0")}
-                    </small>
+                  <span className="camera-gallery-card-copy">
+                    <small>{option.enclosure}</small>
                     <strong>{option.view}</strong>
+                    <span>{option.label} · recorded segment</span>
+                    <em>
+                      {active ? "Viewing now" : "Open camera"}{" "}
+                      <ChevronRight size={14} />
+                    </em>
                   </span>
-                  <ChevronRight size={15} />
-                </button>
+                </motion.button>
               );
             })}
           </div>
+        </div>
+        <div className="gallery-pagination" aria-hidden="true">
+          {cameraOptions.map((option, index) => (
+            <i className={index === cameraIndex ? "active" : ""} key={option.id} />
+          ))}
         </div>
       </section>
     </div>
