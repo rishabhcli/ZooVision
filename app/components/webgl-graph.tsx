@@ -29,10 +29,10 @@ type NodeAttributes = {
 };
 
 const nodePalette: Record<NodeKind, string> = {
-  animal: "#8da69b",
-  evidence: "#a8aea9",
-  context: "#777f83",
-  review: "#c89b56",
+  animal: "#6f8cff",
+  evidence: "#aeb6c2",
+  context: "#73849c",
+  review: "#d39b55",
 };
 
 const graphNodes: Array<[string, NodeAttributes]> = [
@@ -240,7 +240,7 @@ export default function WebGLGraph() {
     graphNodes.forEach(([id, attributes]) => graph.addNode(id, attributes));
     graphEdges.forEach(([source, target], index) =>
       graph.addEdgeWithKey(`edge-${index}`, source, target, {
-        color: "#3f4848",
+        color: "#46536a",
         size: 1.35,
       }),
     );
@@ -248,14 +248,14 @@ export default function WebGLGraph() {
     const renderer = new Sigma(graph, containerRef.current, {
       renderEdgeLabels: false,
       labelFont: "Segoe UI, sans-serif",
-      labelColor: { color: "#d7dad6" },
+      labelColor: { color: "#e0e5ee" },
       labelSize: 13,
       labelWeight: "500",
       labelDensity: 0.8,
       labelGridCellSize: 80,
       labelRenderedSizeThreshold: 7,
-      defaultEdgeColor: "#3f4848",
-      defaultNodeColor: "#8da69b",
+      defaultEdgeColor: "#46536a",
+      defaultNodeColor: "#6f8cff",
       defaultNodeType: "circle",
       hideEdgesOnMove: false,
       allowInvalidContainer: false,
@@ -272,7 +272,7 @@ export default function WebGLGraph() {
         if (focus && !isNeighbor) {
           return {
             ...attributes,
-            color: "#3f4545",
+            color: "#343c49",
             label: "",
             zIndex: 0,
           };
@@ -282,7 +282,7 @@ export default function WebGLGraph() {
           return {
             ...attributes,
             size: attributes.size * 1.22,
-            color: attributes.kind === "review" ? "#d0a15d" : "#a8b9b0",
+            color: attributes.kind === "review" ? "#d7b06c" : "#9eb6f3",
             forceLabel: true,
             zIndex: 2,
           };
@@ -300,7 +300,7 @@ export default function WebGLGraph() {
         const connected = focus && extremities.includes(focus);
         return {
           ...attributes,
-          color: connected ? "#88918c" : "#303737",
+          color: connected ? "#8b98aa" : "#303846",
           size: connected ? 2.2 : 1.05,
           zIndex: connected ? 1 : 0,
         };
