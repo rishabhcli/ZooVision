@@ -4,6 +4,8 @@
 !README.md
 !backend/
 !backend/**
+backend/data/
+backend/data/**
 !scripts/
 !scripts/reprocess_uploads.py
 !deploy/
