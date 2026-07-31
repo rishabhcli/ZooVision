@@ -8,6 +8,7 @@ import pytest
 from zoovision.chat import (
     ChatAnswer,
     ChatMessage,
+    ChatReply,
     ChatRequest,
     GroundedChat,
     build_context,
@@ -494,6 +495,35 @@ def test_model_answer_is_returned_when_citations_are_valid(tmp_path: Path) -> No
     # The record must never be retained by the provider.
     assert client.responses.calls[0]["store"] is False
     assert client.responses.calls[0]["reasoning"] == {"effort": "medium"}
+
+
+def test_chat_reply_humanizes_raw_video_second_references() -> None:
+    reply = ChatReply(
+        answer="Seen at 0.0s, from 125.1s-2160.6s, and again at 3661.2 s.",
+        cited_ids=[],
+        uncertainty=[],
+        mode="openai",
+        context_record_count=0,
+    )
+
+    assert reply.answer == "Seen at 0:00, from 2:05-36:01, and again at 1:01:01."
+
+
+def test_chat_reply_leaves_non_video_numbers_unchanged() -> None:
+    answer = (
+        "Confidence 0.83, coverage 50%, latency 125ms, record obs_125.1s, "
+        "date 2026-07-31, and existing time 36:01."
+    )
+
+    reply = ChatReply(
+        answer=answer,
+        cited_ids=[],
+        uncertainty=[],
+        mode="openai",
+        context_record_count=0,
+    )
+
+    assert reply.answer == answer
 
 
 def test_model_answer_citing_an_unknown_record_falls_back_to_the_record(tmp_path: Path) -> None:

@@ -18,7 +18,7 @@ import re
 from datetime import datetime
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from .store import SQLiteStore
 
@@ -133,6 +133,10 @@ _SECONDS_PATTERN = re.compile(
     r"\b(?P<seconds>\d+(?:\.\d+)?)\s*(?:seconds?|secs?)\b",
     re.IGNORECASE,
 )
+_RAW_VIDEO_SECONDS_PATTERN = re.compile(
+    r"(?<![\w.])(?P<seconds>\d+(?:\.\d+)?)\s*s(?![\w])",
+    re.IGNORECASE,
+)
 _EMBEDDING_GAP_REASONS = {"bedrock_embedding_failed"}
 _TEMPORAL_MOMENT_WINDOW_SECONDS = 120.0
 _INTENT_TERMS = {
@@ -211,6 +215,11 @@ class ChatReply(BaseModel):
     context_record_count: int
     citations: list[ChatCitation] = Field(default_factory=list)
     moments: list[ChatMoment] = Field(default_factory=list)
+
+    @field_validator("answer")
+    @classmethod
+    def humanize_video_second_references(cls, answer: str) -> str:
+        return _humanize_video_second_references(answer)
 
 
 def build_context(
@@ -788,7 +797,7 @@ def summarize(
                 label = moment.get("activity_label") or moment["behavior"].replace("_", " ")
                 lines.append(
                     f"- {moment['animal_name']} on {moment['camera_id']}: {label} at "
-                    f"{moment['start_seconds']:.1f}s. {moment['evidence']}"
+                    f"{_display_offset(float(moment['start_seconds']))}. {moment['evidence']}"
                 )
                 cited.append(moment["observation_id"])
     elif activity_question:
@@ -1079,6 +1088,15 @@ def _humanize_raw_record_ids(text: str, context: dict[str, Any]) -> str:
     return _RAW_RECORD_ID_PATTERN.sub(replacement, text)
 
 
+def _humanize_video_second_references(text: str) -> str:
+    """Convert standalone raw video-second positions to playback timestamps."""
+
+    def replacement(match: re.Match[str]) -> str:
+        return _display_offset(float(match.group("seconds")))
+
+    return _RAW_VIDEO_SECONDS_PATTERN.sub(replacement, text)
+
+
 def _resolve_moments(context: dict[str, Any], moment_ids: list[str]) -> list[ChatMoment]:
     requested = set(moment_ids)
     return [
@@ -1148,8 +1166,11 @@ def _resolve_citations(
 
 
 def _display_offset(seconds: float) -> str:
-    total = max(0, round(seconds))
-    minutes, remaining = divmod(total, 60)
+    total = max(0, int(seconds + 0.5))
+    hours, remainder = divmod(total, 3600)
+    minutes, remaining = divmod(remainder, 60)
+    if hours:
+        return f"{hours}:{minutes:02d}:{remaining:02d}"
     return f"{minutes}:{remaining:02d}"
 
 
