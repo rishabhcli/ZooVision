@@ -157,6 +157,15 @@ export interface VideoSource {
   observation_count: number;
   event_count: number;
   animal_names: string[];
+  analysis_status?: "analyzing" | "complete" | "incomplete";
+  is_fully_analyzed?: boolean;
+  latest_job_status?: string | null;
+  completed_segments?: number;
+  total_segments?: number;
+  data_gap_count?: number;
+  analyzed_duration_seconds?: number;
+  probe_duration_seconds?: number;
+  coverage_percent?: number;
 }
 
 export interface VideoTrack {
@@ -224,6 +233,7 @@ export interface IngestSegment {
   event_ids: string[];
   rules_fired: string[];
   data_gap_id: string | null;
+  provider_attempts: number;
 }
 
 export interface IngestJobState {
@@ -239,6 +249,7 @@ export interface IngestJobState {
   completed_segments: number;
   detection_count: number;
   event_ids: string[];
+  source_event_ids: string[];
   rules_fired: string[];
   data_gap_ids: string[];
   segments: IngestSegment[];

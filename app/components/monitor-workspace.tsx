@@ -107,7 +107,8 @@ function confidenceSummary(value?: number | null) {
   return `Limited supporting evidence (${percent}%); verify the clip`;
 }
 
-function formatDuration(seconds: number) {
+function formatDuration(seconds: number | null | undefined) {
+  if (typeof seconds !== "number" || !Number.isFinite(seconds)) return "--";
   const safeSeconds = Math.max(0, Math.round(seconds));
   const hours = Math.floor(safeSeconds / 3600);
   const minutes = Math.floor((safeSeconds % 3600) / 60);
@@ -120,12 +121,94 @@ function formatDuration(seconds: number) {
   return `${minutes}:${String(remainder).padStart(2, "0")}`;
 }
 
+function finiteMetric(value: unknown) {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
 function formatDate(value: string) {
   return new Date(value).toLocaleDateString([], {
     month: "short",
     day: "numeric",
     year: "numeric",
   });
+}
+
+function readableEvidenceDetail(value: string) {
+  return value.replace(
+    /^(?:demo|sample|fixture|synthetic)\s+(?:annotation|scenario|evidence)\s*:\s*/i,
+    "",
+  );
+}
+
+function readableObservationSource(
+  provider: string,
+  evidenceKind: string,
+) {
+  if (
+    provider.toLowerCase() === "fixture" ||
+    evidenceKind.toLowerCase() === "synthetic_scenario"
+  ) {
+    return "Evidence annotation · Reviewed evidence";
+  }
+  return `${provider} · ${formatBehavior(evidenceKind)}`;
+}
+
+function analysisLabel(source: VideoSource) {
+  if (source.analysis_status === "complete") return "Full analysis";
+  if (source.analysis_status === "analyzing") {
+    const progress = segmentProgressLabel(source);
+    return progress ? `Analyzing · ${progress}` : "Analyzing";
+  }
+  const gapCount = finiteMetric(source.data_gap_count);
+  if (source.analysis_status === "incomplete") {
+    return gapCount && gapCount > 0
+      ? `Incomplete · ${gapCount} gap${gapCount === 1 ? "" : "s"}`
+      : "Incomplete analysis";
+  }
+  return "Analysis available";
+}
+
+function segmentProgressLabel(source: VideoSource) {
+  const completed = finiteMetric(source.completed_segments);
+  const total = finiteMetric(source.total_segments);
+  return completed !== null && total !== null && total > 0
+    ? `${Math.max(0, completed)}/${total} segments`
+    : null;
+}
+
+function analysisProgressDetail(source: VideoSource) {
+  const analyzed = finiteMetric(source.analyzed_duration_seconds);
+  const probed = finiteMetric(source.probe_duration_seconds);
+  const coverage = finiteMetric(source.coverage_percent);
+  if (analyzed !== null && probed !== null && probed > 0 && coverage !== null) {
+    const safeCoverage = Math.max(0, Math.min(100, coverage));
+    return `${formatDuration(analyzed)} analyzed of ${formatDuration(probed)} · ${safeCoverage}% semantic coverage`;
+  }
+  const segments = segmentProgressLabel(source);
+  return segments ? `${segments} processed` : null;
+}
+
+function sourceDurationLabel(source: VideoSource) {
+  const analyzed = finiteMetric(source.analyzed_duration_seconds);
+  const probed = finiteMetric(source.probe_duration_seconds);
+  return analyzed !== null && probed !== null && probed > 0
+    ? `${formatDuration(analyzed)} / ${formatDuration(probed)}`
+    : `${source.chunk_count} evidence chunk${source.chunk_count === 1 ? "" : "s"}`;
+}
+
+function sourceIsFullyAnalyzed(source: VideoSource) {
+  return typeof source.is_fully_analyzed === "boolean"
+    ? source.is_fully_analyzed
+    : source.analysis_status === "complete";
+}
+
+function emptyEventMessage(source: VideoSource) {
+  if (sourceIsFullyAnalyzed(source)) {
+    return "Review observations below. This recording has no deterministic welfare event.";
+  }
+  return source.analysis_status
+    ? "Rule evaluation is still incomplete. Events finalize after full source analysis."
+    : "Review observations below. No deterministic welfare event is available.";
 }
 
 function formatWallClock(start: string, offsetSeconds: number) {
@@ -493,6 +576,13 @@ export function MonitorWorkspace() {
   const videoRef = useRef<HTMLVideoElement>(null);
   const videoStageRef = useRef<HTMLDivElement>(null);
   const selectedCamera = videos[cameraIndex];
+  const selectedSourcePath = selectedCamera?.source_path;
+  const selectedAnimalId = selectedCamera?.animal_ids?.[0] ?? null;
+  const selectedAnimalName = selectedCamera?.animal_names?.[0] ?? null;
+  const selectedEnclosureId = selectedCamera?.enclosure_id;
+  const selectedCameraId = selectedCamera?.camera_id;
+  const selectedCompletedSegments = selectedCamera?.completed_segments;
+  const selectedAnalysisStatus = selectedCamera?.analysis_status;
   const currentSeconds = (progress / 100) * durationSeconds;
   const usesTwelveLabs = Boolean(
     track?.observations.some((observation) => observation.provider === "twelvelabs"),
@@ -537,19 +627,34 @@ export function MonitorWorkspace() {
     return playheadObservation;
   }, [playheadObservation, selectedEvidence, track]);
   useEffect(() => {
-    api
-      .videos()
-      .then(({ videos: sources }) => {
-        setVideos(sources);
-        if (sources.length === 0) {
-          setLoadError("No analyzed video sources are available.");
-        }
-      })
-      .catch((caught: unknown) =>
-        setLoadError(
-          caught instanceof Error ? caught.message : "Unable to load videos.",
-        ),
-      );
+    let cancelled = false;
+    let hasLoaded = false;
+    const loadVideos = () => {
+      api
+        .videos()
+        .then(({ videos: sources }) => {
+          if (cancelled) return;
+          hasLoaded = true;
+          setVideos(sources);
+          setLoadError(
+            sources.length === 0
+              ? "No analyzed video sources are available."
+              : null,
+          );
+        })
+        .catch((caught: unknown) => {
+          if (cancelled || hasLoaded) return;
+          setLoadError(
+            caught instanceof Error ? caught.message : "Unable to load videos.",
+          );
+        });
+    };
+    loadVideos();
+    const timer = window.setInterval(loadVideos, 5000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
   }, []);
 
   useEffect(() => {
@@ -604,13 +709,14 @@ export function MonitorWorkspace() {
   }, [cameraIndex, durationSeconds, videos]);
 
   useEffect(() => {
-    if (!selectedCamera) return;
+    if (!selectedSourcePath || !selectedEnclosureId || !selectedCameraId) return;
+    let cancelled = false;
     const assistantContext = {
-      animalId: selectedCamera.animal_ids?.[0] ?? null,
-      animalName: selectedCamera.animal_names?.[0] ?? null,
-      enclosureId: selectedCamera.enclosure_id,
-      cameraId: selectedCamera.camera_id,
-      sourcePath: selectedCamera.source_path,
+      animalId: selectedAnimalId,
+      animalName: selectedAnimalName,
+      enclosureId: selectedEnclosureId,
+      cameraId: selectedCameraId,
+      sourcePath: selectedSourcePath,
     };
     sessionStorage.setItem(
       "zoovision:assistant-context",
@@ -622,29 +728,44 @@ export function MonitorWorkspace() {
       }),
     );
     api
-      .videoTrack(selectedCamera.source_path)
+      .videoTrack(selectedSourcePath)
       .then((payload) => {
+        if (cancelled) return;
         setTrack(payload);
         setSelectedEvidence(
-          payload.events[0]
-            ? { kind: "event", id: payload.events[0].event_id }
-            : payload.observations[0]
-              ? {
-                  kind: "observation",
-                  id: payload.observations[0].observation_id,
-                }
-              : null,
+          (current) =>
+            current ??
+            (payload.events[0]
+              ? { kind: "event", id: payload.events[0].event_id }
+              : payload.observations[0]
+                ? {
+                    kind: "observation",
+                    id: payload.observations[0].observation_id,
+                  }
+                : null),
         );
         setDurationSeconds(maximumTrackSeconds(payload));
       })
-      .catch((caught: unknown) =>
+      .catch((caught: unknown) => {
+        if (cancelled) return;
         setLoadError(
           caught instanceof Error
             ? caught.message
             : "Unable to load the video evidence track.",
-        ),
-      );
-  }, [selectedCamera]);
+        );
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    selectedAnalysisStatus,
+    selectedAnimalId,
+    selectedAnimalName,
+    selectedCameraId,
+    selectedCompletedSegments,
+    selectedEnclosureId,
+    selectedSourcePath,
+  ]);
 
   useEffect(() => {
     const stage = videoStageRef.current;
@@ -787,6 +908,11 @@ export function MonitorWorkspace() {
     selectedEvent != null &&
     currentSeconds >= selectedEvent.start_seconds &&
     currentSeconds <= selectedEvent.end_seconds;
+  const selectedSourceFullyAnalyzed = sourceIsFullyAnalyzed(selectedCamera);
+  const selectedAnalysisProgress = analysisProgressDetail(selectedCamera);
+  const showAnalysisProgress =
+    selectedCamera.analysis_status === "analyzing" ||
+    selectedCamera.analysis_status === "incomplete";
 
   return (
     <div className="monitor-page">
@@ -817,8 +943,8 @@ export function MonitorWorkspace() {
             <dd>{usesTwelveLabs ? "Pegasus 1.5" : "Unavailable"}</dd>
           </div>
           <div>
-            <dt>Tracked moments</dt>
-            <dd>{selectedCamera.observation_count}</dd>
+            <dt>Analysis</dt>
+            <dd>{analysisLabel(selectedCamera)}</dd>
           </div>
           <div className="review-mode">
             <dt>Delivery</dt>
@@ -830,6 +956,20 @@ export function MonitorWorkspace() {
         </dl>
       </header>
 
+      {showAnalysisProgress && (
+        <section
+          className="analysis-progress"
+          data-status={selectedCamera.analysis_status}
+          aria-live="polite"
+        >
+          <span className="monitor-spinner" aria-hidden="true" />
+          <div>
+            <strong>{analysisLabel(selectedCamera)}</strong>
+            {selectedAnalysisProgress && <p>{selectedAnalysisProgress}</p>}
+          </div>
+        </section>
+      )}
+
       <section className="event-log" aria-label="Welfare event log">
         <header>
           <div>
@@ -837,7 +977,9 @@ export function MonitorWorkspace() {
             <strong>Welfare event log</strong>
           </div>
           <small>
-            {track.events.length
+            {selectedCamera.analysis_status === "analyzing"
+              ? analysisLabel(selectedCamera)
+              : track.events.length
               ? `${track.events.length} rule event${track.events.length === 1 ? "" : "s"}`
               : "No welfare rules fired"}
           </small>
@@ -871,9 +1013,12 @@ export function MonitorWorkspace() {
           </div>
         ) : (
           <p className="event-log-empty">
-            <Check size={15} />
-            Review observations below. This recording has no deterministic
-            welfare event.
+            {selectedSourceFullyAnalyzed ? (
+              <Check size={15} />
+            ) : (
+              <Activity size={15} />
+            )}
+            {emptyEventMessage(selectedCamera)}
           </p>
         )}
       </section>
@@ -1022,7 +1167,7 @@ export function MonitorWorkspace() {
                 </span>
                 <span>
                   {isFixtureEvidence
-                    ? "Sample annotation · open the source moment to review"
+                    ? "Evidence annotation · open the source moment to review"
                     : usesTwelveLabs
                       ? "Pegasus 1.5 observation · keeper verification required"
                       : "Source footage available · structured observation pending"}
@@ -1164,7 +1309,7 @@ export function MonitorWorkspace() {
                 </strong>
               </div>
               <span className="fixture-badge">
-                {isFixtureEvidence ? "Sample scenario" : "Provider evidence"}
+                {isFixtureEvidence ? "Evidence scenario" : "Provider evidence"}
               </span>
             </header>
 
@@ -1177,7 +1322,7 @@ export function MonitorWorkspace() {
                 <strong>{currentActivity}</strong>
                 <p>
                   {isFixtureEvidence
-                    ? "Sample annotation for exploring localization and deterministic rules."
+                    ? "Evidence annotation connected to localization and deterministic rule review."
                     : "Structured observation nearest to the playhead."}
                 </p>
               </div>
@@ -1269,13 +1414,16 @@ export function MonitorWorkspace() {
               </span>
               <strong>{currentActivity}</strong>
               <p>
-                {selectedObservation?.evidence ??
-                  "No observation was recorded near this point."}
+                {selectedObservation
+                  ? readableEvidenceDetail(selectedObservation.evidence)
+                  : "No observation was recorded near this point."}
               </p>
               {selectedObservation && (
                 <small>
-                  {selectedObservation.provider} ·{" "}
-                  {formatBehavior(selectedObservation.evidence_kind)}
+                  {readableObservationSource(
+                    selectedObservation.provider,
+                    selectedObservation.evidence_kind,
+                  )}
                 </small>
               )}
             </div>
@@ -1311,8 +1459,9 @@ export function MonitorWorkspace() {
               </span>
               <strong>{currentActivity}</strong>
               <p>
-                {selectedObservation?.evidence ??
-                  "Pegasus did not return an observation near this point."}
+                {selectedObservation
+                  ? readableEvidenceDetail(selectedObservation.evidence)
+                  : "Pegasus did not return an observation near this point."}
               </p>
               <small>
                 {usesTwelveLabs
@@ -1379,8 +1528,14 @@ export function MonitorWorkspace() {
                     alt={`${cameraSource.camera_id} recorded camera preview`}
                   />
                   <span className="camera-card-state">
-                    <span className="recorded-dot" />
-                    Recorded
+                    <span
+                      className={
+                        sourceIsFullyAnalyzed(cameraSource)
+                          ? "recorded-dot analysis-complete-dot"
+                          : "recorded-dot"
+                      }
+                    />
+                    {analysisLabel(cameraSource)}
                   </span>
                   {active && (
                     <span className="camera-card-selected">
@@ -1408,11 +1563,7 @@ export function MonitorWorkspace() {
                     </span>
                     <span>
                       <Clock3 size={13} />
-                      {formatDuration(
-                        (new Date(cameraSource.last_end_ts).getTime() -
-                          new Date(cameraSource.first_start_ts).getTime()) /
-                          1000,
-                      )}
+                      {sourceDurationLabel(cameraSource)}
                     </span>
                   </span>
                 </span>

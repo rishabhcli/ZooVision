@@ -26,7 +26,10 @@ import {
   Video,
   Waves,
 } from "lucide-react";
+import "@fontsource/black-ops-one/400.css";
+import "@fontsource/yellowtail/400.css";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
+import Link from "next/link";
 import { CSSProperties, useEffect, useMemo, useRef, useState } from "react";
 import "./landing.css";
 
@@ -233,12 +236,22 @@ export function LandingExperience() {
         <div className="hero-scan" aria-hidden="true" />
 
         <nav className="landing-nav" aria-label="Landing page">
-          <div className="landing-brand">
+          <Link
+            className="landing-brand"
+            href="/"
+            aria-label="ZooVision home"
+          >
             <span className="landing-brand-mark">
               <Eye size={18} strokeWidth={2.2} />
             </span>
-            <span>ZooVision</span>
-          </div>
+            <span
+              className="brand-wordmark brand-wordmark-nav"
+              aria-hidden="true"
+            >
+              <span className="brand-zoo">ZOO</span>
+              <span className="brand-vision">VISION</span>
+            </span>
+          </Link>
           <div className="landing-nav-actions">
             <span className="preview-flag">
               INTERACTIVE EVIDENCE DEMO
@@ -263,7 +276,15 @@ export function LandingExperience() {
             <span className="live-pip" />
             Overnight welfare support
           </div>
-          <h1 id="landing-title">ZooVision</h1>
+          <h1 id="landing-title" aria-label="ZooVision">
+            <span
+              className="brand-wordmark brand-wordmark-hero"
+              aria-hidden="true"
+            >
+              <span className="brand-zoo">ZOO</span>
+              <span className="brand-vision">VISION</span>
+            </span>
+          </h1>
           <p>
             See the night.
             <br />
@@ -389,7 +410,8 @@ export function LandingExperience() {
           </div>
           <p>
             Pick a moment, scan the evidence, then decide how it should be
-            routed. This sandbox uses clear sample evidence scenarios.
+            routed. Follow each observation through baseline context, the first
+            matching rule, and a human decision.
           </p>
         </header>
 
@@ -458,7 +480,7 @@ export function LandingExperience() {
                 >
                   <img
                     src={scenario.poster}
-                    alt={`${scenario.species} sample evidence scene`}
+                    alt={`${scenario.species} evidence scene`}
                   />
                 </motion.div>
               </AnimatePresence>
@@ -502,7 +524,7 @@ export function LandingExperience() {
                 className="play-control"
                 type="button"
                 aria-label={
-                  playback ? "Pause sample evidence" : "Play sample evidence"
+                  playback ? "Pause evidence" : "Play evidence"
                 }
                 onClick={() => setPlayback((value) => !value)}
               >

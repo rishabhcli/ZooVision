@@ -101,7 +101,7 @@ function GraphCanvas({
         size: node.size,
         selected: node.id === selectedNodeId,
         captionAlign: "bottom",
-        captionSize: 2,
+        captionSize: 3,
         title: `${node.caption}\n${node.label}`,
       })),
     [payload.nodes, selectedNodeId],

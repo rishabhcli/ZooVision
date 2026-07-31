@@ -160,6 +160,18 @@ export function WorkspaceShell({
   );
 
   useEffect(() => {
+    if (!isEvidenceLayout) return;
+    const compactViewport = window.matchMedia("(max-width: 760px)");
+    const collapseForCompactViewport = () => {
+      if (compactViewport.matches) setChatCollapsed(true);
+    };
+    collapseForCompactViewport();
+    compactViewport.addEventListener("change", collapseForCompactViewport);
+    return () =>
+      compactViewport.removeEventListener("change", collapseForCompactViewport);
+  }, [isEvidenceLayout, pathname]);
+
+  useEffect(() => {
     function closeProfile(event: MouseEvent) {
       if (!profileRef.current?.contains(event.target as Node)) {
         setProfileOpen(false);

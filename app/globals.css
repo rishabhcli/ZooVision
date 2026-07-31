@@ -309,7 +309,7 @@ textarea {
 }
 
 .message-meta strong {
-  font-size: 12px;
+  font-size: 13px;
   font-weight: 650;
 }
 
@@ -533,7 +533,7 @@ textarea {
 .workspace-menu-trigger {
   min-width: 0;
   border: 1px solid var(--border);
-  font-size: 12px;
+  font-size: 13px;
   font-weight: 630;
 }
 
@@ -560,7 +560,7 @@ textarea {
   margin-top: 2px;
   overflow: hidden;
   color: var(--text-soft);
-  font-size: 12px;
+  font-size: 13px;
   font-weight: 590;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -609,7 +609,7 @@ textarea {
   color: var(--text-soft);
   background: transparent;
   border-radius: 7px;
-  font-size: 12px;
+  font-size: 13px;
   text-align: left;
 }
 
@@ -715,7 +715,7 @@ textarea {
 }
 
 .profile-summary strong {
-  font-size: 12px;
+  font-size: 13px;
 }
 
 .profile-summary span:not(.profile-avatar) {
@@ -3186,7 +3186,7 @@ textarea {
   gap: 7px;
   padding: 8px 12px;
   border-radius: 6px;
-  font-size: 12px;
+  font-size: 13px;
   font-weight: 680;
   line-height: 1.25;
 }
@@ -3394,11 +3394,12 @@ textarea {
   gap: 7px;
   margin-right: auto;
   color: #dce5e0;
-  font-size: 10px;
+  font-size: 13px;
 }
 
 .analysis-commandbar > div:first-child small {
   color: #7f8b85;
+  font-size: 13px;
 }
 
 .analysis-live-dot {
@@ -3415,9 +3416,9 @@ textarea {
 
 .analysis-source-select {
   display: grid;
-  min-width: 270px;
+  min-width: 310px;
   height: 34px;
-  grid-template-columns: 18px 74px minmax(0, 1fr);
+  grid-template-columns: 18px 92px minmax(0, 1fr);
   align-items: center;
   gap: 5px;
   padding: 0 8px;
@@ -3425,7 +3426,7 @@ textarea {
   background: #101416;
   border: 1px solid #30383b;
   border-radius: 5px;
-  font-size: 8px;
+  font-size: 13px;
 }
 
 .analysis-source-select select {
@@ -3434,7 +3435,7 @@ textarea {
   color: #f1f5f3;
   background: transparent;
   border: 0;
-  font-size: 9px;
+  font-size: 13px;
 }
 
 .analysis-refresh-button {
@@ -3453,6 +3454,10 @@ textarea {
   padding: 0 13px;
 }
 
+.live-analysis-page .primary-button {
+  font-size: 13px;
+}
+
 .analysis-heading {
   display: flex;
   align-items: flex-end;
@@ -3465,7 +3470,7 @@ textarea {
 .analysis-jobs header span,
 .analysis-panel > header span {
   color: #72bf98;
-  font-size: 8px;
+  font-size: 13px;
   font-weight: 700;
   text-transform: uppercase;
 }
@@ -3482,7 +3487,7 @@ textarea {
   max-width: 630px;
   margin-top: 5px;
   color: #909c96;
-  font-size: 10px;
+  font-size: 14px;
   line-height: 1.5;
 }
 
@@ -3496,7 +3501,7 @@ textarea {
   background: #121719;
   border: 1px solid #333b3e;
   border-radius: 5px;
-  font-size: 9px;
+  font-size: 13px;
 }
 
 .analysis-metrics {
@@ -3529,7 +3534,7 @@ textarea {
 
 .analysis-metrics span {
   color: #9aa69f;
-  font-size: 8px;
+  font-size: 13px;
 }
 
 .analysis-metrics strong {
@@ -3543,7 +3548,7 @@ textarea {
   margin-top: 2px;
   overflow: hidden;
   color: #727e78;
-  font-size: 8px;
+  font-size: 13px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -3577,12 +3582,12 @@ textarea {
 .analysis-ingest-form > header strong,
 .analysis-jobs header strong {
   color: #f1f5f3;
-  font-size: 11px;
+  font-size: 14px;
 }
 
 .analysis-ingest-form > header span {
   color: #87938d;
-  font-size: 9px;
+  font-size: 13px;
 }
 
 .analysis-ingest-form > header > button {
@@ -3616,19 +3621,19 @@ textarea {
 .analysis-file-input strong,
 .analysis-provider-toggle strong {
   color: #e8eeeb;
-  font-size: 9px;
+  font-size: 13px;
 }
 
 .analysis-file-input small,
 .analysis-provider-toggle small {
   color: #7e8984;
-  font-size: 8px;
+  font-size: 13px;
 }
 
 .analysis-file-input input {
   min-width: 0;
   color: #aab4af;
-  font-size: 8px;
+  font-size: 13px;
 }
 
 .analysis-form-grid {
@@ -3643,7 +3648,7 @@ textarea {
   flex-direction: column;
   gap: 5px;
   color: #939f99;
-  font-size: 8px;
+  font-size: 13px;
 }
 
 .analysis-form-grid input,
@@ -3655,7 +3660,7 @@ textarea {
   background: #090c0d;
   border: 1px solid #30383b;
   border-radius: 4px;
-  font-size: 9px;
+  font-size: 13px;
 }
 
 .analysis-ingest-form > footer {
@@ -3679,7 +3684,7 @@ textarea {
 .analysis-ingest-form > footer > p {
   max-width: 280px;
   color: #f2a288;
-  font-size: 8px;
+  font-size: 13px;
 }
 
 .analysis-ingest-form > footer > button {
@@ -3697,7 +3702,7 @@ textarea {
 
 .analysis-jobs > header > small {
   color: #7f8b85;
-  font-size: 8px;
+  font-size: 13px;
 }
 
 .analysis-jobs > div {
@@ -3746,7 +3751,7 @@ textarea {
 .analysis-jobs article strong {
   overflow: hidden;
   color: #e9eeeb;
-  font-size: 9px;
+  font-size: 13px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -3754,7 +3759,7 @@ textarea {
 .analysis-jobs article span,
 .analysis-jobs article small {
   color: #84908a;
-  font-size: 8px;
+  font-size: 13px;
 }
 
 .analysis-jobs article i {
@@ -3806,7 +3811,7 @@ textarea {
 .analysis-event-review > header span,
 .analysis-event-review > header small {
   color: #84908a;
-  font-size: 9px;
+  font-size: 13px;
 }
 
 .analysis-event-review > header span {
@@ -3852,7 +3857,7 @@ textarea {
 .analysis-event-review time {
   color: #efb75f;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 10px;
+  font-size: 13px;
 }
 
 .analysis-event-review button > span {
@@ -3865,7 +3870,7 @@ textarea {
 .analysis-event-review button strong {
   overflow: hidden;
   color: #f0f4f2;
-  font-size: 11px;
+  font-size: 13px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -3873,7 +3878,7 @@ textarea {
 .analysis-event-review button small {
   overflow: hidden;
   color: #8f9b95;
-  font-size: 9px;
+  font-size: 13px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -3884,7 +3889,7 @@ textarea {
   background: #2a2114;
   border: 1px solid #564525;
   border-radius: 3px;
-  font-size: 8px;
+  font-size: 13px;
   font-style: normal;
 }
 
@@ -3897,7 +3902,7 @@ textarea {
   padding: 0 12px;
   color: #96a19b;
   background: #0d1112;
-  font-size: 10px;
+  font-size: 13px;
 }
 
 .analysis-event-review > div > p svg {
@@ -3920,7 +3925,7 @@ textarea {
 .analysis-panel > header h2 {
   overflow: hidden;
   color: #f0f4f2;
-  font-size: 12px;
+  font-size: 14px;
   font-weight: 600;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -3928,7 +3933,7 @@ textarea {
 
 .analysis-panel > header small {
   color: #84908a;
-  font-size: 8px;
+  font-size: 13px;
 }
 
 .analysis-feed {
@@ -3965,7 +3970,7 @@ textarea {
   padding-top: 2px;
   color: #8b9791;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 8px;
+  font-size: 13px;
 }
 
 .analysis-feed-list button > i {
@@ -3991,7 +3996,7 @@ textarea {
 
 .analysis-feed-list strong {
   color: #ecf1ee;
-  font-size: 12px;
+  font-size: 14px;
   font-weight: 600;
 }
 
@@ -3999,7 +4004,7 @@ textarea {
   display: -webkit-box;
   overflow: hidden;
   color: #a1aca6;
-  font-size: 10px;
+  font-size: 13px;
   line-height: 1.45;
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 2;
@@ -4007,7 +4012,7 @@ textarea {
 
 .analysis-feed-list em {
   color: #6f7c76;
-  font-size: 9px;
+  font-size: 13px;
   font-style: normal;
 }
 
@@ -4023,7 +4028,7 @@ textarea {
   background: #2a2114;
   border: 1px solid #564525;
   border-radius: 3px;
-  font-size: 7px;
+  font-size: 13px;
 }
 
 .analysis-record-summary {
@@ -4036,13 +4041,13 @@ textarea {
 
 .analysis-record-summary strong {
   color: #f1f4f2;
-  font-size: 12px;
+  font-size: 14px;
 }
 
 .analysis-record-summary p {
   margin-top: 5px;
   color: #929d97;
-  font-size: 10px;
+  font-size: 13px;
   line-height: 1.5;
 }
 
@@ -4053,7 +4058,7 @@ textarea {
 
 .analysis-selected dl div {
   display: grid;
-  min-height: 31px;
+  min-height: 38px;
   grid-template-columns: 74px minmax(0, 1fr);
   align-items: center;
   gap: 8px;
@@ -4062,7 +4067,7 @@ textarea {
 
 .analysis-selected dt,
 .analysis-selected dd {
-  font-size: 8px;
+  font-size: 13px;
 }
 
 .analysis-selected dt {
@@ -4073,6 +4078,7 @@ textarea {
   margin: 0;
   overflow-wrap: anywhere;
   color: #d5ddd9;
+  font-size: 13px;
   text-align: right;
 }
 
@@ -4088,7 +4094,7 @@ textarea {
 
 .analysis-animal-status > div > article {
   display: grid;
-  min-height: 53px;
+  min-height: 60px;
   grid-template-columns: 28px minmax(0, 1fr) auto;
   align-items: center;
   gap: 8px;
@@ -4104,7 +4110,7 @@ textarea {
   color: #e7eee9;
   background: #1c2822;
   border-radius: 50%;
-  font-size: 9px;
+  font-size: 13px;
   font-weight: 700;
 }
 
@@ -4117,13 +4123,13 @@ textarea {
 
 .analysis-animal-status strong {
   color: #e8edea;
-  font-size: 9px;
+  font-size: 13px;
 }
 
 .analysis-animal-status small,
 .analysis-animal-status em {
   color: #7e8a84;
-  font-size: 7px;
+  font-size: 13px;
   font-style: normal;
 }
 
@@ -4151,14 +4157,14 @@ textarea {
 .analysis-empty strong,
 .analysis-state strong {
   color: #dfe6e2;
-  font-size: 10px;
+  font-size: 14px;
 }
 
 .analysis-empty p,
 .analysis-state p {
   max-width: 390px;
   color: #7f8a85;
-  font-size: 9px;
+  font-size: 13px;
   line-height: 1.5;
 }
 
@@ -4188,7 +4194,7 @@ textarea {
   background: #261713;
   border: 1px solid #71463a;
   border-radius: 5px;
-  font-size: 8px;
+  font-size: 13px;
 }
 
 .spin {
@@ -6188,7 +6194,7 @@ body {
   color: #d7dbe0;
   border: 0;
   border-radius: 0;
-  font-size: 12px;
+  font-size: 13px;
 }
 
 .evidence-layout .route-tabs button:hover {
@@ -6283,7 +6289,7 @@ body {
 
 .evidence-layout .chat-heading strong {
   color: #eef0f3;
-  font-size: 12px;
+  font-size: 14px;
   font-weight: 580;
 }
 
@@ -6302,7 +6308,7 @@ body {
   color: #9ba2ac;
   background: transparent;
   border-bottom: 0;
-  font-size: 10px;
+  font-size: 13px;
 }
 
 .evidence-layout .message-list {
@@ -6338,7 +6344,7 @@ body {
   align-items: center;
   gap: 6px;
   color: #c6cbd2;
-  font-size: 9px;
+  font-size: 13px;
   font-weight: 500;
 }
 
@@ -6353,12 +6359,12 @@ body {
 .evidence-layout .message-meta span {
   order: 1;
   color: #a2a9b2;
-  font-size: 9px;
+  font-size: 13px;
 }
 
 .evidence-layout .message-copy {
   color: #e0e3e7;
-  font-size: 10px;
+  font-size: 14px;
   line-height: 1.55;
 }
 
@@ -6374,7 +6380,7 @@ body {
   background: #14171c;
   border: 1px solid #30353d;
   border-radius: 5px;
-  font-size: 9px;
+  font-size: 13px;
 }
 
 .evidence-layout .chat-composer {
@@ -6387,18 +6393,22 @@ body {
 
 .evidence-layout .chat-composer textarea {
   min-height: 32px;
-  font-size: 10px;
+  font-size: 14px;
 }
 
 .evidence-layout .chat-disclaimer {
   margin: 2px 11px 12px;
   color: #777e88;
-  font-size: 8px;
+  font-size: 13px;
   line-height: 1.45;
 }
 
 .evidence-layout .collapsed-chat-content {
   border-radius: 0;
+}
+
+.evidence-layout .collapsed-chat-content span {
+  font-size: 13px;
 }
 
 .evidence-layout .workspace-content {
@@ -6444,7 +6454,7 @@ body {
   color: #9ba2ac;
   background: #0b0d10;
   border-bottom: 1px solid #292e35;
-  font-size: 10px;
+  font-size: 13px;
 }
 
 .node-evidence-bar span {
@@ -6520,7 +6530,7 @@ body {
   background: rgba(12, 15, 19, 0.94);
   border: 1px solid #343a43;
   border-radius: 4px;
-  font-size: 9px;
+  font-size: 13px;
 }
 
 .neo4j-graph-controls > span {
@@ -6571,13 +6581,13 @@ body {
   bottom: 16px;
   display: grid;
   gap: 8px;
-  width: 140px;
+  width: 172px;
   padding: 10px;
   color: #aeb4bd;
   background: rgba(12, 15, 19, 0.94);
   border: 1px solid #343a43;
   border-radius: 5px;
-  font-size: 8px;
+  font-size: 13px;
 }
 
 .node-legend span {
@@ -6633,7 +6643,7 @@ body {
 
 .node-details-panel > header strong {
   color: #edf0f3;
-  font-size: 12px;
+  font-size: 14px;
   font-weight: 560;
 }
 
@@ -6648,7 +6658,7 @@ body {
 
 .node-selected-heading {
   display: grid;
-  min-height: 66px;
+  min-height: 74px;
   grid-template-columns: 38px minmax(0, 1fr) 24px 24px;
   align-items: center;
   gap: 7px;
@@ -6677,7 +6687,7 @@ body {
 .node-selected-heading strong {
   overflow: hidden;
   color: #f2f4f7;
-  font-size: 11px;
+  font-size: 14px;
   font-weight: 560;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -6690,7 +6700,7 @@ body {
   background: #102047;
   border: 1px solid #275ca8;
   border-radius: 3px;
-  font-size: 7px;
+  font-size: 13px;
   letter-spacing: 0.05em;
   text-transform: uppercase;
 }
@@ -6713,7 +6723,7 @@ body {
 
 .node-detail-list div {
   display: grid;
-  min-height: 38px;
+  min-height: 44px;
   grid-template-columns: 78px minmax(0, 1fr);
   align-items: start;
   gap: 10px;
@@ -6724,13 +6734,13 @@ body {
 .node-rule-section > span,
 .node-review-section > span {
   color: #a0a7b0;
-  font-size: 9px;
+  font-size: 13px;
 }
 
 .node-detail-list dd {
   margin: 0;
   color: #e2e5e9;
-  font-size: 9px;
+  font-size: 13px;
   line-height: 1.4;
   text-align: right;
   overflow-wrap: anywhere;
@@ -6749,14 +6759,14 @@ body {
 .node-rule-section strong,
 .node-review-section strong {
   color: #eef0f3;
-  font-size: 10px;
+  font-size: 13px;
   font-weight: 560;
 }
 
 .node-rule-section small,
 .node-review-section small {
   color: #8c939d;
-  font-size: 8px;
+  font-size: 13px;
 }
 
 .node-detail-actions {
@@ -7476,7 +7486,7 @@ body {
   }
 
   .evidence-workspace-title {
-    font-size: 12px;
+    font-size: 13px;
   }
 
   .evidence-layout .route-tabs button {
@@ -7529,7 +7539,8 @@ body {
   }
 
   .evidence-layout .topbar-left {
-    flex: 1;
+    flex: 0 0 44px;
+    min-width: 44px;
   }
 
   .evidence-workspace-title,
@@ -7539,14 +7550,16 @@ body {
   }
 
   .evidence-layout .brand {
-    min-width: 0;
-    padding: 0 8px;
+    width: 44px;
+    min-width: 44px;
+    justify-content: center;
+    padding: 0;
   }
 
   .evidence-layout .route-tabs button {
-    min-width: 64px;
-    padding: 0 7px;
-    font-size: 9px;
+    min-width: 0;
+    padding: 0 5px;
+    font-size: 13px;
   }
 
   .evidence-layout .chat-rail {
@@ -7562,7 +7575,7 @@ body {
 
   .evidence-layout .workspace-content {
     min-height: calc(100dvh - 54px);
-    padding-left: 62px;
+    padding-left: 0;
   }
 
   .node-evidence-page,

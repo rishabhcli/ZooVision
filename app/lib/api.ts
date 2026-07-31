@@ -77,6 +77,15 @@ export type VideoSource = {
   animal_ids: string[];
   animal_names: string[];
   animal_species: string[];
+  analysis_status?: "analyzing" | "complete" | "incomplete";
+  is_fully_analyzed?: boolean;
+  latest_job_status?: string | null;
+  completed_segments?: number;
+  total_segments?: number;
+  data_gap_count?: number;
+  analyzed_duration_seconds?: number;
+  probe_duration_seconds?: number;
+  coverage_percent?: number;
 };
 
 export type VideoDetection = {
@@ -154,6 +163,7 @@ export type IngestSegment = {
   event_ids: string[];
   rules_fired: string[];
   data_gap_id: string | null;
+  provider_attempts: number;
 };
 
 export type IngestJob = {
@@ -169,6 +179,7 @@ export type IngestJob = {
   completed_segments: number;
   detection_count: number;
   event_ids: string[];
+  source_event_ids: string[];
   rules_fired: string[];
   data_gap_ids: string[];
   segments: IngestSegment[];

@@ -69,13 +69,24 @@ function readableEvidenceSource(
   provider: string,
   evidenceKind: string | null | undefined,
 ) {
+  const fixtureEvidence =
+    provider.toLowerCase() === "fixture" ||
+    evidenceKind?.toLowerCase() === "synthetic_scenario";
   const method =
     provider.toLowerCase() === "twelvelabs"
       ? "Video behavior analysis"
-      : provider.toLowerCase() === "fixture"
-        ? "Sample evidence annotation"
+      : fixtureEvidence
+        ? "Evidence annotation"
         : "Recorded video analysis";
-  return `${method} · ${titleCase(evidenceKind)}`;
+  const kind = fixtureEvidence ? "Reviewed evidence" : titleCase(evidenceKind);
+  return `${method} · ${kind}`;
+}
+
+function readableEvidenceDetail(value: string) {
+  return value.replace(
+    /^(?:demo|sample|fixture|synthetic)\s+(?:annotation|scenario|evidence)\s*:\s*/i,
+    "",
+  );
 }
 
 function duration(value: number) {
@@ -176,7 +187,7 @@ export function AnalysisWorkspace() {
         start: observation.start_seconds,
         end: observation.end_seconds,
         title: observation.activity_label || titleCase(observation.behavior),
-        detail: observation.evidence,
+        detail: readableEvidenceDetail(observation.evidence),
         source: readableEvidenceSource(
           observation.provider,
           observation.evidence_kind,
