@@ -73,7 +73,7 @@ function readableEvidenceSource(
     provider.toLowerCase() === "twelvelabs"
       ? "Video behavior analysis"
       : provider.toLowerCase() === "fixture"
-        ? "Demonstration annotation"
+        ? "Sample evidence annotation"
         : "Recorded video analysis";
   return `${method} · ${titleCase(evidenceKind)}`;
 }

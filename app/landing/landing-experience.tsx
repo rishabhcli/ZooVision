@@ -389,7 +389,7 @@ export function LandingExperience() {
           </div>
           <p>
             Pick a moment, scan the evidence, then decide how it should be
-            routed. This sandbox uses visible fixture scenarios.
+            routed. This sandbox uses clear sample evidence scenarios.
           </p>
         </header>
 
@@ -416,7 +416,7 @@ export function LandingExperience() {
               <div>
                 <Video size={15} />
                 <strong>{scenario.camera}</strong>
-                <span>FIXTURE FEED</span>
+                <span>EVIDENCE DEMO</span>
               </div>
               <div className="shift-control" aria-label="Shift routing">
                 <button
@@ -458,7 +458,7 @@ export function LandingExperience() {
                 >
                   <img
                     src={scenario.poster}
-                    alt={`${scenario.species} fixture camera scene`}
+                    alt={`${scenario.species} sample evidence scene`}
                   />
                 </motion.div>
               </AnimatePresence>
@@ -501,7 +501,9 @@ export function LandingExperience() {
               <button
                 className="play-control"
                 type="button"
-                aria-label={playback ? "Pause fixture feed" : "Play fixture feed"}
+                aria-label={
+                  playback ? "Pause sample evidence" : "Play sample evidence"
+                }
                 onClick={() => setPlayback((value) => !value)}
               >
                 {playback ? (
@@ -533,7 +535,7 @@ export function LandingExperience() {
                   min="0"
                   max="100"
                   value={timeline}
-                  aria-label="Fixture timeline"
+                  aria-label="Evidence timeline"
                   onChange={(event) => setTimeline(Number(event.target.value))}
                 />
               </div>
@@ -693,10 +695,10 @@ export function LandingExperience() {
       <section className="guardrail-band" aria-labelledby="guardrail-title">
         <div className="guardrail-intro">
           <span className="section-index">03 · THE PROMISE</span>
-          <h2 id="guardrail-title">Watchful, never autonomous.</h2>
+          <h2 id="guardrail-title">Watchful and human-led.</h2>
           <p>
-            ZooVision can observe, preserve evidence, and route a factual check.
-            It cannot diagnose, treat, or act on an enclosure.
+            ZooVision observes, preserves evidence, and routes factual checks
+            while keeper judgment remains final.
           </p>
         </div>
         <div className="guardrail-list">
@@ -715,8 +717,8 @@ export function LandingExperience() {
           <div>
             <span>03</span>
             <ShieldCheck size={20} />
-            <strong>Ask a human</strong>
-            <p>Shadow mode and keeper review remain in the loop.</p>
+            <strong>Keeper review</strong>
+            <p>Every routed check ends with a clear human decision.</p>
           </div>
         </div>
       </section>
@@ -782,8 +784,8 @@ export function LandingExperience() {
           </span>
         </div>
         <p className="footer-legal">
-          ZooVision is a welfare-support tool, not a medical device. Fixture
-          scenarios are synthetic and clearly labeled.
+          ZooVision is an evidence-led welfare-support tool with keeper judgment
+          at the center.
         </p>
       </footer>
     </main>

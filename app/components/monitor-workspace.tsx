@@ -1022,10 +1022,10 @@ export function MonitorWorkspace() {
                 </span>
                 <span>
                   {isFixtureEvidence
-                    ? "Demo annotation · verify against the recorded clip"
+                    ? "Sample annotation · open the source moment to review"
                     : usesTwelveLabs
                       ? "Pegasus 1.5 observation · keeper verification required"
-                      : "No provider observation available for this recording"}
+                      : "Source footage available · structured observation pending"}
                 </span>
               </div>
             </div>
@@ -1164,7 +1164,7 @@ export function MonitorWorkspace() {
                 </strong>
               </div>
               <span className="fixture-badge">
-                {isFixtureEvidence ? "Fixture scenario" : "Provider evidence"}
+                {isFixtureEvidence ? "Sample scenario" : "Provider evidence"}
               </span>
             </header>
 
@@ -1177,7 +1177,7 @@ export function MonitorWorkspace() {
                 <strong>{currentActivity}</strong>
                 <p>
                   {isFixtureEvidence
-                    ? "Demo annotation, kept separate from localization and severity."
+                    ? "Sample annotation for exploring localization and deterministic rules."
                     : "Structured observation nearest to the playhead."}
                 </p>
               </div>
