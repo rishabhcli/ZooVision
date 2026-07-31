@@ -211,7 +211,10 @@ export function AnalysisWorkspace() {
   const selectedItem =
     feed.find((item) => item.id === selectedItemId) ?? feed[0] ?? null;
   const totalObservations = videos.reduce((sum, video) => sum + video.observation_count, 0);
-  const totalDetections = videos.reduce((sum, video) => sum + video.detection_count, 0);
+  const totalSpatialMarkers = videos.reduce(
+    (sum, video) => sum + video.detection_count,
+    0,
+  );
   const coverageGaps =
     dashboard?.data_gaps.filter(
       (gap) => gap.reason !== "bedrock_embedding_failed",
@@ -283,7 +286,10 @@ export function AnalysisWorkspace() {
       <div className="analysis-state" role="status">
         <LoaderCircle className="spin" size={24} />
         <strong>Connecting analysis records</strong>
-        <p>Loading video sources, observations, detections, and ingest jobs.</p>
+        <p>
+          Loading video sources, observations, object candidates, movement
+          regions, and ingest jobs.
+        </p>
       </div>
     );
   }
@@ -435,7 +441,7 @@ export function AnalysisWorkspace() {
         </article>
         <article>
           <Activity size={18} />
-          <div><span>Tracked regions</span><strong>{totalDetections}</strong><small>Visual movement measurements</small></div>
+          <div><span>Visual review markers</span><strong>{totalSpatialMarkers}</strong><small>Object candidates + measured movement regions</small></div>
         </article>
         <article>
           <ShieldCheck size={18} />
@@ -465,7 +471,7 @@ export function AnalysisWorkspace() {
                   <strong>{job.source_name}</strong>
                   <span>
                     {titleCase(job.status)} · {job.completed_segments}/{job.total_segments || "?"} segments
-                    · {job.detection_count} detections
+                    · {job.detection_count} visual markers (candidates + movement)
                   </span>
                   <i><b style={{ width: `${jobProgress(job)}%` }} /></i>
                   {job.error && <small>{job.error}</small>}

@@ -13,6 +13,7 @@
   --monitor-dim: #6c7471;
   --monitor-motion: #57d6bd;
   --monitor-motion-soft: #173d36;
+  --monitor-movement-region: #9ba8a3;
   --monitor-lime: #c4df6c;
   --monitor-orange: #ff7a45;
   --monitor-yellow: #f1c75b;
@@ -709,6 +710,20 @@
   font-weight: 760;
 }
 
+.motion-box[data-source="motion_region"] {
+  border-color: var(--monitor-movement-region);
+}
+
+.motion-box[data-source="motion_region"] > span {
+  color: #101513;
+  background: var(--monitor-movement-region);
+  border-color: #d7dfdc;
+}
+
+.motion-box[data-source="motion_region"] > span b {
+  color: #34413d;
+}
+
 .stage-play {
   position: absolute;
   z-index: 6;
@@ -892,7 +907,7 @@
 }
 
 .evidence-timeline {
-  --timeline-label-width: 116px;
+  --timeline-label-width: 164px;
   position: relative;
   margin-top: 12px;
   overflow: hidden;
@@ -950,8 +965,12 @@
   border-radius: 2px;
 }
 
-.legend-swatch.motion {
+.legend-swatch.candidate {
   background: var(--monitor-motion);
+}
+
+.legend-swatch.movement {
+  background: var(--monitor-movement-region);
 }
 
 .legend-swatch.observation {
@@ -1022,6 +1041,18 @@
   color: var(--monitor-dim);
 }
 
+.timeline-label-long,
+.timeline-label-short {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.timeline-label-short {
+  display: none;
+}
+
 .timeline-track {
   position: relative;
   min-width: 0;
@@ -1037,17 +1068,38 @@
   border-radius: 0;
 }
 
-.motion-heatmap {
+.detection-heatmap {
   display: grid;
   grid-template-columns: repeat(72, minmax(0, 1fr));
   gap: 1px;
   padding: 8px 4px;
 }
 
-.motion-heatmap i {
+.detection-heatmap i {
   display: block;
   min-width: 1px;
+}
+
+.candidate-heatmap i {
   background: var(--monitor-motion);
+}
+
+.movement-heatmap i {
+  background: var(--monitor-movement-region);
+}
+
+.timeline-track-count {
+  position: absolute;
+  z-index: 2;
+  top: 8px;
+  right: 7px;
+  padding: 0 3px;
+  color: var(--monitor-text-soft);
+  background: rgba(10, 12, 13, 0.88);
+  font-family: var(--font-mono), monospace;
+  font-size: 14px;
+  font-weight: 650;
+  line-height: 19px;
 }
 
 .timeline-span {
@@ -1100,9 +1152,13 @@
 .empty-track {
   position: absolute;
   top: 10px;
+  right: 9px;
   left: 9px;
+  overflow: hidden;
   color: var(--monitor-dim);
   font-size: 14px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .timeline-range {
@@ -1886,6 +1942,14 @@
 
   .evidence-timeline {
     --timeline-label-width: 96px;
+  }
+
+  .timeline-label-long {
+    display: none;
+  }
+
+  .timeline-label-short {
+    display: inline;
   }
 
   .timeline-heading p {

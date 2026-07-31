@@ -21,6 +21,7 @@ import {
   SkipForward,
   Sparkles,
   Route,
+  ScanLine,
   Video,
 } from "lucide-react";
 import { motion, useReducedMotion } from "motion/react";
@@ -338,6 +339,22 @@ function detectionsAtTime(
   return yolo.length > 0 ? yolo : latestFrame("motion_region");
 }
 
+function detectionTimelineBins(
+  detections: VideoTrack["detections"],
+  durationSeconds: number,
+) {
+  const bins = Array.from({ length: COVERAGE_BINS }, () => 0);
+  for (const detection of detections) {
+    const index = clamp(
+      Math.floor((detection.video_seconds / durationSeconds) * COVERAGE_BINS),
+      0,
+      COVERAGE_BINS - 1,
+    );
+    bins[index] += 1;
+  }
+  return bins;
+}
+
 function containedVideoBounds(
   stage: HTMLDivElement,
   video: HTMLVideoElement,
@@ -389,24 +406,30 @@ function EvidenceTimeline({
   selectedEventId?: string;
   track: VideoTrack;
 }) {
-  const bins = useMemo(() => {
-    const next = Array.from({ length: COVERAGE_BINS }, () => 0);
-    for (const observation of track.observations) {
-      const first = clamp(
-        Math.floor((observation.start_seconds / durationSeconds) * COVERAGE_BINS),
-        0,
-        COVERAGE_BINS - 1,
-      );
-      const last = clamp(
-        Math.ceil((observation.end_seconds / durationSeconds) * COVERAGE_BINS),
-        first,
-        COVERAGE_BINS - 1,
-      );
-      for (let index = first; index <= last; index += 1) next[index] += 1;
-    }
-    return next;
-  }, [durationSeconds, track.observations]);
-  const peak = Math.max(1, ...bins);
+  const objectCandidates = useMemo(
+    () =>
+      track.detections.filter(
+        (detection) => detection.source === "yolov8_object",
+      ),
+    [track.detections],
+  );
+  const movementRegions = useMemo(
+    () =>
+      track.detections.filter(
+        (detection) => detection.source === "motion_region",
+      ),
+    [track.detections],
+  );
+  const objectCandidateBins = useMemo(
+    () => detectionTimelineBins(objectCandidates, durationSeconds),
+    [durationSeconds, objectCandidates],
+  );
+  const movementRegionBins = useMemo(
+    () => detectionTimelineBins(movementRegions, durationSeconds),
+    [durationSeconds, movementRegions],
+  );
+  const objectCandidatePeak = Math.max(1, ...objectCandidateBins);
+  const movementRegionPeak = Math.max(1, ...movementRegionBins);
   const timeTicks = Array.from({ length: 5 }, (_, index) =>
     (durationSeconds / 4) * index,
   );
@@ -427,8 +450,10 @@ function EvidenceTimeline({
           <strong>Shift timeline</strong>
         </div>
         <p>
-          <span className="legend-swatch motion" />
-          Provider coverage
+          <span className="legend-swatch candidate" />
+          Candidate
+          <span className="legend-swatch movement" />
+          Movement
           <span className="legend-swatch observation" />
           Observation
           <span className="legend-swatch event" />
@@ -448,77 +473,136 @@ function EvidenceTimeline({
         ))}
       </div>
 
-      <div className="timeline-row">
+      <div
+        className="timeline-row"
+        aria-label={`${objectCandidates.length} object candidate samples`}
+      >
         <span className="timeline-label">
-          <Video size={14} />
-          Coverage
+          <ScanLine size={14} />
+          <span className="timeline-label-long">Object candidates</span>
+          <span className="timeline-label-short">Objects</span>
         </span>
-        <div className="timeline-track motion-heatmap" aria-hidden="true">
-          {bins.map((count, index) => (
-            <i
-              key={index}
-              style={{ opacity: count === 0 ? 0.08 : 0.24 + (count / peak) * 0.76 }}
-            />
-          ))}
+        <div className="timeline-track detection-heatmap candidate-heatmap">
+          {objectCandidates.length === 0 ? (
+            <span className="empty-track">No object candidates</span>
+          ) : (
+            objectCandidateBins.map((count, index) => (
+              <i
+                aria-hidden="true"
+                key={index}
+                style={{
+                  opacity:
+                    count === 0
+                      ? 0.08
+                      : 0.24 + (count / objectCandidatePeak) * 0.76,
+                }}
+              />
+            ))
+          )}
+          {objectCandidates.length > 0 && (
+            <small className="timeline-track-count">
+              {objectCandidates.length} samples
+            </small>
+          )}
+        </div>
+      </div>
+
+      <div
+        className="timeline-row"
+        aria-label={`${movementRegions.length} measured movement region samples`}
+      >
+        <span className="timeline-label">
+          <Activity size={14} />
+          <span className="timeline-label-long">Movement regions</span>
+          <span className="timeline-label-short">Motion</span>
+        </span>
+        <div className="timeline-track detection-heatmap movement-heatmap">
+          {movementRegions.length === 0 ? (
+            <span className="empty-track">No movement regions</span>
+          ) : (
+            movementRegionBins.map((count, index) => (
+              <i
+                aria-hidden="true"
+                key={index}
+                style={{
+                  opacity:
+                    count === 0
+                      ? 0.08
+                      : 0.24 + (count / movementRegionPeak) * 0.76,
+                }}
+              />
+            ))
+          )}
+          {movementRegions.length > 0 && (
+            <small className="timeline-track-count">
+              {movementRegions.length} samples
+            </small>
+          )}
         </div>
       </div>
 
       <div className="timeline-row">
         <span className="timeline-label">
           <Eye size={14} />
-          Observations
+          <span className="timeline-label-long">Observations</span>
+          <span className="timeline-label-short">Observ.</span>
         </span>
         <div className="timeline-track">
-          {track.observations.map((observation) => {
-            const span = boundedTimelineSpan(
-              observation.start_seconds,
-              observation.end_seconds,
-              durationSeconds,
-              1.2,
-            );
-            return (
-              <button
-                type="button"
-                className="timeline-span observation-span"
-                key={observation.observation_id}
-                onPointerDown={(event) => {
-                  if (event.button === 0) {
+          {track.observations.length === 0 ? (
+            <span className="empty-track">No structured observations</span>
+          ) : (
+            track.observations.map((observation) => {
+              const span = boundedTimelineSpan(
+                observation.start_seconds,
+                observation.end_seconds,
+                durationSeconds,
+                1.2,
+              );
+              return (
+                <button
+                  type="button"
+                  className="timeline-span observation-span"
+                  key={observation.observation_id}
+                  onPointerDown={(event) => {
+                    if (event.button === 0) {
+                      onSelectObservation(
+                        observation.observation_id,
+                        observation.start_seconds,
+                      );
+                    }
+                  }}
+                  onClick={() =>
                     onSelectObservation(
                       observation.observation_id,
                       observation.start_seconds,
-                    );
+                    )
                   }
-                }}
-                onClick={() =>
-                  onSelectObservation(
-                    observation.observation_id,
+                  style={{
+                    left: `${span.left}%`,
+                    width: `${span.width}%`,
+                  }}
+                  aria-label={`Seek to ${formatBehavior(observation.behavior)} observation at ${formatDuration(
                     observation.start_seconds,
-                  )
-                }
-                style={{
-                  left: `${span.left}%`,
-                  width: `${span.width}%`,
-                }}
-                aria-label={`Seek to ${formatBehavior(observation.behavior)} observation at ${formatDuration(
-                  observation.start_seconds,
-                )}`}
-                title={formatBehavior(observation.behavior)}
-              >
-                <span>{formatBehavior(observation.behavior)}</span>
-              </button>
-            );
-          })}
+                  )}`}
+                  title={formatBehavior(observation.behavior)}
+                >
+                  <span>{formatBehavior(observation.behavior)}</span>
+                </button>
+              );
+            })
+          )}
         </div>
       </div>
 
       <div className="timeline-row">
         <span className="timeline-label">
           <AlertTriangle size={14} />
-          Rule events
+          <span className="timeline-label-long">Rule events</span>
+          <span className="timeline-label-short">Rules</span>
         </span>
         <div className="timeline-track">
           {track.events.length === 0 ? (
-            <span className="empty-track">No non-NONE events</span>
+            <span className="empty-track">No deterministic rule events</span>
           ) : (
             track.events.map((event) => {
               const span = boundedTimelineSpan(
@@ -1174,7 +1258,7 @@ export function MonitorWorkspace() {
                         ? formatBehavior(
                             `${detection.label ?? "animal"} candidate`,
                           )
-                        : "Movement"}
+                        : "Movement region"}
                       <b>{Math.round(detection.score * 100)}%</b>
                     </span>
                   </span>
