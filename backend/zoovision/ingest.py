@@ -203,6 +203,7 @@ class VideoIngestService:
         self.webhook_configured = webhook_configured
         self.now = now or (lambda: datetime.now(UTC))
         self._lock = threading.Lock()
+        self._source_locks: dict[str, threading.Lock] = {}
 
     def resolve_source(self, source_name: str) -> Path:
         """Resolve an upload name to a real file inside the raw root."""
@@ -264,6 +265,12 @@ class VideoIngestService:
             return job
 
     def _run(self, job_id: str, request: IngestRequest) -> IngestJob:
+        with self._lock:
+            source_lock = self._source_locks.setdefault(request.source_name, threading.Lock())
+        with source_lock:
+            return self._run_source(job_id, request)
+
+    def _run_source(self, job_id: str, request: IngestRequest) -> IngestJob:
         job = self.status(job_id)
         if job is None:
             raise RuntimeError("ingest job disappeared before it started")
@@ -285,6 +292,10 @@ class VideoIngestService:
             )
             job.total_segments = len(pieces)
             self._persist(job)
+            source_path = f"uploads/{request.source_name}"
+            if self.graph_writer is not None:
+                self.graph_writer.replace_source_analysis(source_path)
+            self.store.replace_source_analysis(source_path)
             for index, offset, duration, piece in pieces:
                 result = self._process_segment(
                     request,

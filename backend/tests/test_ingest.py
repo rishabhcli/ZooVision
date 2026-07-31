@@ -357,6 +357,161 @@ def test_ingest_is_idempotent_for_the_same_video(tmp_path: Path) -> None:
     assert len(store.dump_table("detections")) == first_detections
 
 
+def test_reingest_replaces_prior_source_generation_only(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    raw_root = tmp_path / "raw"
+    upload_root = raw_root / "uploads"
+    upload_root.mkdir(parents=True)
+    (upload_root / "source.mp4").write_bytes(b"source")
+    (upload_root / "other.mp4").write_bytes(b"other")
+
+    def fake_probe(_path: Path) -> VideoProbe:
+        return VideoProbe(
+            duration_seconds=30,
+            width=640,
+            height=360,
+            frame_rate=30,
+        )
+
+    def fake_segments(
+        source: Path,
+        destination: Path,
+        *,
+        segment_seconds: int,
+        max_segments: int,
+    ) -> list[tuple[int, float, float, Path]]:
+        destination.mkdir(parents=True, exist_ok=True)
+        durations = (
+            [10.0, 10.0, 10.0]
+            if source.name == "source.mp4" and segment_seconds == 10
+            else [15.0, 15.0]
+            if source.name == "source.mp4"
+            else [30.0]
+        )
+        results = []
+        offset = 0.0
+        for index, duration in enumerate(durations[:max_segments]):
+            piece = destination / f"{source.stem}-{index}.mp4"
+            piece.write_bytes(f"{source.name}-{index}".encode())
+            results.append((index, offset, duration, piece))
+            offset += duration
+        return results
+
+    monkeypatch.setattr("zoovision.ingest.probe_video", fake_probe)
+    monkeypatch.setattr("zoovision.ingest.segment_video", fake_segments)
+
+    store = SQLiteStore(tmp_path / "replace-source.db")
+    store.initialize()
+    first_service = VideoIngestService(
+        store=store,
+        raw_root=raw_root,
+        analyzer_factory=_FightingProvider,
+        detector=_stub_detections,
+        now=lambda: START,
+    )
+    old_job = first_service.run(
+        IngestRequest(
+            source_name="source.mp4",
+            animal_id="animal-old",
+            animal_name="Old metadata",
+            species="Unknown",
+            enclosure_id="ENC-01",
+            camera_id="CAM-OLD",
+            start_ts=START,
+            segment_seconds=10,
+        )
+    )
+    other_job = first_service.run(
+        IngestRequest(
+            source_name="other.mp4",
+            animal_id="animal-other",
+            animal_name="Other animal",
+            species="Unknown",
+            enclosure_id="ENC-02",
+            camera_id="CAM-02",
+            start_ts=START,
+            segment_seconds=30,
+        )
+    )
+    assert old_job.status == other_job.status == "complete", (
+        old_job.error,
+        other_job.error,
+    )
+    old_chunk_ids = {segment.chunk_id for segment in old_job.segments}
+    old_event_ids = set(old_job.event_ids)
+    other_event_ids = set(other_job.event_ids)
+    store.save_data_gap(
+        DataGap(
+            gap_id="gap-old-generation",
+            enclosure_id="ENC-01",
+            chunk_id=old_job.segments[0].chunk_id,
+            start_ts=START,
+            end_ts=START + timedelta(seconds=10),
+            reason="provider_timeout",
+        )
+    )
+
+    replacement_service = VideoIngestService(
+        store=store,
+        raw_root=raw_root,
+        analyzer_factory=_StubProvider,
+        detector=_stub_detections,
+        now=lambda: START,
+    )
+    replacement = replacement_service.run(
+        IngestRequest(
+            source_name="source.mp4",
+            animal_id="animal-current",
+            animal_name="Current metadata",
+            species="Unknown",
+            enclosure_id="ENC-01",
+            camera_id="CAM-CURRENT",
+            start_ts=START,
+            segment_seconds=15,
+        )
+    )
+
+    assert replacement.status == "complete", replacement.error
+    replacement_chunk_ids = {segment.chunk_id for segment in replacement.segments}
+    chunks = store.dump_table("video_chunks")
+    source_chunks = [row for row in chunks if row["source_path"] == "uploads/source.mp4"]
+    assert {row["chunk_id"] for row in source_chunks} == replacement_chunk_ids
+    assert old_chunk_ids.isdisjoint({row["chunk_id"] for row in chunks})
+    assert {row["chunk_id"] for row in chunks if row["source_path"] == "uploads/other.mp4"} == {
+        segment.chunk_id for segment in other_job.segments
+    }
+    source_summary = next(
+        row for row in store.video_sources() if row["source_path"] == "uploads/source.mp4"
+    )
+    assert source_summary["chunk_count"] == 2
+    assert source_summary["stored_source_duration_seconds"] == pytest.approx(30)
+
+    observations = store.dump_table("observations")
+    assert {
+        row["animal_id"] for row in observations if row["chunk_id"] in replacement_chunk_ids
+    } == {"animal-current"}
+    assert all(row["chunk_id"] not in old_chunk_ids for row in observations)
+    assert all(row["chunk_id"] not in old_chunk_ids for row in store.dump_table("detections"))
+    assert "gap-old-generation" not in {row["gap_id"] for row in store.dump_table("data_gaps")}
+    remaining_event_ids = {row["event_id"] for row in store.dump_table("events")}
+    assert old_event_ids.isdisjoint(remaining_event_ids)
+    assert other_event_ids <= remaining_event_ids
+    assert {row["animal_id"] for row in store.dump_table("animals")} == {
+        "animal-current",
+        "animal-other",
+    }
+    assert (
+        max(
+            observation["end_seconds"]
+            for observation in store.video_track("uploads/source.mp4")["observations"]
+        )
+        <= 30
+    )
+    assert len(store.recent_ingest_jobs()) == 3
+
+
 def test_ingest_records_a_failure_as_job_state(tmp_path: Path) -> None:
     service, _ = _service(tmp_path)
     broken = tmp_path / "raw" / "uploads" / "broken.mp4"

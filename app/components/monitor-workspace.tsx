@@ -237,6 +237,32 @@ function maximumTrackSeconds(track: VideoTrack) {
   );
 }
 
+function authoritativeSourceDuration(
+  probeDurationSeconds: number | undefined,
+  track: VideoTrack,
+) {
+  const probed = finiteMetric(probeDurationSeconds);
+  return probed !== null && probed > 0 ? probed : maximumTrackSeconds(track);
+}
+
+function boundedTimelineSpan(
+  startSeconds: number,
+  endSeconds: number,
+  durationSeconds: number,
+  minimumWidth: number,
+) {
+  const boundedStart = clamp(startSeconds, 0, durationSeconds);
+  const boundedEnd = clamp(Math.max(endSeconds, boundedStart), boundedStart, durationSeconds);
+  const width = Math.min(
+    100,
+    Math.max(minimumWidth, ((boundedEnd - boundedStart) / durationSeconds) * 100),
+  );
+  return {
+    left: clamp((boundedStart / durationSeconds) * 100, 0, 100 - width),
+    width,
+  };
+}
+
 function initialEvidenceSeconds(track: VideoTrack) {
   const event = track.events[0];
   if (event) {
@@ -444,11 +470,11 @@ function EvidenceTimeline({
         </span>
         <div className="timeline-track">
           {track.observations.map((observation) => {
-            const width = Math.max(
+            const span = boundedTimelineSpan(
+              observation.start_seconds,
+              observation.end_seconds,
+              durationSeconds,
               1.2,
-              ((observation.end_seconds - observation.start_seconds) /
-                durationSeconds) *
-                100,
             );
             return (
               <button
@@ -470,8 +496,8 @@ function EvidenceTimeline({
                   )
                 }
                 style={{
-                  left: `${(observation.start_seconds / durationSeconds) * 100}%`,
-                  width: `${width}%`,
+                  left: `${span.left}%`,
+                  width: `${span.width}%`,
                 }}
                 aria-label={`Seek to ${formatBehavior(observation.behavior)} observation at ${formatDuration(
                   observation.start_seconds,
@@ -495,10 +521,11 @@ function EvidenceTimeline({
             <span className="empty-track">No non-NONE events</span>
           ) : (
             track.events.map((event) => {
-              const width = Math.max(
+              const span = boundedTimelineSpan(
+                event.start_seconds,
+                event.end_seconds,
+                durationSeconds,
                 2,
-                ((event.end_seconds - event.start_seconds) / durationSeconds) *
-                  100,
               );
               return (
                 <button
@@ -515,8 +542,8 @@ function EvidenceTimeline({
                     onSelectEvent(event.event_id, event.start_seconds)
                   }
                   style={{
-                    left: `${(event.start_seconds / durationSeconds) * 100}%`,
-                    width: `${width}%`,
+                    left: `${span.left}%`,
+                    width: `${span.width}%`,
                   }}
                   aria-label={`Seek to ${event.severity} ${formatBehavior(
                     event.behavior,
@@ -583,6 +610,7 @@ export function MonitorWorkspace() {
   const selectedCameraId = selectedCamera?.camera_id;
   const selectedCompletedSegments = selectedCamera?.completed_segments;
   const selectedAnalysisStatus = selectedCamera?.analysis_status;
+  const selectedProbeDuration = selectedCamera?.probe_duration_seconds;
   const currentSeconds = (progress / 100) * durationSeconds;
   const usesTwelveLabs = Boolean(
     track?.observations.some((observation) => observation.provider === "twelvelabs"),
@@ -744,7 +772,7 @@ export function MonitorWorkspace() {
                   }
                 : null),
         );
-        setDurationSeconds(maximumTrackSeconds(payload));
+        setDurationSeconds(authoritativeSourceDuration(selectedProbeDuration, payload));
       })
       .catch((caught: unknown) => {
         if (cancelled) return;
@@ -764,6 +792,7 @@ export function MonitorWorkspace() {
     selectedCameraId,
     selectedCompletedSegments,
     selectedEnclosureId,
+    selectedProbeDuration,
     selectedSourcePath,
   ]);
 
@@ -1059,7 +1088,10 @@ export function MonitorWorkspace() {
                   const duration =
                     Number.isFinite(video.duration) && video.duration > 0
                       ? video.duration
-                      : maximumTrackSeconds(track);
+                      : authoritativeSourceDuration(
+                          selectedCamera.probe_duration_seconds,
+                          track,
+                        );
                   const pending = pendingSeekRef.current;
                   const initial = clamp(
                     pending?.sourcePath === selectedCamera.source_path

@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import re
+from datetime import datetime
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -38,6 +39,14 @@ Ground every statement in the supplied context JSON. Rules you must follow:
 - Cite the ids of the context records you used in cited_ids.
 - When the question asks where or when something happened, select up to five
   relevant observation ids in moment_ids. Only select ids present in moments.
+- When retrieval includes a requested_media_offset_seconds value, answer from
+  the observation intervals at or nearest that position in the selected video.
+  Treat those media offsets as authoritative; wall-clock timestamps are not
+  positions in the video.
+- A `bedrock_embedding_failed` data gap means semantic vector indexing failed.
+  It does not mean the footage, object detections, or structured observations
+  are missing. Never use it to override an available structured observation or
+  claim that the depicted activity is unknowable.
 - Prefer `provider_structured` moments for footage lookup. Use
   `synthetic_scenario` moments only when the user explicitly asks about a demo
   scenario or the deterministic rule event that cites it.
@@ -108,6 +117,20 @@ _GAP_PHRASES = ("gap", "missing", "coverage", "camera loss", "unavailable")
 _QUIET_PHRASES = ("no event", "no recorded event", "quiet animal", "nothing recorded")
 _MOMENT_PHRASES = ("footage", "clip", "video", "where", "when", "find", "moment")
 _EVENT_PHRASES = ("event", "severity", "rule", "evidence", "support", "highest")
+_MEDIA_TIMESTAMP_PATTERN = re.compile(
+    r"\b(?:(?P<hours>\d{1,2}):)?(?P<minutes>\d{1,3}):(?P<seconds>[0-5]\d)\b"
+)
+_MINUTES_SECONDS_PATTERN = re.compile(
+    r"\b(?P<minutes>\d+(?:\.\d+)?)\s*(?:minutes?|mins?)"
+    r"(?:\s*(?:and\s*)?(?P<seconds>\d+(?:\.\d+)?)\s*(?:seconds?|secs?))?\b",
+    re.IGNORECASE,
+)
+_SECONDS_PATTERN = re.compile(
+    r"\b(?P<seconds>\d+(?:\.\d+)?)\s*(?:seconds?|secs?)\b",
+    re.IGNORECASE,
+)
+_EMBEDDING_GAP_REASONS = {"bedrock_embedding_failed"}
+_TEMPORAL_MOMENT_WINDOW_SECONDS = 120.0
 _INTENT_TERMS = {
     "event",
     "evidence",
@@ -203,6 +226,8 @@ def build_context(
     moments = store.searchable_moments(
         enclosure_id=enclosure_id,
         animal_id=animal_id,
+        camera_id=camera_id,
+        source_path=source_path,
     )
     if source_path:
         moments = [moment for moment in moments if moment["source_path"] == source_path]
@@ -282,16 +307,32 @@ def build_context(
             continue
         if camera_id and not source_path and chunk.get("camera_id") != camera_id:
             continue
-        scoped_gaps.append(
-            {
-                "gap_id": gap["gap_id"],
-                "enclosure_id": gap["enclosure_id"],
-                "reason": gap["reason"],
-                "detail": gap["detail"],
-                "start_ts": gap["start_ts"],
-                "end_ts": gap["end_ts"],
-            }
-        )
+        scoped_gap = {
+            "gap_id": gap["gap_id"],
+            "enclosure_id": gap["enclosure_id"],
+            "reason": gap["reason"],
+            "detail": gap["detail"],
+            "start_ts": gap["start_ts"],
+            "end_ts": gap["end_ts"],
+        }
+        if chunk:
+            source_offset = float(chunk.get("source_offset_seconds") or 0)
+            scoped_gap["start_seconds"] = round(
+                max(
+                    0.0,
+                    source_offset
+                    + _seconds_between_iso(chunk.get("start_ts"), gap.get("start_ts")),
+                ),
+                3,
+            )
+            scoped_gap["end_seconds"] = round(
+                max(
+                    0.0,
+                    source_offset + _seconds_between_iso(chunk.get("start_ts"), gap.get("end_ts")),
+                ),
+                3,
+            )
+        scoped_gaps.append(scoped_gap)
 
     return {
         "scope": {
@@ -464,6 +505,7 @@ def retrieve_context(
         query = f"{previous_users[-1]} {question}"
 
     intents = _query_intents(query)
+    requested_offset_seconds = _requested_media_offset_seconds(query)
     terms = _tokens(query)
     content_terms = terms - _INTENT_TERMS
     animals = context.get("animals", [])
@@ -557,9 +599,29 @@ def retrieve_context(
         relevant_moments = [moment for _, moment in ranked_moments[:8]]
     if intents["quiet"] or intents["gaps"] and not intents["moments"]:
         relevant_moments = []
+    if requested_offset_seconds is not None and not intents["quiet"]:
+        relevant_moments = _select_temporal_moments(
+            ranked_moments,
+            requested_offset_seconds,
+        )
+        temporal_moment_ids = {moment["observation_id"] for moment in relevant_moments}
+        selected_events = [
+            event
+            for event in selected_events
+            if any(
+                source["observation_id"] in temporal_moment_ids
+                for source in event.get("sources", [])
+            )
+        ]
 
     gaps = context.get("data_gaps", [])
-    if not intents["gaps"]:
+    if requested_offset_seconds is not None:
+        gaps = _select_temporal_gaps(gaps, requested_offset_seconds)
+        if relevant_moments:
+            gaps = [gap for gap in gaps if not _is_embedding_only_gap(gap)]
+    elif not intents["gaps"]:
+        if not intents["summary"]:
+            gaps = [gap for gap in gaps if not _is_embedding_only_gap(gap)]
         if matched_enclosures:
             gaps = [gap for gap in gaps if gap["enclosure_id"] in matched_enclosures]
         elif not intents["summary"] or content_terms:
@@ -591,6 +653,7 @@ def retrieve_context(
             "resolved_query": query,
             "intents": [name for name, active in intents.items() if active],
             "matched_animal_ids": sorted(matched_animal_ids),
+            "requested_media_offset_seconds": requested_offset_seconds,
             "no_match": unresolved_scoped_subject
             or bool(
                 animals
@@ -620,7 +683,9 @@ def summarize(
     moments = context.get("moments", [])
     asked = question[-1].content.lower() if isinstance(question, list) else question.lower()
     intents = _query_intents(asked)
-    activity_question = _asks_about_activity_pattern(asked)
+    requested_offset_seconds = context.get("retrieval", {}).get("requested_media_offset_seconds")
+    temporal_question = requested_offset_seconds is not None
+    activity_question = _asks_about_activity_pattern(asked) or temporal_question
     selected = [] if activity_question else events
     selected_moments = moments
 
@@ -678,7 +743,24 @@ def summarize(
         for moment in selected_moments:
             label = moment.get("activity_label") or moment["behavior"].replace("_", " ")
             activity_counts[label] = activity_counts.get(label, 0) + 1
-        if activity_question:
+        if temporal_question:
+            lines.append(
+                f"Around {_display_offset(float(requested_offset_seconds))} in the "
+                "selected video, the structured footage record shows:"
+            )
+            for moment in selected_moments[:5]:
+                label = (
+                    moment.get("activity_label")
+                    or moment.get("evidence")
+                    or moment["behavior"].replace("_", " ")
+                )
+                lines.append(
+                    f"- {_human_label(label)} "
+                    f"({_display_offset(moment['start_seconds'])}-"
+                    f"{_display_offset(moment['end_seconds'])})."
+                )
+                cited.append(moment["observation_id"])
+        elif activity_question:
             subject = animals[0]["name"] if len(animals) == 1 else "The selected animals"
             activities = sorted(
                 activity_counts,
@@ -697,15 +779,22 @@ def summarize(
             lines.append(
                 f"{len(selected_moments)} tracked footage moment(s) are available for review."
             )
-        for moment in selected_moments[:5]:
-            label = moment.get("activity_label") or moment["behavior"].replace("_", " ")
-            lines.append(
-                f"- {moment['animal_name']} on {moment['camera_id']}: {label} at "
-                f"{moment['start_seconds']:.1f}s. {moment['evidence']}"
-            )
-            cited.append(moment["observation_id"])
+        if not temporal_question:
+            for moment in selected_moments[:5]:
+                label = moment.get("activity_label") or moment["behavior"].replace("_", " ")
+                lines.append(
+                    f"- {moment['animal_name']} on {moment['camera_id']}: {label} at "
+                    f"{moment['start_seconds']:.1f}s. {moment['evidence']}"
+                )
+                cited.append(moment["observation_id"])
     elif activity_question:
-        lines.append("No recorded footage moments match that activity question in this view.")
+        if temporal_question:
+            lines.append(
+                "No structured footage observation was recorded near "
+                f"{_display_offset(float(requested_offset_seconds))} in this view."
+            )
+        else:
+            lines.append("No recorded footage moments match that activity question in this view.")
 
     if quiet and intents["summary"] and not intents["quiet"]:
         lines.append(
@@ -716,25 +805,41 @@ def summarize(
         cited.extend(animal["animal_id"] for animal in quiet)
 
     uncertainty: list[str] = []
-    if gaps:
-        lines.append(f"{len(gaps)} coverage gap(s) limit what could be observed:")
-        for gap in gaps[:3]:
+    coverage_gaps = [gap for gap in gaps if not _is_embedding_only_gap(gap)]
+    embedding_gaps = [gap for gap in gaps if _is_embedding_only_gap(gap)]
+    if coverage_gaps:
+        lines.append(f"{len(coverage_gaps)} coverage gap(s) limit what could be observed:")
+        for gap in coverage_gaps[:3]:
             lines.append(
                 f"- {gap['enclosure_id']}: {gap['reason'].replace('_', ' ')} "
                 f"between {gap['start_ts']} and {gap['end_ts']}."
             )
             cited.append(gap["gap_id"])
         uncertainty.append("Recorded coverage gaps mean the record may be incomplete.")
+    if embedding_gaps:
+        lines.append(
+            f"{len(embedding_gaps)} semantic indexing issue(s) were recorded. "
+            "They affect vector lookup, not the availability of footage or structured "
+            "observations."
+        )
+        cited.extend(gap["gap_id"] for gap in embedding_gaps[:3])
+        uncertainty.append(
+            "Semantic lookup was incomplete; direct structured observations remain available."
+        )
 
     if not cited and not gaps:
-        lines = (
-            ["I could not find recorded footage that answers that activity question."]
-            if activity_question
-            else [
+        if temporal_question:
+            lines = [
+                "I could not find a structured footage observation near "
+                f"{_display_offset(float(requested_offset_seconds))} in this view."
+            ]
+        elif activity_question:
+            lines = ["I could not find recorded footage that answers that activity question."]
+        else:
+            lines = [
                 "I could not find recorded evidence that answers that question.",
                 "Try naming an animal, enclosure, behavior, rule, or asking for the shift summary.",
             ]
-        )
         uncertainty.append("No matching record was found; this is not proof that nothing happened.")
 
     return ChatAnswer(
@@ -754,6 +859,93 @@ def _query_intents(query: str) -> dict[str, bool]:
         "moments": any(phrase in lowered for phrase in _MOMENT_PHRASES),
         "events": any(phrase in lowered for phrase in _EVENT_PHRASES),
     }
+
+
+def _requested_media_offset_seconds(query: str) -> float | None:
+    """Parse an explicit position in the selected video from a question."""
+    timestamp = _MEDIA_TIMESTAMP_PATTERN.search(query)
+    if timestamp:
+        hours = int(timestamp.group("hours") or 0)
+        minutes = int(timestamp.group("minutes"))
+        seconds = int(timestamp.group("seconds"))
+        return float(hours * 3600 + minutes * 60 + seconds)
+
+    minutes_match = _MINUTES_SECONDS_PATTERN.search(query)
+    if minutes_match:
+        minutes = float(minutes_match.group("minutes"))
+        seconds = float(minutes_match.group("seconds") or 0)
+        return minutes * 60 + seconds
+
+    seconds_match = _SECONDS_PATTERN.search(query)
+    if seconds_match:
+        return float(seconds_match.group("seconds"))
+    return None
+
+
+def _select_temporal_moments(
+    ranked_moments: list[tuple[int, dict[str, Any]]],
+    target_seconds: float,
+) -> list[dict[str, Any]]:
+    """Prefer observations covering the requested frame, then nearby evidence."""
+    scored: list[tuple[float, int, float, int, float, dict[str, Any]]] = []
+    for lexical_score, moment in ranked_moments:
+        start = float(moment.get("start_seconds") or 0)
+        end = max(start, float(moment.get("end_seconds") or start))
+        distance = _interval_distance(target_seconds, start, end)
+        provider_rank = 0 if moment.get("evidence_kind") == "provider_structured" else 1
+        scored.append(
+            (
+                distance,
+                provider_rank,
+                end - start,
+                -lexical_score,
+                start,
+                moment,
+            )
+        )
+
+    overlapping = [item for item in scored if item[0] == 0]
+    if overlapping:
+        return [item[-1] for item in sorted(overlapping)[:5]]
+
+    nearby = [item for item in scored if item[0] <= _TEMPORAL_MOMENT_WINDOW_SECONDS]
+    return [item[-1] for item in sorted(nearby)[:5]]
+
+
+def _select_temporal_gaps(
+    gaps: list[dict[str, Any]],
+    target_seconds: float,
+) -> list[dict[str, Any]]:
+    """Keep only gaps whose source-relative interval is near the requested time."""
+    relevant: list[tuple[float, dict[str, Any]]] = []
+    for gap in gaps:
+        if "start_seconds" not in gap or "end_seconds" not in gap:
+            continue
+        start = float(gap["start_seconds"])
+        end = max(start, float(gap["end_seconds"]))
+        distance = _interval_distance(target_seconds, start, end)
+        if distance <= _TEMPORAL_MOMENT_WINDOW_SECONDS:
+            relevant.append((distance, gap))
+    return [gap for _, gap in sorted(relevant, key=lambda item: item[0])[:12]]
+
+
+def _interval_distance(target: float, start: float, end: float) -> float:
+    if start <= target <= end:
+        return 0.0
+    return min(abs(target - start), abs(target - end))
+
+
+def _is_embedding_only_gap(gap: dict[str, Any]) -> bool:
+    return str(gap.get("reason", "")).lower() in _EMBEDDING_GAP_REASONS
+
+
+def _seconds_between_iso(start_iso: Any, end_iso: Any) -> float:
+    try:
+        return (
+            datetime.fromisoformat(str(end_iso)) - datetime.fromisoformat(str(start_iso))
+        ).total_seconds()
+    except (TypeError, ValueError):
+        return 0.0
 
 
 def _tokens(value: Any) -> set[str]:
@@ -845,6 +1037,11 @@ def _natural_join(values: list[str]) -> str:
     return f"{', '.join(values[:-1])}, and {values[-1]}"
 
 
+def _human_label(value: Any) -> str:
+    label = str(value).strip().rstrip(".")
+    return label[:1].upper() + label[1:] if label else "Recorded activity"
+
+
 def _explicitly_requests_demo(query: str) -> bool:
     lowered = query.lower()
     return any(term in lowered for term in ("demo", "fixture", "synthetic", "scenario"))
@@ -933,12 +1130,14 @@ def _resolve_citations(
             kind="moment",
         )
     for gap in context.get("data_gaps", []):
+        gap_position = (
+            _display_offset(float(gap["start_seconds"]))
+            if "start_seconds" in gap
+            else _display_time(gap["start_ts"])
+        )
         records[gap["gap_id"]] = ChatCitation(
             record_id=gap["gap_id"],
-            label=(
-                f"{gap['enclosure_id']}: {gap['reason'].replace('_', ' ')} "
-                f"at {_display_time(gap['start_ts'])}"
-            ),
+            label=(f"{gap['enclosure_id']}: {gap['reason'].replace('_', ' ')} at {gap_position}"),
             kind="data_gap",
         )
     return [records[record_id] for record_id in cited_ids if record_id in records]

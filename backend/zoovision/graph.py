@@ -106,6 +106,29 @@ MATCH (observation:Observation {chunk_id: $chunk_id})
 DETACH DELETE observation
 """
 
+CLEAR_SOURCE_ANALYSIS_CYPHER = """
+MATCH (clip:Clip {source_path: $source_path})
+OPTIONAL MATCH (observation:Observation)-[:EVIDENCE_FROM]->(clip)
+OPTIONAL MATCH (observation)-[:SOURCE_FOR]->(event:WelfareEvent)
+OPTIONAL MATCH (observation_animal:Animal)-[:HAS_OBSERVATION]->(observation)
+OPTIONAL MATCH (event_animal:Animal)-[:HAS_EVENT]->(event)
+WITH collect(DISTINCT clip) AS clips,
+     collect(DISTINCT observation) AS observations,
+     collect(DISTINCT event) AS events,
+     collect(DISTINCT observation_animal)
+       + collect(DISTINCT event_animal) AS candidate_animals
+FOREACH (event IN events | DETACH DELETE event)
+FOREACH (observation IN observations | DETACH DELETE observation)
+FOREACH (clip IN clips | DETACH DELETE clip)
+WITH candidate_animals
+UNWIND candidate_animals AS animal
+WITH DISTINCT animal
+WHERE animal IS NOT NULL
+  AND NOT (animal)-[:HAS_OBSERVATION]->(:Observation)
+  AND NOT (animal)-[:HAS_EVENT]->(:WelfareEvent)
+DETACH DELETE animal
+"""
+
 WRITE_CLIP_EMBEDDING_CYPHER = """
 MATCH (clip:Clip {clip_id: $clip_id})
 SET clip.embedding = $embedding,
@@ -318,6 +341,15 @@ class Neo4jGraphWriter:
             tx.run(CLEAR_CHUNK_EVENTS_CYPHER, chunk_id=chunk_id).consume()
             tx.run(CLEAR_CHUNK_OBSERVATIONS_CYPHER, chunk_id=chunk_id).consume()
             tx.run(WRITE_OBSERVATIONS_CYPHER, **bundle.parameters()).consume()
+
+        with self.driver.session() as session:
+            session.execute_write(write)
+
+    def replace_source_analysis(self, source_path: str) -> None:
+        """Remove the previous graph generation for one media source."""
+
+        def write(tx: Any) -> None:
+            tx.run(CLEAR_SOURCE_ANALYSIS_CYPHER, source_path=source_path).consume()
 
         with self.driver.session() as session:
             session.execute_write(write)

@@ -640,6 +640,118 @@ class SQLiteStore:
             connection.execute("DELETE FROM detections WHERE chunk_id = ?", (chunk_id,))
             connection.execute("DELETE FROM data_gaps WHERE chunk_id = ?", (chunk_id,))
 
+    def replace_source_analysis(self, source_path: str) -> int:
+        """Atomically remove a prior analysis generation for one media source.
+
+        Chunk IDs include animal metadata, so a source reingested with corrected
+        metadata or a different segment size can otherwise leave an older set
+        beside the current one. Ingest-job history is intentionally preserved.
+        """
+        with self.connect() as connection:
+            chunk_rows = connection.execute(
+                "SELECT chunk_id FROM video_chunks WHERE source_path = ?",
+                (source_path,),
+            ).fetchall()
+            chunk_ids = [row["chunk_id"] for row in chunk_rows]
+            if not chunk_ids:
+                return 0
+
+            placeholders = ",".join("?" for _ in chunk_ids)
+            observation_rows = connection.execute(
+                f"""
+                SELECT animal_id
+                FROM observations
+                WHERE chunk_id IN ({placeholders})
+                """,
+                chunk_ids,
+            ).fetchall()
+            candidate_animal_ids = {row["animal_id"] for row in observation_rows}
+            if source_path.startswith("uploads/"):
+                source_name = source_path.removeprefix("uploads/")
+                candidate_animal_ids.update(
+                    row["animal_id"]
+                    for row in connection.execute(
+                        """
+                        SELECT DISTINCT animal_id
+                        FROM ingest_jobs
+                        WHERE source_name = ?
+                        """,
+                        (source_name,),
+                    )
+                )
+
+            event_ids: list[str] = []
+            if observation_rows:
+                event_rows = connection.execute(
+                    """
+                    SELECT DISTINCT e.event_id, e.animal_id
+                    FROM events e
+                    JOIN event_sources es ON es.event_id = e.event_id
+                    JOIN observations o ON o.observation_id = es.observation_id
+                    JOIN video_chunks vc ON vc.chunk_id = o.chunk_id
+                    WHERE vc.source_path = ?
+                    """,
+                    (source_path,),
+                ).fetchall()
+                event_ids = [row["event_id"] for row in event_rows]
+                candidate_animal_ids.update(row["animal_id"] for row in event_rows)
+
+                connection.execute(
+                    """
+                    DELETE FROM event_sources
+                    WHERE observation_id IN (
+                        SELECT o.observation_id
+                        FROM observations o
+                        JOIN video_chunks vc ON vc.chunk_id = o.chunk_id
+                        WHERE vc.source_path = ?
+                    )
+                    """,
+                    (source_path,),
+                )
+
+            if event_ids:
+                event_placeholders = ",".join("?" for _ in event_ids)
+                for table in ("outcomes", "alerts", "event_narratives"):
+                    connection.execute(
+                        f"DELETE FROM {table} WHERE event_id IN ({event_placeholders})",
+                        event_ids,
+                    )
+                connection.execute(
+                    f"DELETE FROM events WHERE event_id IN ({event_placeholders})",
+                    event_ids,
+                )
+
+            connection.execute(
+                f"DELETE FROM data_gaps WHERE chunk_id IN ({placeholders})",
+                chunk_ids,
+            )
+            connection.execute(
+                "DELETE FROM video_chunks WHERE source_path = ?",
+                (source_path,),
+            )
+
+            for animal_id in candidate_animal_ids:
+                connection.execute(
+                    """
+                    DELETE FROM animals
+                    WHERE animal_id = ?
+                      AND NOT EXISTS (
+                          SELECT 1 FROM observations
+                          WHERE observations.animal_id = animals.animal_id
+                      )
+                      AND NOT EXISTS (
+                          SELECT 1 FROM events
+                          WHERE events.animal_id = animals.animal_id
+                      )
+                      AND NOT EXISTS (
+                          SELECT 1 FROM baseline_profiles
+                          WHERE baseline_profiles.animal_id = animals.animal_id
+                      )
+                    """,
+                    (animal_id,),
+                )
+            return len(chunk_ids)
+
     def save_alert(
         self,
         *,
@@ -1118,7 +1230,9 @@ class SQLiteStore:
         *,
         enclosure_id: str | None = None,
         animal_id: str | None = None,
-        limit: int = 240,
+        camera_id: str | None = None,
+        source_path: str | None = None,
+        limit: int = 1000,
     ) -> list[dict]:
         """Return provider observations with stable, browser-seekable positions."""
         conditions = ["1 = 1"]
@@ -1129,6 +1243,12 @@ class SQLiteStore:
         if animal_id:
             conditions.append("o.animal_id = ?")
             parameters.append(animal_id)
+        if source_path:
+            conditions.append("vc.source_path = ?")
+            parameters.append(source_path)
+        elif camera_id:
+            conditions.append("vc.camera_id = ?")
+            parameters.append(camera_id)
         parameters.append(limit)
 
         with self.connect() as connection:

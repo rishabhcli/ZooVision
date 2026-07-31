@@ -112,6 +112,105 @@ def _seeded_store(tmp_path: Path) -> SQLiteStore:
     return store
 
 
+def _temporal_squirrel_store(tmp_path: Path) -> SQLiteStore:
+    store = SQLiteStore(tmp_path / "temporal-chat.db")
+    store.initialize()
+    store.upsert_animal(
+        animal_id="animal-backyard",
+        name="Squirrel staircase wildlife",
+        species="Eastern gray squirrel and backyard birds",
+        enclosure_id="ENC-BACKYARD",
+        baseline_state="shadow",
+    )
+    chunk_start = START + timedelta(minutes=32)
+    store.upsert_video_chunk(
+        chunk_id="chunk-near-33m",
+        enclosure_id="ENC-BACKYARD",
+        camera_id="CAM-BY1",
+        start_ts=chunk_start.isoformat(),
+        end_ts=(chunk_start + timedelta(minutes=2)).isoformat(),
+        source_path="uploads/backyard-squirrel-staircase.mp4",
+        source_offset_seconds=32 * 60,
+        content_sha256="sha-staircase",
+        status="analyzed",
+    )
+    store.save_observation(
+        Observation(
+            observation_id="obs-near-33m",
+            animal_id="animal-backyard",
+            enclosure_id="ENC-BACKYARD",
+            chunk_id="chunk-near-33m",
+            behavior=Behavior.EATING,
+            start_ts=chunk_start + timedelta(seconds=55),
+            end_ts=chunk_start + timedelta(seconds=63),
+            confidence=0.91,
+            evidence="A sparrow flies onto the platform and begins eating seeds.",
+            provider="twelvelabs",
+            provider_model="test",
+            evidence_kind=EvidenceKind.PROVIDER_STRUCTURED,
+            activity_label="One sparrow eating seeds on the platform",
+        )
+    )
+    store.save_observation(
+        Observation(
+            observation_id="obs-after-33m",
+            animal_id="animal-backyard",
+            enclosure_id="ENC-BACKYARD",
+            chunk_id="chunk-near-33m",
+            behavior=Behavior.FORAGING,
+            start_ts=chunk_start + timedelta(seconds=64),
+            end_ts=chunk_start + timedelta(seconds=77),
+            confidence=0.89,
+            evidence="A second sparrow joins on the ground.",
+            provider="twelvelabs",
+            provider_model="test",
+            evidence_kind=EvidenceKind.PROVIDER_STRUCTURED,
+            activity_label="Two sparrows foraging near the platform",
+        )
+    )
+    store.save_data_gap(
+        DataGap(
+            gap_id="gap-embedding-near-33m",
+            enclosure_id="ENC-BACKYARD",
+            chunk_id="chunk-near-33m",
+            start_ts=chunk_start,
+            end_ts=chunk_start + timedelta(minutes=2),
+            reason="bedrock_embedding_failed",
+            detail="Vector indexing failed after structured analysis completed.",
+        )
+    )
+
+    store.upsert_video_chunk(
+        chunk_id="chunk-other-camera-33m",
+        enclosure_id="ENC-BACKYARD",
+        camera_id="CAM-BY2",
+        start_ts=chunk_start.isoformat(),
+        end_ts=(chunk_start + timedelta(minutes=2)).isoformat(),
+        source_path="uploads/backyard-squirrels-and-birds.mp4",
+        source_offset_seconds=32 * 60,
+        content_sha256="sha-feeder",
+        status="analyzed",
+    )
+    store.save_observation(
+        Observation(
+            observation_id="obs-other-camera-33m",
+            animal_id="animal-backyard",
+            enclosure_id="ENC-BACKYARD",
+            chunk_id="chunk-other-camera-33m",
+            behavior=Behavior.WALKING,
+            start_ts=chunk_start + timedelta(seconds=58),
+            end_ts=chunk_start + timedelta(seconds=66),
+            confidence=0.93,
+            evidence="A squirrel walks across the feeder camera.",
+            provider="twelvelabs",
+            provider_model="test",
+            evidence_kind=EvidenceKind.PROVIDER_STRUCTURED,
+            activity_label="One squirrel walking across the feeder",
+        )
+    )
+    return store
+
+
 def test_context_includes_events_animals_and_gaps(tmp_path: Path) -> None:
     context = build_context(_seeded_store(tmp_path))
 
@@ -541,6 +640,70 @@ def test_model_failure_fallback_keeps_exact_video_scope(tmp_path: Path) -> None:
     assert any("unavailable" in item for item in reply.uncertainty)
 
 
+def test_time_query_prioritizes_structured_moment_over_embedding_gap(
+    tmp_path: Path,
+) -> None:
+    full_context = build_context(
+        _temporal_squirrel_store(tmp_path),
+        enclosure_id="ENC-BACKYARD",
+        animal_id="animal-backyard",
+        camera_id="CAM-BY1",
+        source_path="uploads/backyard-squirrel-staircase.mp4",
+    )
+    context = retrieve_context(
+        full_context,
+        [
+            ChatMessage(
+                role="user",
+                content="What is the squirrel doing around 33 minutes?",
+            )
+        ],
+    )
+
+    assert context["retrieval"]["requested_media_offset_seconds"] == 33 * 60
+    assert [moment["observation_id"] for moment in context["moments"]] == ["obs-near-33m"]
+    assert context["data_gaps"] == []
+    assert all(
+        moment["source_path"] == "uploads/backyard-squirrel-staircase.mp4"
+        for moment in context["moments"]
+    )
+
+
+def test_time_query_model_failure_answers_from_observation_not_embedding_gap(
+    tmp_path: Path,
+) -> None:
+    chat = GroundedChat(
+        _temporal_squirrel_store(tmp_path),
+        client=_StubClient(RuntimeError("provider offline")),
+        model="gpt-test",
+    )
+
+    reply = chat.reply(
+        ChatRequest(
+            messages=[
+                ChatMessage(
+                    role="user",
+                    content="What is the squirrel doing around 33 minutes?",
+                )
+            ],
+            enclosure_id="ENC-BACKYARD",
+            animal_id="animal-backyard",
+            camera_id="CAM-BY1",
+            source_path="uploads/backyard-squirrel-staircase.mp4",
+        )
+    )
+
+    assert reply.mode == "deterministic_fallback"
+    assert "33:00" in reply.answer
+    assert "sparrow" in reply.answer.lower()
+    assert "eating seeds" in reply.answer.lower()
+    assert "embedding" not in reply.answer.lower()
+    assert "could not find" not in reply.answer.lower()
+    assert reply.cited_ids == ["obs-near-33m"]
+    assert [moment.observation_id for moment in reply.moments] == ["obs-near-33m"]
+    assert all(citation.record_id != "gap-embedding-near-33m" for citation in reply.citations)
+
+
 def test_instructions_forbid_severity_and_treatment() -> None:
     from zoovision.chat import CHAT_INSTRUCTIONS
 
@@ -552,6 +715,8 @@ def test_instructions_forbid_severity_and_treatment() -> None:
     assert "do not describe them as either" in lowered
     assert "current scope is authoritative" in lowered
     assert "never expose a raw database id" in lowered
+    assert "semantic vector indexing failed" in lowered
+    assert "never use it to override an available structured observation" in lowered
 
 
 def test_summarize_never_invents_a_severity(tmp_path: Path) -> None:

@@ -13,6 +13,7 @@ from zoovision.domain import (
 from zoovision.graph import (
     CLEAR_CHUNK_EVENTS_CYPHER,
     CLEAR_CHUNK_OBSERVATIONS_CYPHER,
+    CLEAR_SOURCE_ANALYSIS_CYPHER,
     EVENT_CARDINALITY_CYPHER,
     READ_ENCLOSURES_CYPHER,
     READ_GRAPH_CYPHER,
@@ -183,6 +184,20 @@ def test_graph_writer_indexes_observations_without_an_event():
     assert "MERGE (observation:Observation" in WRITE_OBSERVATIONS_CYPHER
     assert "MERGE (animal)-[:HAS_OBSERVATION]->(observation)" in WRITE_OBSERVATIONS_CYPHER
     assert driver.transaction.parameters["observations"][0]["observation_id"] == "obs-1"
+
+
+def test_graph_writer_atomically_replaces_one_source_generation():
+    driver = FakeDriver()
+    writer = Neo4jGraphWriter("unused", "unused", "unused", driver=driver)
+
+    writer.replace_source_analysis("uploads/source.mp4")
+
+    assert driver.transaction.query == CLEAR_SOURCE_ANALYSIS_CYPHER
+    assert driver.transaction.parameters == {"source_path": "uploads/source.mp4"}
+    assert "clip:Clip {source_path: $source_path}" in CLEAR_SOURCE_ANALYSIS_CYPHER
+    assert "candidate_animals" in CLEAR_SOURCE_ANALYSIS_CYPHER
+    assert "HAS_OBSERVATION" in CLEAR_SOURCE_ANALYSIS_CYPHER
+    assert "HAS_EVENT" in CLEAR_SOURCE_ANALYSIS_CYPHER
 
 
 def test_graph_writer_persists_runtime_embedding_dimension():
