@@ -607,9 +607,15 @@
   border-color: rgba(196, 223, 108, 0.42);
 }
 
-.motion-box {
+.detection-layer {
   position: absolute;
   z-index: 5;
+  overflow: visible;
+  pointer-events: none;
+}
+
+.motion-box {
+  position: absolute;
   display: block;
   min-width: 8px;
   min-height: 8px;

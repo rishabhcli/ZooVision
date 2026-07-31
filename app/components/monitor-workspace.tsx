@@ -40,7 +40,12 @@ import {
 
 const PLAYBACK_SPEEDS = [0.5, 1, 2] as const;
 const COVERAGE_BINS = 72;
+const DETECTION_HOLD_SECONDS = 1.5;
 const POSTER_BY_SOURCE_PATH: Record<string, string> = {
+  "uploads/backyard-squirrel-staircase.mp4":
+    "/camera-posters/source-backyard-squirrel-staircase.jpg",
+  "uploads/backyard-squirrels-and-birds.mp4":
+    "/camera-posters/source-backyard-squirrels-and-birds.jpg",
   "uploads/badger-provider-probe-30s.mp4":
     "/camera-posters/source-badger-provider-probe-30s.jpg",
   "uploads/enc03_mountain_gorilla_15m.mp4":
@@ -198,6 +203,64 @@ function observationAtTime(
       );
     });
   return active[0] ?? nearestByStart(observations, currentSeconds);
+}
+
+function detectionsAtTime(
+  detections: VideoTrack["detections"],
+  currentSeconds: number,
+) {
+  function latestFrame(source: string) {
+    const candidates = detections.filter(
+      (item) =>
+        item.source === source &&
+        item.video_seconds <= currentSeconds + 0.05 &&
+        currentSeconds - item.video_seconds <= DETECTION_HOLD_SECONDS,
+    );
+    if (candidates.length === 0) return [];
+    const latestSeconds = Math.max(
+      ...candidates.map((item) => item.video_seconds),
+    );
+    return candidates.filter(
+      (item) => Math.abs(item.video_seconds - latestSeconds) < 0.001,
+    );
+  }
+
+  const yolo = latestFrame("yolov8_object");
+  return yolo.length > 0 ? yolo : latestFrame("motion_region");
+}
+
+function containedVideoBounds(
+  stage: HTMLDivElement,
+  video: HTMLVideoElement,
+) {
+  const stageWidth = stage.clientWidth;
+  const stageHeight = stage.clientHeight;
+  if (
+    stageWidth <= 0 ||
+    stageHeight <= 0 ||
+    video.videoWidth <= 0 ||
+    video.videoHeight <= 0
+  ) {
+    return { left: 0, top: 0, width: stageWidth, height: stageHeight };
+  }
+  const mediaRatio = video.videoWidth / video.videoHeight;
+  const stageRatio = stageWidth / stageHeight;
+  if (mediaRatio > stageRatio) {
+    const height = stageWidth / mediaRatio;
+    return {
+      left: 0,
+      top: (stageHeight - height) / 2,
+      width: stageWidth,
+      height,
+    };
+  }
+  const width = stageHeight * mediaRatio;
+  return {
+    left: (stageWidth - width) / 2,
+    top: 0,
+    width,
+    height: stageHeight,
+  };
 }
 
 function EvidenceTimeline({
@@ -412,6 +475,12 @@ export function MonitorWorkspace() {
   const [progress, setProgress] = useState(0);
   const [track, setTrack] = useState<VideoTrack | null>(null);
   const [videos, setVideos] = useState<VideoSource[]>([]);
+  const [videoBounds, setVideoBounds] = useState({
+    left: 0,
+    top: 0,
+    width: 0,
+    height: 0,
+  });
   const [selectedEvidence, setSelectedEvidence] = useState<{
     kind: "event" | "observation";
     id: string;
@@ -442,6 +511,10 @@ export function MonitorWorkspace() {
     if (!track) return null;
     return observationAtTime(track.observations, currentSeconds);
   }, [currentSeconds, track]);
+  const visibleDetections = useMemo(
+    () => (track ? detectionsAtTime(track.detections, currentSeconds) : []),
+    [currentSeconds, track],
+  );
   const selectedEvent = useMemo(() => {
     if (!track) return null;
     if (selectedEvidence?.kind === "event") {
@@ -571,6 +644,21 @@ export function MonitorWorkspace() {
             : "Unable to load the video evidence track.",
         ),
       );
+  }, [selectedCamera]);
+
+  useEffect(() => {
+    const stage = videoStageRef.current;
+    const video = videoRef.current;
+    if (!stage || !video) return;
+    const update = () => setVideoBounds(containedVideoBounds(stage, video));
+    const observer = new ResizeObserver(update);
+    observer.observe(stage);
+    document.addEventListener("fullscreenchange", update);
+    update();
+    return () => {
+      observer.disconnect();
+      document.removeEventListener("fullscreenchange", update);
+    };
   }, [selectedCamera]);
 
   function seekToSeconds(seconds: number) {
@@ -843,6 +931,11 @@ export function MonitorWorkspace() {
                   setDurationSeconds(duration);
                   setProgress((initial / duration) * 100);
                   setMediaError(null);
+                  window.requestAnimationFrame(() =>
+                    setVideoBounds(
+                      containedVideoBounds(videoStageRef.current!, video),
+                    ),
+                  );
                   void video.play().catch(() => setPlaying(false));
                 }}
                 onTimeUpdate={(event) => {
@@ -861,6 +954,38 @@ export function MonitorWorkspace() {
                 }
                 aria-label={`${selectedCamera.camera_id} recorded footage`}
               />
+
+              <div
+                className="detection-layer"
+                style={{
+                  left: videoBounds.left,
+                  top: videoBounds.top,
+                  width: videoBounds.width,
+                  height: videoBounds.height,
+                }}
+                aria-hidden="true"
+              >
+                {visibleDetections.map((detection) => (
+                  <span
+                    className="motion-box"
+                    data-source={detection.source}
+                    key={detection.detection_id}
+                    style={{
+                      left: `${detection.box.x * 100}%`,
+                      top: `${detection.box.y * 100}%`,
+                      width: `${detection.box.width * 100}%`,
+                      height: `${detection.box.height * 100}%`,
+                    }}
+                  >
+                    <span>
+                      {detection.source === "yolov8_object"
+                        ? "Animal candidate"
+                        : "Movement"}
+                      <b>{Math.round(detection.score * 100)}%</b>
+                    </span>
+                  </span>
+                ))}
+              </div>
 
               <div className="stage-badges" aria-hidden="true">
                 <span>

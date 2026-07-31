@@ -287,7 +287,12 @@ export const api = {
     }),
   chat: (
     messages: Array<{ role: "user" | "assistant"; content: string }>,
-    scope?: { animalId?: string | null; enclosureId?: string | null },
+    scope?: {
+      animalId?: string | null;
+      enclosureId?: string | null;
+      cameraId?: string | null;
+      sourcePath?: string | null;
+    },
   ) =>
     request<{
       answer: string;
@@ -307,6 +312,8 @@ export const api = {
         messages,
         animal_id: scope?.animalId || null,
         enclosure_id: scope?.enclosureId || null,
+        camera_id: scope?.cameraId || null,
+        source_path: scope?.sourcePath || null,
       }),
     }),
   recordOutcome: (

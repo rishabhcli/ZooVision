@@ -71,6 +71,7 @@ def main() -> None:
             settings.twelvelabs_api_key,
             model=settings.twelvelabs_model,
         ),
+        detector_config=settings.detector_config,
         graph_writer=graph_writer,
         fixture_mode=settings.fixture_mode,
     )
@@ -134,9 +135,7 @@ def main() -> None:
                     "status": result.status,
                     "analyzer": result.analyzer,
                     "segments": result.total_segments,
-                    "observations": sum(
-                        segment.observation_count for segment in result.segments
-                    ),
+                    "observations": sum(segment.observation_count for segment in result.segments),
                     "data_gaps": len(result.data_gap_ids),
                     "error": result.error,
                 }

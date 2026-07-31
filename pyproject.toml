@@ -18,9 +18,25 @@ dependencies = [
     "python-multipart>=0.0.20,<1",
     "strands-agents==1.50.2",
     "tenacity>=9,<10",
+    "torch>=2.7,<3",
+    "torchvision>=0.22,<1",
     "twelvelabs>=1.2,<2",
+    "ultralytics>=8.3,<9",
     "uvicorn[standard]>=0.35,<1",
 ]
+
+[tool.uv.sources]
+torch = [
+    { index = "pytorch-cpu", marker = "sys_platform == 'linux'" },
+]
+torchvision = [
+    { index = "pytorch-cpu", marker = "sys_platform == 'linux'" },
+]
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
 
 [project.scripts]
 zoovision-agentcore = "zoovision.agentcore_app:main"

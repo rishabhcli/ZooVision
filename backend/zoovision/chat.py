@@ -46,16 +46,23 @@ Ground every statement in the supplied context JSON. Rules you must follow:
   and explain why each cited record is relevant.
 - Treat earlier conversation turns as context for follow-up questions. The newest
   user question controls the task when the subject changes.
-- The scope identifies the animal and enclosure currently selected in the
-  console. Resolve phrases such as "this animal", "it", and "this camera" to
-  that scope, and name the selected animal in the answer.
+- The scope identifies the animal, enclosure, camera, and video source currently
+  selected in the console. Resolve phrases such as "this animal", "it", and
+  "this camera" to that scope, and name the selected animal in the answer. The
+  current scope is authoritative even when an earlier turn discussed a different
+  animal or camera.
 - Describe citations in keeper-friendly language in the answer. Never expose a
-  raw database id as prose or as a suggested label.
+  raw database id in the answer, uncertainty text, or a suggested label.
 - Distinguish absence of a recorded event from proof that nothing happened.
 - Be brief and factual. Keeper staff read these during a night shift.
 """.strip()
 
 _TOKEN_PATTERN = re.compile(r"[a-z0-9]+")
+_RAW_RECORD_ID_PATTERN = re.compile(
+    r"(?<![a-z0-9])(?:animal|alert|chk|chunk|event|evt|gap|obs|observation)"
+    r"[_-][a-z0-9_-]+(?![a-z0-9])",
+    re.IGNORECASE,
+)
 _STOP_WORDS = {
     "a",
     "about",
@@ -132,6 +139,8 @@ class ChatRequest(BaseModel):
     messages: list[ChatMessage] = Field(min_length=1, max_length=40)
     enclosure_id: str | None = None
     animal_id: str | None = None
+    camera_id: str | None = Field(default=None, max_length=120)
+    source_path: str | None = Field(default=None, max_length=400)
 
 
 class ChatAnswer(BaseModel):
@@ -182,6 +191,8 @@ def build_context(
     *,
     enclosure_id: str | None = None,
     animal_id: str | None = None,
+    camera_id: str | None = None,
+    source_path: str | None = None,
     event_limit: int = 40,
 ) -> dict[str, Any]:
     """Collect the shift record the assistant is allowed to read."""
@@ -193,6 +204,10 @@ def build_context(
         enclosure_id=enclosure_id,
         animal_id=animal_id,
     )
+    if source_path:
+        moments = [moment for moment in moments if moment["source_path"] == source_path]
+    elif camera_id:
+        moments = [moment for moment in moments if moment["camera_id"] == camera_id]
 
     if enclosure_id:
         animals = [a for a in animals if a["enclosure_id"] == enclosure_id]
@@ -203,18 +218,35 @@ def build_context(
         events = [e for e in events if e["animal_id"] == animal_id]
 
     observations = {row["observation_id"]: row for row in store.dump_table("observations")}
+    chunks = {row["chunk_id"]: row for row in store.dump_table("video_chunks")}
     trimmed_events = []
-    for event in events[:event_limit]:
-        detail_sources = [
-            {
-                "observation_id": source_id,
-                "evidence": observations[source_id]["evidence"],
-                "provider": observations[source_id]["provider"],
-                "evidence_kind": observations[source_id]["evidence_kind"],
-            }
-            for source_id in event.get("source_observation_ids", [])
-            if source_id in observations
-        ]
+    for event in events:
+        detail_sources = []
+        for source_id in event.get("source_observation_ids", []):
+            observation = observations.get(source_id)
+            if observation is None:
+                continue
+            chunk = chunks.get(observation["chunk_id"], {})
+            detail_sources.append(
+                {
+                    "observation_id": source_id,
+                    "evidence": observation["evidence"],
+                    "provider": observation["provider"],
+                    "evidence_kind": observation["evidence_kind"],
+                    "camera_id": chunk.get("camera_id"),
+                    "source_path": chunk.get("source_path"),
+                }
+            )
+        if source_path and not any(
+            source["source_path"] == source_path for source in detail_sources
+        ):
+            continue
+        if (
+            camera_id
+            and not source_path
+            and not any(source["camera_id"] == camera_id for source in detail_sources)
+        ):
+            continue
         trimmed_events.append(
             {
                 "event_id": event["event_id"],
@@ -236,9 +268,34 @@ def build_context(
                 "sources": detail_sources,
             }
         )
+        if len(trimmed_events) >= event_limit:
+            break
+
+    scoped_gaps = []
+    for gap in gaps:
+        chunk = chunks.get(gap.get("chunk_id"), {})
+        if source_path and chunk.get("source_path") != source_path:
+            continue
+        if camera_id and not source_path and chunk.get("camera_id") != camera_id:
+            continue
+        scoped_gaps.append(
+            {
+                "gap_id": gap["gap_id"],
+                "enclosure_id": gap["enclosure_id"],
+                "reason": gap["reason"],
+                "detail": gap["detail"],
+                "start_ts": gap["start_ts"],
+                "end_ts": gap["end_ts"],
+            }
+        )
 
     return {
-        "scope": {"enclosure_id": enclosure_id, "animal_id": animal_id},
+        "scope": {
+            "enclosure_id": enclosure_id,
+            "animal_id": animal_id,
+            "camera_id": camera_id,
+            "source_path": source_path,
+        },
         "animals": [
             {
                 "animal_id": animal["animal_id"],
@@ -253,17 +310,7 @@ def build_context(
         ],
         "events": trimmed_events,
         "moments": moments,
-        "data_gaps": [
-            {
-                "gap_id": gap["gap_id"],
-                "enclosure_id": gap["enclosure_id"],
-                "reason": gap["reason"],
-                "detail": gap["detail"],
-                "start_ts": gap["start_ts"],
-                "end_ts": gap["end_ts"],
-            }
-            for gap in gaps
-        ],
+        "data_gaps": scoped_gaps,
         "policy": {
             "severity_source": "deterministic Python rules only",
             "night_shift_only_paging": True,
@@ -307,6 +354,8 @@ class GroundedChat:
             self.store,
             enclosure_id=request.enclosure_id,
             animal_id=request.animal_id,
+            camera_id=request.camera_id,
+            source_path=request.source_path,
         )
         context = retrieve_context(full_context, request.messages)
         count = context_record_count(context)
@@ -383,6 +432,14 @@ class GroundedChat:
         unknown_moments = [moment for moment in answer.moment_ids if moment not in allowed_moments]
         if unknown_moments:
             raise ValueError(f"chat answer selected unknown moments: {unknown_moments[:3]}")
+        answer = answer.model_copy(
+            update={
+                "answer": _humanize_raw_record_ids(answer.answer, context),
+                "uncertainty": [
+                    _humanize_raw_record_ids(item, context) for item in answer.uncertainty
+                ],
+            }
+        )
         return answer
 
 
@@ -559,7 +616,8 @@ def summarize(
     moments = context.get("moments", [])
     asked = question[-1].content.lower() if isinstance(question, list) else question.lower()
     intents = _query_intents(asked)
-    selected = events
+    activity_question = _asks_about_activity_pattern(asked)
+    selected = [] if activity_question else events
     selected_moments = moments
 
     if context.get("retrieval", {}).get("no_match"):
@@ -583,7 +641,9 @@ def summarize(
     cited: list[str] = []
     quiet = [animal for animal in animals if animal["event_count"] == 0]
 
-    if intents["quiet"]:
+    if activity_question:
+        pass
+    elif intents["quiet"]:
         if quiet:
             lines.append(
                 "Animals with no deterministic welfare events recorded in this view: "
@@ -614,7 +674,7 @@ def summarize(
         for moment in selected_moments:
             label = moment.get("activity_label") or moment["behavior"].replace("_", " ")
             activity_counts[label] = activity_counts.get(label, 0) + 1
-        if _asks_about_activity_pattern(asked):
+        if activity_question:
             subject = animals[0]["name"] if len(animals) == 1 else "The selected animals"
             activities = sorted(
                 activity_counts,
@@ -640,6 +700,8 @@ def summarize(
                 f"{moment['start_seconds']:.1f}s. {moment['evidence']}"
             )
             cited.append(moment["observation_id"])
+    elif activity_question:
+        lines.append("No recorded footage moments match that activity question in this view.")
 
     if quiet and intents["summary"] and not intents["quiet"]:
         lines.append(
@@ -661,10 +723,14 @@ def summarize(
         uncertainty.append("Recorded coverage gaps mean the record may be incomplete.")
 
     if not cited and not gaps:
-        lines = [
-            "I could not find recorded evidence that answers that question.",
-            "Try naming an animal, enclosure, behavior, rule, or asking for the shift summary.",
-        ]
+        lines = (
+            ["I could not find recorded footage that answers that activity question."]
+            if activity_question
+            else [
+                "I could not find recorded evidence that answers that question.",
+                "Try naming an animal, enclosure, behavior, rule, or asking for the shift summary.",
+            ]
+        )
         uncertainty.append("No matching record was found; this is not proof that nothing happened.")
 
     return ChatAnswer(
@@ -751,7 +817,15 @@ def _asks_about_activity_pattern(question: str) -> bool:
             "normally do",
             "normally doing",
             "what is it doing",
+            "what did it do",
+            "what has it been doing",
+            "what is this animal doing",
+            "what did this animal do",
             "what are they doing",
+            "doing in this video",
+            "doing on this camera",
+            "usual activity",
+            "normal activity",
             "activity pattern",
         )
     )
@@ -784,6 +858,20 @@ def _citable_ids(context: dict[str, Any]) -> set[str]:
     for gap in context.get("data_gaps", []):
         allowed.add(gap["gap_id"])
     return allowed
+
+
+def _humanize_raw_record_ids(text: str, context: dict[str, Any]) -> str:
+    """Replace internal ids with the same keeper-facing labels used by the UI."""
+    labels = {
+        citation.record_id.lower(): citation.label
+        for citation in _resolve_citations(context, sorted(_citable_ids(context)))
+    }
+
+    def replacement(match: re.Match[str]) -> str:
+        label = labels.get(match.group(0).lower())
+        return f"the cited evidence ({label})" if label else "recorded evidence"
+
+    return _RAW_RECORD_ID_PATTERN.sub(replacement, text)
 
 
 def _resolve_moments(context: dict[str, Any], moment_ids: list[str]) -> list[ChatMoment]:

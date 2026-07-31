@@ -5,8 +5,10 @@
 import {
   ArrowDown,
   ArrowRight,
+  BarChart3,
   BellRing,
   Binoculars,
+  Bot,
   Check,
   CircleCheck,
   ClipboardCheck,
@@ -14,6 +16,7 @@ import {
   Footprints,
   MousePointerClick,
   Moon,
+  Network,
   Pause,
   Play,
   QrCode,
@@ -111,14 +114,44 @@ const scenarios: Scenario[] = [
 ];
 
 const noxTips = [
-  "This way. Click or scan the night pass to open the live keeper view.",
+  "Start in the monitor, then follow any observation into its connected evidence.",
   "Night events never rewrite the baseline they are measured against.",
   "If the camera goes dark, I log a data gap. I do not fill in the blanks.",
 ];
 
-function scrollToSimulator() {
+const explorationSteps = [
+  {
+    label: "Node graph",
+    title: "Follow every connection",
+    description:
+      "Trace animals, cameras, observations, clips, events, and keeper outcomes through the connected evidence graph.",
+    href: "/graph",
+    action: "Explore the graph",
+    icon: Network,
+  },
+  {
+    label: "Analysis",
+    title: "Read the whole shift",
+    description:
+      "Compare behavior, rule events, coverage, and review status in a plain-language operational summary.",
+    href: "/analysis",
+    action: "Open analysis",
+    icon: BarChart3,
+  },
+  {
+    label: "AI chatbot",
+    title: "Ask the evidence",
+    description:
+      "Ask what an animal was doing and jump back to the cited moment without losing the selected camera context.",
+    href: "/monitor",
+    action: "Ask a question",
+    icon: Bot,
+  },
+] as const;
+
+function scrollToExplore() {
   document
-    .getElementById("night-lab")
+    .getElementById("explore")
     ?.scrollIntoView({ behavior: "smooth", block: "start" });
 }
 
@@ -207,15 +240,16 @@ export function LandingExperience() {
             <span>ZooVision</span>
           </div>
           <div className="landing-nav-actions">
-            <span className="preview-flag">PRIVATE PREVIEW · /LANDING</span>
-            <button
+            <span className="preview-flag">
+              INTERACTIVE EVIDENCE DEMO
+            </span>
+            <a
               className="nav-try"
-              type="button"
-              onClick={scrollToSimulator}
+              href="/monitor?tour=1"
             >
-              Try night watch
-              <ArrowDown size={15} />
-            </button>
+              Try Out
+              <ArrowRight size={15} />
+            </a>
           </div>
         </nav>
 
@@ -236,14 +270,21 @@ export function LandingExperience() {
             Keep the decision human.
           </p>
           <div className="hero-actions">
-            <button
-              className="primary-cta"
-              type="button"
-              onClick={scrollToSimulator}
+            <motion.a
+              className="try-out-cta"
+              href="/monitor?tour=1"
+              whileHover={reduceMotion ? undefined : { y: -4, x: -2 }}
+              whileTap={reduceMotion ? undefined : { scale: 0.98 }}
             >
-              <Play size={17} fill="currentColor" />
-              Run a night check
-            </button>
+              <span className="try-out-mark" aria-hidden="true">
+                <Eye size={21} strokeWidth={2.4} />
+              </span>
+              <span>
+                <small>OPEN THE INTERACTIVE DEMO</small>
+                <strong>Try Out</strong>
+              </span>
+              <ArrowRight size={22} />
+            </motion.a>
             <span className="hero-proof">
               <ShieldCheck size={17} />
               Evidence, rules, keeper review
@@ -254,7 +295,7 @@ export function LandingExperience() {
         <div className="hero-camera-hud" aria-hidden="true">
           <span>CAM-07A</span>
           <span>02:14:32</span>
-          <span className="hud-recording">REC</span>
+          <span className="hud-recording">DEMO</span>
         </div>
 
         <motion.button
@@ -283,61 +324,67 @@ export function LandingExperience() {
           />
         </motion.button>
 
-        <div className="qr-pass hero-qr-pass">
-          <a
-            href="https://zoovision.tech/monitor"
-            target="_blank"
-            rel="noreferrer"
-            aria-label="Click or scan to open the ZooVision monitor"
-          >
-            <span className="qr-pass-head">
-              <span>
-                <QrCode size={14} />
-                NOX&apos;S NIGHT PASS
-              </span>
-              <small>LINK · 07</small>
-            </span>
-            <span className="qr-frame">
-              <img
-                src="/landing/monitor-qr.png"
-                alt="QR code opening the ZooVision monitor"
-                width={492}
-                height={492}
-              />
-            </span>
-            <span className="qr-caption">
-              <strong>CLICK OR SCAN</strong>
-              <small>ZOOVISION.TECH/MONITOR</small>
-            </span>
-            <span className="qr-action">
-              <MousePointerClick size={16} />
-              Open live monitor
-              <ArrowRight size={15} />
-            </span>
-          </a>
-          <span className="qr-pixels" aria-hidden="true">
-            <i />
-            <i />
-            <i />
-            <i />
-          </span>
-        </div>
-
         <button
           type="button"
           className="hero-scroll"
-          onClick={scrollToSimulator}
-          aria-label="Scroll to the interactive night watch"
+          onClick={scrollToExplore}
+          aria-label="Explore ZooVision"
         >
-          <span>TRY THE SHIFT</span>
+          <span>EXPLORE THE WORKSPACE</span>
           <ArrowDown size={16} />
         </button>
+      </section>
+
+      <section
+        className="explore-band"
+        id="explore"
+        aria-labelledby="explore-title"
+      >
+        <header className="explore-heading">
+          <span className="section-index">01 · START HERE</span>
+          <h2 id="explore-title">Three ways to explore one evidence record.</h2>
+          <p>
+            Begin with the connected story, read the shift-level picture, then
+            ask a focused question. Every path leads back to source footage.
+          </p>
+        </header>
+
+        <ol className="explore-steps">
+          {explorationSteps.map((step, index) => {
+            const Icon = step.icon;
+            return (
+              <motion.li
+                key={step.label}
+                initial={reduceMotion ? false : { opacity: 0, y: 24 }}
+                whileInView={{ opacity: 1, y: 0 }}
+                viewport={{ once: true, amount: 0.25 }}
+                transition={{ delay: index * 0.09, duration: 0.45 }}
+              >
+                <a href={step.href}>
+                  <span className="explore-number">0{index + 1}</span>
+                  <span className="explore-icon">
+                    <Icon size={22} strokeWidth={1.8} />
+                  </span>
+                  <span className="explore-copy">
+                    <small>{step.label}</small>
+                    <strong>{step.title}</strong>
+                    <p>{step.description}</p>
+                  </span>
+                  <span className="explore-action">
+                    {step.action}
+                    <ArrowRight size={16} />
+                  </span>
+                </a>
+              </motion.li>
+            );
+          })}
+        </ol>
       </section>
 
       <section className="night-lab" id="night-lab" aria-labelledby="lab-title">
         <header className="lab-heading">
           <div>
-            <span className="section-index">01 · FIELD TEST</span>
+            <span className="section-index">02 · FIELD TEST</span>
             <h2 id="lab-title">Run one minute of night watch.</h2>
           </div>
           <p>
@@ -645,7 +692,7 @@ export function LandingExperience() {
 
       <section className="guardrail-band" aria-labelledby="guardrail-title">
         <div className="guardrail-intro">
-          <span className="section-index">02 · THE PROMISE</span>
+          <span className="section-index">03 · THE PROMISE</span>
           <h2 id="guardrail-title">Watchful, never autonomous.</h2>
           <p>
             ZooVision can observe, preserve evidence, and route a factual check.
@@ -686,12 +733,55 @@ export function LandingExperience() {
         <div className="footer-copy">
           <span>NIGHT WATCH IS READY</span>
           <h2>Every alert should earn attention.</h2>
+          <p>
+            Explore the interactive keeper demo here, or scan the field pass to
+            open its evidence workspace on another device.
+          </p>
+          <a className="footer-enter" href="/monitor?tour=1">
+            Try Out
+            <ArrowRight size={17} />
+          </a>
         </div>
-        <a href="/monitor">
-          Enter keeper workspace
-          <ArrowRight size={17} />
-        </a>
-        <p>
+        <div className="qr-pass footer-qr-pass">
+          <a
+            href="https://zoovision.tech/monitor"
+            target="_blank"
+            rel="noreferrer"
+            aria-label="Click or scan to open the ZooVision monitor"
+          >
+            <span className="qr-pass-head">
+              <span>
+                <QrCode size={14} />
+                NOX&apos;S NIGHT PASS
+              </span>
+              <small>LINK · 07</small>
+            </span>
+            <span className="qr-frame">
+              <img
+                src="/landing/monitor-qr.png"
+                alt="QR code opening the ZooVision monitor"
+                width={492}
+                height={492}
+              />
+            </span>
+            <span className="qr-caption">
+              <strong>CLICK OR SCAN</strong>
+              <small>ZOOVISION.TECH/MONITOR</small>
+            </span>
+            <span className="qr-action">
+              <MousePointerClick size={16} />
+              Open monitor demo
+              <ArrowRight size={15} />
+            </span>
+          </a>
+          <span className="qr-pixels" aria-hidden="true">
+            <i />
+            <i />
+            <i />
+            <i />
+          </span>
+        </div>
+        <p className="footer-legal">
           ZooVision is a welfare-support tool, not a medical device. Fixture
           scenarios are synthetic and clearly labeled.
         </p>

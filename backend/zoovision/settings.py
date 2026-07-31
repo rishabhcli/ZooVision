@@ -18,6 +18,34 @@ class Settings(BaseSettings):
     analysis_retention_days: int = Field(default=30, alias="ZOOVISION_ANALYSIS_RETENTION_DAYS")
     clip_retention_days: int = Field(default=90, alias="ZOOVISION_CLIP_RETENTION_DAYS")
     alert_ack_minutes: int = Field(default=20, alias="ZOOVISION_ALERT_ACK_MINUTES")
+    yolo_enabled: bool = Field(default=True, alias="ZOOVISION_YOLO_ENABLED")
+    yolo_model: str = Field(default="yolov8n.pt", alias="ZOOVISION_YOLO_MODEL")
+    yolo_device: str = Field(default="auto", alias="ZOOVISION_YOLO_DEVICE")
+    yolo_sample_fps: float = Field(
+        default=1.0,
+        gt=0,
+        le=30,
+        alias="ZOOVISION_YOLO_SAMPLE_FPS",
+    )
+    yolo_confidence: float = Field(
+        default=0.15,
+        ge=0.01,
+        le=1,
+        alias="ZOOVISION_YOLO_CONFIDENCE",
+    )
+    yolo_image_size: int = Field(
+        default=640,
+        ge=320,
+        le=1280,
+        multiple_of=32,
+        alias="ZOOVISION_YOLO_IMAGE_SIZE",
+    )
+    yolo_batch_size: int = Field(
+        default=8,
+        ge=1,
+        le=64,
+        alias="ZOOVISION_YOLO_BATCH_SIZE",
+    )
     openai_api_key: str | None = Field(default=None, alias="OPENAI_API_KEY")
     openai_enrichment_enabled: bool = Field(
         default=False,
@@ -106,6 +134,8 @@ class Settings(BaseSettings):
         missing: list[str] = []
         if not self.twelvelabs_api_key:
             missing.append("TWELVELABS_API_KEY")
+        if not self.yolo_enabled:
+            missing.append("ZOOVISION_YOLO_ENABLED")
         if not all((self.neo4j_uri, self.neo4j_username, self.neo4j_password)):
             missing.append("NEO4J_URI/NEO4J_USERNAME/NEO4J_PASSWORD")
         if not self.aws_storage_enabled or not self.aws_storage_configured:
@@ -135,6 +165,20 @@ class Settings(BaseSettings):
     @property
     def database_path(self) -> Path:
         return self.storage_root / "zoovision.db"
+
+    @property
+    def detector_config(self):
+        from .detection import DetectorConfig
+
+        return DetectorConfig(
+            sample_fps=self.yolo_sample_fps,
+            yolo_enabled=self.yolo_enabled,
+            yolo_model=self.yolo_model,
+            yolo_device=self.yolo_device,
+            yolo_confidence=self.yolo_confidence,
+            yolo_image_size=self.yolo_image_size,
+            yolo_batch_size=self.yolo_batch_size,
+        )
 
     @property
     def aws_storage_configured(self) -> bool:

@@ -407,7 +407,31 @@ class SQLiteStore:
             ]
 
     def save_detections(self, detections: Iterable[Detection]) -> int:
-        rows = [
+        rows = self._detection_rows(detections)
+        if not rows:
+            return 0
+        with self.connect() as connection:
+            self._upsert_detection_rows(connection, rows)
+        return len(rows)
+
+    def replace_chunk_detections(
+        self,
+        chunk_id: str,
+        detections: Iterable[Detection],
+    ) -> int:
+        """Atomically replace the spatial samples for one stable video chunk."""
+        values = list(detections)
+        if any(detection.chunk_id != chunk_id for detection in values):
+            raise ValueError("every replacement detection must belong to the requested chunk")
+        rows = self._detection_rows(values)
+        with self.connect() as connection:
+            connection.execute("DELETE FROM detections WHERE chunk_id = ?", (chunk_id,))
+            self._upsert_detection_rows(connection, rows)
+        return len(rows)
+
+    @staticmethod
+    def _detection_rows(detections: Iterable[Detection]) -> list[tuple]:
+        return [
             (
                 detection.detection_id,
                 detection.chunk_id,
@@ -425,9 +449,13 @@ class SQLiteStore:
             )
             for detection in detections
         ]
-        if not rows:
-            return 0
-        with self.connect() as connection:
+
+    @staticmethod
+    def _upsert_detection_rows(
+        connection: sqlite3.Connection,
+        rows: list[tuple],
+    ) -> None:
+        if rows:
             connection.executemany(
                 """
                 INSERT INTO detections(
@@ -449,7 +477,6 @@ class SQLiteStore:
                 """,
                 rows,
             )
-        return len(rows)
 
     def detections_for_chunk(self, chunk_id: str) -> list[dict]:
         with self.connect() as connection:
@@ -929,6 +956,13 @@ class SQLiteStore:
                     chunk_ids,
                 )
             ]
+            detections.sort(
+                key=lambda item: (
+                    item["video_seconds"],
+                    item["source"],
+                    item["detection_id"],
+                )
+            )
 
             events = []
             for row in connection.execute(
@@ -1040,7 +1074,7 @@ class SQLiteStore:
                 FROM observations o
                 JOIN animals a ON a.animal_id = o.animal_id
                 JOIN video_chunks vc ON vc.chunk_id = o.chunk_id
-                WHERE {' AND '.join(conditions)}
+                WHERE {" AND ".join(conditions)}
                 ORDER BY o.start_ts
                 LIMIT ?
                 """,

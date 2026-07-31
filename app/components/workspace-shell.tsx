@@ -13,16 +13,17 @@ import {
   Monitor,
   Moon,
   Network,
-  Paperclip,
   Play,
   Send,
   Settings,
   ShieldCheck,
   Sparkles,
+  X,
 } from "lucide-react";
 import { usePathname, useRouter } from "next/navigation";
 import {
   FormEvent,
+  KeyboardEvent as ReactKeyboardEvent,
   ReactNode,
   useEffect,
   useRef,
@@ -62,7 +63,9 @@ const emptyAssistantContext: AssistantContext = {
 };
 
 function citationLabel(citation: string, index: number) {
-  if (/^(obs|evt|event|gap|chk|alert)_/i.test(citation)) {
+  if (
+    /^(?:(animal|alert|chk|chunk|event|evt|gap|obs|observation)[_-][a-z0-9_-]+|[a-f0-9]{24,}|[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12})$/i.test(citation)
+  ) {
     return `Verified evidence ${index + 1}`;
   }
   return citation;
@@ -74,13 +77,33 @@ const routeOptions = [
   { label: "Analysis", href: "/analysis", icon: BarChart3 },
 ];
 
+const onboardingSteps = [
+  {
+    title: "Node graph",
+    description:
+      "Trace how animals, cameras, observations, welfare events, and keeper outcomes connect.",
+    icon: Network,
+  },
+  {
+    title: "Analysis",
+    description:
+      "Review the whole shift in plain language, including rules, coverage, and review status.",
+    icon: BarChart3,
+  },
+  {
+    title: "AI chatbot",
+    description:
+      "Ask about the selected animal or camera, then open the cited footage at the matching moment.",
+    icon: Bot,
+  },
+] as const;
+
 const initialChats: Record<string, ChatMessage[]> = {
   "/monitor": [
     {
       id: "monitor-intro",
       role: "assistant",
-      body: "Ask what happened or describe a moment to find. I can open the matching footage.",
-      citations: ["TwelveLabs moments", "Connected shift record"],
+      body: "Select a camera, then ask about the animal's recorded activity or a welfare event.",
     },
   ],
   "/graph": [
@@ -88,7 +111,6 @@ const initialChats: Record<string, ChatMessage[]> = {
       id: "graph-intro",
       role: "assistant",
       body: "Ask about nodes in the live Neo4j video context graph.",
-      citations: ["Neo4j graph"],
     },
   ],
   "/analysis": [
@@ -96,7 +118,6 @@ const initialChats: Record<string, ChatMessage[]> = {
       id: "analysis-intro",
       role: "assistant",
       body: "Ask for a factual summary of events, rules, reviews, or data gaps.",
-      citations: ["Backend evidence"],
     },
   ],
   "/settings": [
@@ -109,7 +130,6 @@ const initialChats: Record<string, ChatMessage[]> = {
       id: "settings-assistant",
       role: "assistant",
       body: "These controls change the frontend on this device. They do not change deterministic rules, severity, or paging policy.",
-      citations: ["Device preferences"],
     },
   ],
 };
@@ -124,8 +144,12 @@ export function WorkspaceShell({
   const isEvidenceLayout =
     pathname === "/monitor" || pathname === "/graph" || pathname === "/analysis";
   const profileRef = useRef<HTMLDivElement>(null);
+  const composerRef = useRef<HTMLTextAreaElement>(null);
+  const tourDialogRef = useRef<HTMLElement>(null);
+  const tourReturnFocusRef = useRef<HTMLElement | null>(null);
   const [chatCollapsed, setChatCollapsed] = useState(pathname === "/monitor");
   const [profileOpen, setProfileOpen] = useState(false);
+  const [tourStep, setTourStep] = useState<number | null>(null);
   const [messagesByRoute, setMessagesByRoute] = useState<
     Record<string, ChatMessage[]>
   >({});
@@ -144,6 +168,22 @@ export function WorkspaceShell({
     document.addEventListener("mousedown", closeProfile);
     return () => document.removeEventListener("mousedown", closeProfile);
   }, []);
+
+  useEffect(() => {
+    if (pathname !== "/monitor") return;
+    const params = new URLSearchParams(window.location.search);
+    if (params.get("tour") !== "1") return;
+    tourReturnFocusRef.current = document.activeElement as HTMLElement | null;
+    setTourStep(0);
+  }, [pathname]);
+
+  useEffect(() => {
+    if (tourStep === null) return;
+    const frame = window.requestAnimationFrame(() => {
+      tourDialogRef.current?.focus();
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [tourStep]);
 
   useEffect(() => {
     function updateAssistantContext(event: Event) {
@@ -170,10 +210,83 @@ export function WorkspaceShell({
       );
   }, []);
 
-  const messages =
-    messagesByRoute[pathname] ??
+  const conversationKey =
+    pathname === "/monitor" && assistantContext.sourcePath
+      ? `${pathname}:${assistantContext.sourcePath}`
+      : pathname;
+  const storedMessages =
+    messagesByRoute[conversationKey] ??
     initialChats[pathname] ??
     initialChats["/monitor"];
+  const messages = storedMessages.map((message) =>
+    message.id === "monitor-intro" &&
+    assistantContext.animalName &&
+    assistantContext.cameraId
+      ? {
+          ...message,
+          body: `Ask about ${assistantContext.animalName}'s recorded activity on ${assistantContext.cameraId}, or ask what triggered a welfare event.`,
+        }
+      : message,
+  );
+  const currentTourStep =
+    tourStep === null ? null : onboardingSteps[tourStep];
+  const TourIcon = currentTourStep?.icon;
+
+  function removeTourQuery() {
+    const url = new URL(window.location.href);
+    url.searchParams.delete("tour");
+    window.history.replaceState(
+      window.history.state,
+      "",
+      `${url.pathname}${url.search}${url.hash}`,
+    );
+  }
+
+  function dismissTour() {
+    removeTourQuery();
+    setTourStep(null);
+    window.requestAnimationFrame(() => tourReturnFocusRef.current?.focus());
+  }
+
+  function completeTour() {
+    removeTourQuery();
+    setChatCollapsed(false);
+    setTourStep(null);
+    window.requestAnimationFrame(() => {
+      window.requestAnimationFrame(() => composerRef.current?.focus());
+    });
+  }
+
+  function handleTourKeyDown(event: ReactKeyboardEvent<HTMLElement>) {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      dismissTour();
+      return;
+    }
+    if (event.key !== "Tab" || !tourDialogRef.current) return;
+    const focusable = Array.from(
+      tourDialogRef.current.querySelectorAll<HTMLElement>(
+        'button:not([disabled]), [href], [tabindex]:not([tabindex="-1"])',
+      ),
+    );
+    if (focusable.length === 0) {
+      event.preventDefault();
+      return;
+    }
+    const first = focusable[0];
+    const last = focusable[focusable.length - 1];
+    const active = document.activeElement as HTMLElement | null;
+    if (!active || !focusable.includes(active)) {
+      event.preventDefault();
+      (event.shiftKey ? last : first).focus();
+    } else if (event.shiftKey && active === first) {
+      event.preventDefault();
+      last.focus();
+    } else if (!event.shiftKey && active === last) {
+      event.preventDefault();
+      first.focus();
+    }
+  }
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -182,12 +295,12 @@ export function WorkspaceShell({
 
     const timestamp = Date.now();
     const currentMessages =
-      messagesByRoute[pathname] ??
+      messagesByRoute[conversationKey] ??
       initialChats[pathname] ??
       initialChats["/monitor"];
     setMessagesByRoute((current) => ({
       ...current,
-      [pathname]: [
+      [conversationKey]: [
         ...currentMessages,
         { id: `user-${timestamp}`, role: "user", body: value },
       ],
@@ -205,8 +318,8 @@ export function WorkspaceShell({
       );
       setMessagesByRoute((current) => ({
         ...current,
-        [pathname]: [
-          ...(current[pathname] ?? currentMessages),
+        [conversationKey]: [
+          ...(current[conversationKey] ?? currentMessages),
           {
             id: `assistant-${timestamp}`,
             role: "assistant",
@@ -222,8 +335,8 @@ export function WorkspaceShell({
     } catch (caught) {
       setMessagesByRoute((current) => ({
         ...current,
-        [pathname]: [
-          ...(current[pathname] ?? currentMessages),
+        [conversationKey]: [
+          ...(current[conversationKey] ?? currentMessages),
           {
             id: `assistant-error-${timestamp}`,
             role: "assistant",
@@ -247,6 +360,108 @@ export function WorkspaceShell({
       <main
         className={`app-frame ${isEvidenceLayout ? "evidence-layout" : ""}`}
       >
+        <AnimatePresence>
+          {currentTourStep && TourIcon && tourStep !== null && (
+            <motion.div
+              className="onboarding-tour-backdrop"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+            >
+              <motion.section
+                ref={tourDialogRef}
+                className="onboarding-tour-dialog"
+                role="dialog"
+                aria-modal="true"
+                aria-labelledby="onboarding-tour-title"
+                aria-describedby="onboarding-tour-description"
+                tabIndex={-1}
+                onKeyDown={handleTourKeyDown}
+                initial={{ opacity: 0, y: 12 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: 8 }}
+              >
+                <header className="onboarding-tour-header">
+                  <span>ZooVision tour</span>
+                  <button
+                    type="button"
+                    className="onboarding-tour-close"
+                    aria-label="Close tour"
+                    onClick={dismissTour}
+                  >
+                    <X size={17} />
+                  </button>
+                </header>
+
+                <div
+                  className="onboarding-tour-progress"
+                  role="progressbar"
+                  aria-label="Tour progress"
+                  aria-valuemin={1}
+                  aria-valuemax={onboardingSteps.length}
+                  aria-valuenow={tourStep + 1}
+                >
+                  {onboardingSteps.map((step, index) => (
+                    <span
+                      key={step.title}
+                      data-complete={index <= tourStep}
+                      aria-hidden="true"
+                    />
+                  ))}
+                </div>
+
+                <div className="onboarding-tour-content">
+                  <span className="onboarding-tour-icon" aria-hidden="true">
+                    <TourIcon size={22} />
+                  </span>
+                  <p className="onboarding-tour-step">
+                    Step {tourStep + 1} of {onboardingSteps.length}
+                  </p>
+                  <h2 id="onboarding-tour-title">{currentTourStep.title}</h2>
+                  <p id="onboarding-tour-description">
+                    {currentTourStep.description}
+                  </p>
+                </div>
+
+                <footer className="onboarding-tour-actions">
+                  <button
+                    type="button"
+                    className="onboarding-tour-secondary"
+                    disabled={tourStep === 0}
+                    onClick={() => setTourStep((step) => Math.max(0, (step ?? 0) - 1))}
+                  >
+                    <ChevronLeft size={16} />
+                    Back
+                  </button>
+                  {tourStep < onboardingSteps.length - 1 ? (
+                    <button
+                      type="button"
+                      className="onboarding-tour-primary"
+                      onClick={() =>
+                        setTourStep((step) =>
+                          Math.min(onboardingSteps.length - 1, (step ?? 0) + 1),
+                        )
+                      }
+                    >
+                      Next
+                      <ChevronRight size={16} />
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      className="onboarding-tour-primary"
+                      onClick={completeTour}
+                    >
+                      Open AI chatbot
+                      <MessageSquareText size={16} />
+                    </button>
+                  )}
+                </footer>
+              </motion.section>
+            </motion.div>
+          )}
+        </AnimatePresence>
+
         <motion.aside
           className="chat-rail"
           animate={{ width: chatCollapsed ? 56 : isEvidenceLayout ? 220 : 326 }}
@@ -308,7 +523,13 @@ export function WorkspaceShell({
             >
               <div className="chat-context">
                 {!isEvidenceLayout && <span className="status-dot" />}
-                <span>{eyebrow}</span>
+                <span>
+                  {pathname === "/monitor" &&
+                  assistantContext.animalName &&
+                  assistantContext.cameraId
+                    ? `${assistantContext.animalName} · ${assistantContext.cameraId}`
+                    : eyebrow}
+                </span>
               </div>
               <div className="message-list" aria-live="polite">
                 {messages.map((message) => (
@@ -335,14 +556,18 @@ export function WorkspaceShell({
                         <span>{message.time ?? "05:41"}</span>
                       </div>
                       <p className="message-copy">{message.body}</p>
-                      {message.citations && (
-                        <div className="citation-row">
-                          {message.citations.map((citation, index) => (
-                            <button type="button" key={citation}>
-                              {citationLabel(citation, index)}
-                            </button>
-                          ))}
-                        </div>
+                      {message.citations && message.citations.length > 0 && (
+                        <p
+                          className="message-copy"
+                          aria-label="Evidence sources"
+                        >
+                          <strong>Evidence: </strong>
+                          {message.citations
+                            .map((citation, index) =>
+                              citationLabel(citation, index),
+                            )
+                            .join(" · ")}
+                        </p>
                       )}
                       {message.moments && message.moments.length > 0 && (
                         <div className="chat-moment-row">
@@ -385,20 +610,21 @@ export function WorkspaceShell({
               </div>
               <form className="chat-composer" onSubmit={handleSubmit}>
                 <textarea
+                  ref={composerRef}
                   value={draft}
                   onChange={(event) => setDraft(event.target.value)}
-                  placeholder="Ask about this page…"
+                  placeholder={
+                    pathname === "/monitor" &&
+                    assistantContext.animalName &&
+                    assistantContext.cameraId
+                      ? `Ask about ${assistantContext.animalName} on ${assistantContext.cameraId}…`
+                      : "Ask about recorded evidence…"
+                  }
                   aria-label="Ask ZooVision Assistant"
                   rows={2}
                 />
                 <div className="composer-actions">
-                  <button
-                    type="button"
-                    className="icon-button"
-                    aria-label="Attach evidence"
-                  >
-                    <Paperclip size={16} />
-                  </button>
+                  <span aria-hidden="true" />
                   <button
                     type="submit"
                     className="send-button"

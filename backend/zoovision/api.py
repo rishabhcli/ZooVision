@@ -76,7 +76,7 @@ class IngestStartRequest(BaseModel):
     start_ts: datetime | None = None
     shift_mode: Literal["day", "night"] = "night"
     segment_seconds: int = Field(default=120, ge=10, le=900)
-    max_segments: int = Field(default=12, ge=1, le=240)
+    max_segments: int = Field(default=240, ge=1, le=240)
 
 
 @lru_cache
@@ -136,6 +136,7 @@ def build_ingest_service(
         store=store,
         raw_root=raw_root,
         analyzer_factory=analyzer_factory if settings.twelvelabs_api_key else None,
+        detector_config=settings.detector_config,
         fixture_mode=settings.fixture_mode,
         delivery_enabled=settings.alert_delivery_enabled,
         webhook_configured=bool(settings.slack_webhook_url),
@@ -319,6 +320,10 @@ def create_app(
                 configured=bool(settings.twelvelabs_api_key),
                 enabled=not settings.fixture_mode,
             ),
+            "yolo": _integration_state(
+                configured=bool(settings.yolo_model),
+                enabled=settings.yolo_enabled,
+            ),
             "aws_storage": _integration_state(
                 configured=settings.aws_storage_configured,
                 enabled=settings.aws_storage_enabled,
@@ -418,9 +423,7 @@ def create_app(
         for source in sources:
             source["media_url"] = f"/media/{source['source_path']}"
             for field in ("animal_ids", "animal_names", "animal_species"):
-                source[field] = sorted(
-                    set(filter(None, (source.get(field) or "").split(",")))
-                )
+                source[field] = sorted(set(filter(None, (source.get(field) or "").split(","))))
         return {"videos": sources}
 
     @app.get("/api/videos/track")

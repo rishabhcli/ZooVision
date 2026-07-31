@@ -24,9 +24,16 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from .detection import VideoProbe, probe_video, run_media_tool
+from .detection import (
+    DetectorConfig,
+    VideoProbe,
+    detections_for_chunk,
+    probe_video,
+    run_media_tool,
+)
 from .domain import (
     BaselineState,
+    Detection,
     ShiftMode,
 )
 from .ids import stable_id
@@ -51,7 +58,8 @@ class IngestRequest(BaseModel):
     start_ts: datetime
     shift_mode: ShiftMode = ShiftMode.NIGHT
     segment_seconds: int = Field(default=120, ge=10, le=900)
-    max_segments: int = Field(default=12, ge=1, le=240)
+    max_segments: int = Field(default=240, ge=1, le=240)
+
     @model_validator(mode="after")
     def validate_start(self) -> IngestRequest:
         if self.start_ts.tzinfo is None:
@@ -135,13 +143,18 @@ def segment_video(
     pieces = sorted(destination.glob("segment_*.mp4"))
     if completed.returncode != 0 and not pieces:
         raise ValueError(f"ffmpeg could not segment {source.name}")
+    if len(pieces) > max_segments:
+        raise ValueError(
+            f"{source.name} produced {len(pieces)} segments, above the configured "
+            f"limit of {max_segments}; increase segment_seconds to cover the full recording"
+        )
     results: list[tuple[int, float, float, Path]] = []
     offset = 0.0
-    for index, piece in enumerate(pieces[:max_segments]):
+    for index, piece in enumerate(pieces):
         try:
             duration = probe_video(piece).duration_seconds
-        except ValueError:
-            continue
+        except ValueError as error:
+            raise ValueError(f"segment {index} from {source.name} is unreadable") from error
         results.append((index, offset, duration, piece))
         offset += duration
     if not results:
@@ -158,6 +171,8 @@ class VideoIngestService:
         store: SQLiteStore,
         raw_root: Path,
         analyzer_factory: Callable[[], Any] | None = None,
+        detector_config: DetectorConfig | None = None,
+        detector: Callable[..., list[Detection]] | None = None,
         graph_writer: Any | None = None,
         archive: Any | None = None,
         embedder: Any | None = None,
@@ -172,6 +187,8 @@ class VideoIngestService:
         self.store = store
         self.raw_root = Path(raw_root)
         self.analyzer_factory = analyzer_factory
+        self.detector_config = detector_config or DetectorConfig()
+        self.detector = detector or detections_for_chunk
         self.graph_writer = graph_writer
         self.archive = archive
         self.embedder = embedder
@@ -227,7 +244,7 @@ class VideoIngestService:
             enclosure_id=request.enclosure_id,
             created_at=moment,
             updated_at=moment,
-            analyzer="twelvelabs",
+            analyzer="twelvelabs+yolo",
         )
 
     def _run_guarded(self, job_id: str, request: IngestRequest) -> IngestJob:
@@ -293,6 +310,12 @@ class VideoIngestService:
     ) -> IngestSegmentResult:
         chunk_id = stable_id("chk", request.source_name, request.animal_id, index)
         start_ts = request.start_ts + timedelta(seconds=offset)
+        detections = self.detector(
+            piece,
+            chunk_id=chunk_id,
+            duration_seconds=duration,
+            config=self.detector_config,
+        )
         analyzer = self.analyzer_factory()
         analyzable = _provider_ready(piece)
         workflow = SegmentWorkflow(
@@ -330,6 +353,9 @@ class VideoIngestService:
                 webhook_configured=self.webhook_configured,
             )
         )
+        # The workflow creates the chunk row before spatial records are saved.
+        # Replacing the set removes stale boxes if a model or threshold changes.
+        self.store.replace_chunk_detections(chunk_id, detections)
         return IngestSegmentResult(
             index=index,
             chunk_id=chunk_id,
@@ -337,7 +363,7 @@ class VideoIngestService:
             duration_seconds=duration,
             route=outcome.route,
             observation_count=outcome.observation_count,
-            detection_count=0,
+            detection_count=len(detections),
             event_ids=outcome.event_ids,
             rules_fired=outcome.rules_fired,
             data_gap_id=outcome.data_gap_id,

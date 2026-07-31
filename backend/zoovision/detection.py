@@ -1,16 +1,21 @@
-"""Media probing and legacy motion measurement for fixed-camera footage.
+"""Spatial localization and media probing for fixed-camera welfare footage.
 
-Uploaded-video ingestion uses TwelveLabs for structured temporal observations.
-MOG2 remains only for deterministic fixture and detector tests; its regions are
-not presented as animal detections and cannot influence severity rules.
+YOLOv8 provides sampled object-candidate boxes while MOG2 supplies a clearly
+labeled motion fallback for wildlife outside COCO. TwelveLabs separately
+produces temporal observations. Spatial detections never enter deterministic
+welfare triage.
 """
 
 from __future__ import annotations
 
 import subprocess
-from collections.abc import Iterable, Iterator
+from collections.abc import Iterable, Iterator, Mapping
 from dataclasses import dataclass
+from functools import lru_cache
+from itertools import batched
+from math import ceil
 from pathlib import Path
+from typing import Any
 
 import cv2
 import numpy as np
@@ -44,6 +49,10 @@ def run_media_tool(args: list[str], *, timeout: int) -> subprocess.CompletedProc
         ) from error
 
 
+class ObjectDetectorError(RuntimeError):
+    """YOLO could not load or complete inference for a video segment."""
+
+
 @dataclass(frozen=True)
 class SampledFrame:
     """One decoded frame plus its offset from the start of the chunk."""
@@ -66,7 +75,19 @@ class VideoProbe(BaseModel):
 class DetectorConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    sample_fps: float = Field(default=2.0, gt=0, le=30)
+    sample_fps: float = Field(default=1.0, gt=0, le=30)
+    yolo_enabled: bool = True
+    yolo_model: str = Field(default="yolov8n.pt", min_length=1, max_length=200)
+    yolo_device: str = Field(default="auto", min_length=1, max_length=40)
+    yolo_confidence: float = Field(default=0.15, ge=0.01, le=1)
+    yolo_iou: float = Field(default=0.45, ge=0, le=1)
+    yolo_image_size: int = Field(default=640, ge=320, le=1280, multiple_of=32)
+    yolo_batch_size: int = Field(default=8, ge=1, le=64)
+    yolo_max_detections: int = Field(default=20, ge=1, le=100)
+    # COCO bird through giraffe. Restricting inference prevents people,
+    # vehicles, and furniture from being shown as animal candidates.
+    yolo_classes: tuple[int, ...] = tuple(range(14, 24))
+    motion_enabled: bool = True
     min_area_ratio: float = Field(default=0.0015, gt=0, le=1)
     max_area_ratio: float = Field(default=0.5, gt=0, le=1)
     max_regions_per_frame: int = Field(default=3, ge=1, le=20)
@@ -212,11 +233,183 @@ class MotionRegionDetector:
         return track_id
 
 
+class YoloV8ObjectDetector:
+    """Turns a full frame stream into labeled, track-linked YOLO candidates."""
+
+    def __init__(self, config: DetectorConfig | None = None, *, model: Any | None = None):
+        self.config = config or DetectorConfig()
+        self._model = model
+
+    def detect(self, frames: Iterable[SampledFrame], *, chunk_id: str) -> list[Detection]:
+        if not self.config.yolo_enabled:
+            return []
+        try:
+            model = self._model or _load_yolo_model(self.config.yolo_model)
+            detections: list[Detection] = []
+            tracks: list[_ObjectTrack] = []
+            for frame_batch in batched(frames, self.config.yolo_batch_size):
+                results = model.predict(
+                    source=[frame.image for frame in frame_batch],
+                    stream=True,
+                    verbose=False,
+                    conf=self.config.yolo_confidence,
+                    iou=self.config.yolo_iou,
+                    imgsz=self.config.yolo_image_size,
+                    batch=self.config.yolo_batch_size,
+                    max_det=self.config.yolo_max_detections,
+                    classes=list(self.config.yolo_classes),
+                    agnostic_nms=True,
+                    device=_resolve_yolo_device(self.config.yolo_device),
+                )
+                detections.extend(self._normalize_results(results, frame_batch, chunk_id, tracks))
+            return detections
+        except ObjectDetectorError:
+            raise
+        except Exception as error:
+            raise ObjectDetectorError(
+                f"{self.config.yolo_model} object detection failed: {error}"
+            ) from error
+
+    def _normalize_results(
+        self,
+        results: Iterable[Any],
+        frames: tuple[SampledFrame, ...],
+        chunk_id: str,
+        tracks: list[_ObjectTrack],
+    ) -> list[Detection]:
+        detections: list[Detection] = []
+        result_count = 0
+        for result, frame in zip(results, frames, strict=False):
+            result_count += 1
+            boxes = getattr(result, "boxes", None)
+            if boxes is None:
+                continue
+            coordinates = _as_numpy(boxes.xyxy)
+            scores = _as_numpy(boxes.conf).reshape(-1)
+            classes = _as_numpy(boxes.cls).astype(int).reshape(-1)
+            names = getattr(result, "names", {})
+            height, width = frame.image.shape[:2]
+            claimed: set[str] = set()
+            for coordinates_row, score, class_id in zip(
+                coordinates,
+                scores,
+                classes,
+                strict=True,
+            ):
+                box = _normalized_box(coordinates_row, width=width, height=height)
+                if box is None:
+                    continue
+                track_id = self._assign_track(
+                    tracks,
+                    box,
+                    frame.relative_seconds,
+                    chunk_id,
+                    claimed,
+                )
+                claimed.add(track_id)
+                detections.append(
+                    Detection(
+                        detection_id=stable_id(
+                            "yolo-det",
+                            chunk_id,
+                            round(frame.relative_seconds, 3),
+                            int(class_id),
+                            round(box.x, 5),
+                            round(box.y, 5),
+                            round(box.width, 5),
+                            round(box.height, 5),
+                        ),
+                        chunk_id=chunk_id,
+                        track_id=track_id,
+                        relative_seconds=round(frame.relative_seconds, 3),
+                        box=box,
+                        score=round(float(score), 4),
+                        source=DetectionSource.YOLOV8_OBJECT,
+                        label=_class_label(names, int(class_id)),
+                        class_id=int(class_id),
+                        model=Path(self.config.yolo_model).name,
+                    )
+                )
+        if result_count != len(frames):
+            raise ObjectDetectorError(
+                f"{self.config.yolo_model} returned {result_count} results for "
+                f"{len(frames)} sampled frames"
+            )
+        return detections
+
+    def _assign_track(
+        self,
+        tracks: list[_ObjectTrack],
+        box: BoundingBox,
+        relative_seconds: float,
+        chunk_id: str,
+        claimed: set[str],
+    ) -> str:
+        best: _ObjectTrack | None = None
+        best_iou = self.config.iou_match_threshold
+        for track in tracks:
+            if track.track_id in claimed:
+                continue
+            if relative_seconds - track.last_seen > self.config.track_gap_tolerance_seconds:
+                continue
+            overlap = _iou(track.last_box, box)
+            if overlap >= best_iou:
+                best = track
+                best_iou = overlap
+        if best is not None:
+            best.last_box = box
+            best.last_seen = relative_seconds
+            return best.track_id
+        track_id = stable_id("yolo-trk", chunk_id, len(tracks))
+        tracks.append(
+            _ObjectTrack(
+                track_id=track_id,
+                last_box=box,
+                last_seen=relative_seconds,
+            )
+        )
+        return track_id
+
+
 @dataclass
 class _Track:
     track_id: str
     last_box: BoundingBox
     last_seen: float
+
+
+@dataclass
+class _ObjectTrack:
+    track_id: str
+    last_box: BoundingBox
+    last_seen: float
+
+
+@lru_cache(maxsize=4)
+def _load_yolo_model(model_name: str) -> Any:
+    try:
+        from ultralytics import YOLO
+
+        return YOLO(model_name)
+    except Exception as error:
+        raise ObjectDetectorError(f"could not load YOLO model {model_name}: {error}") from error
+
+
+@lru_cache(maxsize=8)
+def _resolve_yolo_device(configured: str) -> str:
+    if configured.lower() != "auto":
+        return configured
+    try:
+        import torch
+
+        if torch.cuda.is_available():
+            return "cuda"
+        if torch.backends.mps.is_available():
+            return "mps"
+    except (AttributeError, ImportError):
+        pass
+    return "cpu"
+
 
 def probe_video(path: str | Path) -> VideoProbe:
     """Measure real container facts with ffprobe.
@@ -279,7 +472,7 @@ def sample_video_frames(
     sample_fps: float = 2.0,
     start_seconds: float = 0.0,
     duration_seconds: float | None = None,
-    max_frames: int = 900,
+    max_frames: int | None = None,
     max_edge: int = 480,
 ) -> Iterator[SampledFrame]:
     """Yield evenly spaced frames from a real file.
@@ -298,20 +491,20 @@ def sample_video_frames(
             native_fps = 25.0
         step = max(1, int(round(native_fps / sample_fps)))
         first_index = max(0, int(round(start_seconds * native_fps)))
-        last_index = (
+        last_index_exclusive = (
             None
             if duration_seconds is None
-            else first_index + int(round(duration_seconds * native_fps))
+            else first_index + max(1, ceil(duration_seconds * native_fps))
         )
         if first_index:
             capture.set(cv2.CAP_PROP_POS_FRAMES, first_index)
         index = first_index
         emitted = 0
-        while emitted < max_frames:
+        while max_frames is None or emitted < max_frames:
             ok, frame = capture.read()
             if not ok:
                 break
-            if last_index is not None and index > last_index:
+            if last_index_exclusive is not None and index >= last_index_exclusive:
                 break
             if (index - first_index) % step == 0:
                 yield SampledFrame(
@@ -332,24 +525,85 @@ def detections_for_chunk(
     duration_seconds: float | None = None,
     config: DetectorConfig | None = None,
 ) -> list[Detection]:
-    """Read a real file and return legacy pixel-motion regions."""
+    """Read the entire requested segment and return spatial review candidates."""
     resolved = config or DetectorConfig()
-    frames = list(
-        sample_video_frames(
-            path,
-            sample_fps=resolved.sample_fps,
-            start_seconds=start_seconds,
-            duration_seconds=duration_seconds,
+    detections: list[Detection] = []
+    if resolved.yolo_enabled:
+        detections.extend(
+            YoloV8ObjectDetector(resolved).detect(
+                sample_video_frames(
+                    path,
+                    sample_fps=resolved.sample_fps,
+                    start_seconds=start_seconds,
+                    duration_seconds=duration_seconds,
+                ),
+                chunk_id=chunk_id,
+            )
         )
-    )
+    if resolved.motion_enabled:
+        detections.extend(
+            MotionRegionDetector(resolved).detect(
+                sample_video_frames(
+                    path,
+                    sample_fps=resolved.sample_fps,
+                    start_seconds=start_seconds,
+                    duration_seconds=duration_seconds,
+                ),
+                chunk_id=chunk_id,
+            )
+        )
     return sorted(
-        MotionRegionDetector(resolved).detect(frames, chunk_id=chunk_id),
+        detections,
         key=lambda detection: (
             detection.relative_seconds,
             detection.source.value,
             detection.box.x,
         ),
     )
+
+
+def _as_numpy(value: Any) -> np.ndarray:
+    if hasattr(value, "detach"):
+        value = value.detach()
+    if hasattr(value, "cpu"):
+        value = value.cpu()
+    if hasattr(value, "numpy"):
+        value = value.numpy()
+    return np.asarray(value)
+
+
+def _normalized_box(
+    coordinates: Any,
+    *,
+    width: int,
+    height: int,
+) -> BoundingBox | None:
+    x0, y0, x1, y1 = (float(value) for value in coordinates[:4])
+    x0 = min(max(x0 / width, 0.0), 1.0)
+    y0 = min(max(y0 / height, 0.0), 1.0)
+    x1 = min(max(x1 / width, 0.0), 1.0)
+    y1 = min(max(y1 / height, 0.0), 1.0)
+    if x1 <= x0 or y1 <= y0:
+        return None
+    origin_x = _clamp(x0)
+    origin_y = _clamp(y0)
+    return BoundingBox(
+        x=origin_x,
+        y=origin_y,
+        width=_clamp_span(x1 - x0, origin_x),
+        height=_clamp_span(y1 - y0, origin_y),
+    )
+
+
+def _class_label(
+    names: Mapping[int, str] | list[str] | tuple[str, ...],
+    class_id: int,
+) -> str:
+    if isinstance(names, Mapping):
+        return str(names.get(class_id, f"class {class_id}"))
+    if 0 <= class_id < len(names):
+        return str(names[class_id])
+    return f"class {class_id}"
 
 
 def _to_gray(image: np.ndarray) -> np.ndarray:

@@ -79,11 +79,12 @@ class ReviewState(StrEnum):
 class DetectionSource(StrEnum):
     """Provenance of a spatial box.
 
-    ``MOTION_REGION`` is retained for legacy fixture records only. Spatial boxes
-    are not part of the uploaded-video analysis path.
+    Object detections are spatial review aids only. They cannot assign behavior,
+    animal identity, or welfare severity.
     """
 
     MOTION_REGION = "motion_region"
+    YOLOV8_OBJECT = "yolov8_object"
 
 
 class BoundingBox(BaseModel):

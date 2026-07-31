@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import numpy as np
 import pytest
 from pydantic import ValidationError
@@ -7,7 +9,9 @@ from zoovision.detection import (
     DetectorConfig,
     MediaToolingError,
     MotionRegionDetector,
+    ObjectDetectorError,
     SampledFrame,
+    YoloV8ObjectDetector,
     probe_video,
     run_media_tool,
 )
@@ -196,3 +200,70 @@ def test_a_short_segment_still_finds_the_body() -> None:
         f"a 14-frame segment must still surface the body, got {sorted(frames_with_motion)}"
     )
 
+
+class _FakeYolo:
+    def __init__(self) -> None:
+        self.calls: list[dict] = []
+
+    def predict(self, **options):
+        self.calls.append(options)
+        return [
+            SimpleNamespace(
+                boxes=SimpleNamespace(
+                    xyxy=np.array([[32.0, 36.0, 160.0, 126.0]], dtype=np.float32),
+                    conf=np.array([0.91], dtype=np.float32),
+                    cls=np.array([15], dtype=np.float32),
+                ),
+                names={15: "cat"},
+            )
+            for _ in options["source"]
+        ]
+
+
+def test_yolo_preserves_label_model_and_track_provenance() -> None:
+    model = _FakeYolo()
+    config = DetectorConfig(yolo_batch_size=2)
+    frames = [
+        SampledFrame(relative_seconds=0.0, image=np.zeros((180, 320, 3), dtype=np.uint8)),
+        SampledFrame(relative_seconds=0.5, image=np.zeros((180, 320, 3), dtype=np.uint8)),
+    ]
+
+    detections = YoloV8ObjectDetector(config, model=model).detect(
+        frames,
+        chunk_id="chunk-1",
+    )
+
+    assert len(detections) == 2
+    assert {item.source for item in detections} == {DetectionSource.YOLOV8_OBJECT}
+    assert {item.label for item in detections} == {"cat"}
+    assert {item.class_id for item in detections} == {15}
+    assert {item.model for item in detections} == {"yolov8n.pt"}
+    assert len({item.track_id for item in detections}) == 1
+    assert model.calls[0]["classes"] == list(range(14, 24))
+    assert model.calls[0]["stream"] is True
+
+
+def test_yolo_streams_every_sample_in_bounded_batches() -> None:
+    model = _FakeYolo()
+    config = DetectorConfig(yolo_batch_size=64)
+    image = np.zeros((180, 320, 3), dtype=np.uint8)
+    frames = (SampledFrame(relative_seconds=index * 0.5, image=image) for index in range(1001))
+
+    detections = YoloV8ObjectDetector(config, model=model).detect(
+        frames,
+        chunk_id="chunk-full",
+    )
+
+    assert len(detections) == 1001
+    assert detections[-1].relative_seconds == 500.0
+    assert len(model.calls) == 16
+    assert max(len(call["source"]) for call in model.calls) == 64
+
+
+def test_yolo_rejects_an_incomplete_result_batch() -> None:
+    model = _FakeYolo()
+    model.predict = lambda **options: []
+    frames = [SampledFrame(relative_seconds=0.0, image=np.zeros((180, 320, 3), dtype=np.uint8))]
+
+    with pytest.raises(ObjectDetectorError, match="returned 0 results"):
+        YoloV8ObjectDetector(model=model).detect(frames, chunk_id="chunk-1")

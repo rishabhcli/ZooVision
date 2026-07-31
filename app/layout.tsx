@@ -5,7 +5,7 @@ import "@fontsource-variable/manrope";
 import "./globals.css";
 
 const description =
-  "A frontend concept for evidence-led overnight animal welfare monitoring.";
+  "Evidence-led animal welfare monitoring with deterministic triage and human review.";
 
 export async function generateMetadata(): Promise<Metadata> {
   const requestHeaders = await headers();
@@ -26,6 +26,9 @@ export async function generateMetadata(): Promise<Metadata> {
       template: "%s · ZooVision",
     },
     description,
+    icons: {
+      icon: "/favicon.svg",
+    },
     openGraph: {
       type: "website",
       title: "ZooVision",

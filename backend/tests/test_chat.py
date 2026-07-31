@@ -128,6 +128,52 @@ def test_context_scopes_to_one_enclosure(tmp_path: Path) -> None:
     assert context["events"] == []
 
 
+def test_context_scopes_to_the_exact_selected_video(tmp_path: Path) -> None:
+    store = _seeded_store(tmp_path)
+    store.upsert_video_chunk(
+        chunk_id="chunk-2",
+        enclosure_id="ENC-07",
+        camera_id="CAM-07B",
+        start_ts=START.isoformat(),
+        end_ts=(START + timedelta(minutes=15)).isoformat(),
+        source_path="fixtures/badger-secondary.mp4",
+        source_offset_seconds=0,
+        content_sha256="sha-secondary",
+        status="ready",
+    )
+    store.save_observation(
+        Observation(
+            observation_id="obs-2",
+            animal_id="animal-nox",
+            enclosure_id="ENC-07",
+            chunk_id="chunk-2",
+            behavior=Behavior.WALKING,
+            start_ts=START + timedelta(minutes=2),
+            end_ts=START + timedelta(minutes=3),
+            confidence=0.88,
+            evidence="Nox walked beside the secondary camera.",
+            provider="twelvelabs",
+            provider_model="test",
+            evidence_kind=EvidenceKind.PROVIDER_STRUCTURED,
+            activity_label="Walking beside the fence",
+        )
+    )
+
+    context = build_context(
+        store,
+        enclosure_id="ENC-07",
+        animal_id="animal-nox",
+        camera_id="CAM-07B",
+        source_path="fixtures/badger-secondary.mp4",
+    )
+
+    assert context["scope"]["camera_id"] == "CAM-07B"
+    assert context["scope"]["source_path"] == "fixtures/badger-secondary.mp4"
+    assert [moment["observation_id"] for moment in context["moments"]] == ["obs-2"]
+    assert context["events"] == []
+    assert context["data_gaps"] == []
+
+
 def test_deterministic_answer_quotes_the_rule_and_cites_the_event(tmp_path: Path) -> None:
     store = _seeded_store(tmp_path)
     reply = GroundedChat(store).reply(
@@ -212,6 +258,8 @@ def test_selected_animal_resolves_this_animal_and_returns_human_labels(
     assert "Nox" in reply.answer
     assert "recorded" in reply.answer
     assert "usual behavior pattern" in reply.answer
+    assert "R005_PACING_10M" not in reply.answer
+    assert "obs-1" not in reply.answer
     assert reply.moments
     assert reply.citations
     assert all(citation.record_id not in citation.label for citation in reply.citations)
@@ -348,6 +396,36 @@ def test_model_answer_citing_an_unknown_record_falls_back_to_the_record(tmp_path
     assert "evt-1" in reply.cited_ids
 
 
+def test_model_answer_exposing_a_raw_record_id_is_humanized(
+    tmp_path: Path,
+) -> None:
+    client = _StubClient(
+        _Parsed(
+            ChatAnswer(
+                answer="Nox is shown in obs-1.",
+                cited_ids=["obs-1"],
+                uncertainty=[],
+                moment_ids=["obs-1"],
+            )
+        )
+    )
+    chat = GroundedChat(_seeded_store(tmp_path), client=client, model="gpt-test")
+
+    reply = chat.reply(
+        ChatRequest(
+            messages=[ChatMessage(role="user", content="What is this animal doing?")],
+            enclosure_id="ENC-07",
+            animal_id="animal-nox",
+        )
+    )
+
+    assert reply.mode == "openai"
+    assert "obs-1" not in reply.answer
+    assert "Nox: Pacing at 0:00" in reply.answer
+    assert reply.citations
+    assert all(citation.record_id not in citation.label for citation in reply.citations)
+
+
 def test_model_failure_still_answers_from_the_record(tmp_path: Path) -> None:
     chat = GroundedChat(
         _seeded_store(tmp_path),
@@ -383,6 +461,8 @@ def test_instructions_forbid_severity_and_treatment() -> None:
     assert "never diagnose a condition" in lowered
     assert "recommend medication, treatment, or any enclosure action" in lowered
     assert "do not describe them as either" in lowered
+    assert "current scope is authoritative" in lowered
+    assert "never expose a raw database id" in lowered
 
 
 def test_summarize_never_invents_a_severity(tmp_path: Path) -> None:

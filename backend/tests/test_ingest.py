@@ -6,8 +6,12 @@ from pathlib import Path
 import cv2
 import numpy as np
 import pytest
+from zoovision.detection import DetectorConfig
 from zoovision.domain import (
     Behavior,
+    BoundingBox,
+    Detection,
+    DetectionSource,
     EvidenceKind,
     Observation,
     ShiftMode,
@@ -94,6 +98,24 @@ class _StubProvider:
         )
 
 
+def _stub_detections(path, *, chunk_id, duration_seconds, config):  # noqa: ANN001
+    del path, config
+    return [
+        Detection(
+            detection_id=f"det-{chunk_id}",
+            chunk_id=chunk_id,
+            track_id=f"track-{chunk_id}",
+            relative_seconds=min(0.25, duration_seconds / 2),
+            box=BoundingBox(x=0.1, y=0.2, width=0.3, height=0.4),
+            score=0.9,
+            source=DetectionSource.YOLOV8_OBJECT,
+            label="cat",
+            class_id=15,
+            model="yolov8n.pt",
+        )
+    ]
+
+
 def test_segment_video_splits_a_real_file(tmp_path: Path) -> None:
     source = _make_video(tmp_path / "source.mp4", seconds=8)
 
@@ -130,6 +152,8 @@ def _service(tmp_path: Path) -> tuple[VideoIngestService, SQLiteStore]:
         store=store,
         raw_root=raw_root,
         analyzer_factory=_StubProvider,
+        detector_config=DetectorConfig(),
+        detector=_stub_detections,
         now=lambda: START,
     )
     return service, store
@@ -171,8 +195,10 @@ def test_ingest_runs_any_video_end_to_end(tmp_path: Path) -> None:
     assert job.status == "complete", job.error
     assert job.total_segments >= 2
     assert job.completed_segments == job.total_segments
-    assert job.analyzer == "twelvelabs"
+    assert job.analyzer == "twelvelabs+yolo"
     assert job.probe is not None and job.probe.duration_seconds > 0
+    assert job.detection_count == job.total_segments
+    assert all(segment.detection_count == 1 for segment in job.segments)
 
     chunks = store.dump_table("video_chunks")
     assert len(chunks) == job.total_segments
@@ -184,6 +210,14 @@ def test_ingest_runs_any_video_end_to_end(tmp_path: Path) -> None:
     assert starts[0] == START
 
     assert store.dump_table("observations"), "an uploaded video must yield observations"
+    detections = store.dump_table("detections")
+    assert {item["chunk_id"] for item in detections} == {item["chunk_id"] for item in chunks}
+    track = store.video_track("uploads/any.mp4")
+    expected_times = sorted(
+        round(float(chunk["source_offset_seconds"]) + 0.25, 3) for chunk in chunks
+    )
+    assert [item["video_seconds"] for item in track["detections"]] == expected_times
+    assert {item["source"] for item in track["detections"]} == {"yolov8_object"}
     assert service.status(job.job_id).status == "complete"
 
 
@@ -204,10 +238,12 @@ def test_ingest_is_idempotent_for_the_same_video(tmp_path: Path) -> None:
     service.run(request)
     first_chunks = len(store.dump_table("video_chunks"))
     first_observations = len(store.dump_table("observations"))
+    first_detections = len(store.dump_table("detections"))
     service.run(request)
 
     assert len(store.dump_table("video_chunks")) == first_chunks
     assert len(store.dump_table("observations")) == first_observations
+    assert len(store.dump_table("detections")) == first_detections
 
 
 def test_ingest_records_a_failure_as_job_state(tmp_path: Path) -> None:
