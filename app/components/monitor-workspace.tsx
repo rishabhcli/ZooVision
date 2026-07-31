@@ -698,8 +698,21 @@ function containedVideoBounds(
   };
 }
 
+function emptyVideoTrack(source: VideoSource): VideoTrack {
+  return {
+    source_path: source.source_path,
+    media_url: source.media_url,
+    chunks: [],
+    detections: [],
+    events: [],
+    observations: [],
+    rule_checks: [],
+  };
+}
+
 function EvidenceTimeline({
   durationSeconds,
+  loading,
   onSelectEvent,
   onSelectObservation,
   onSeek,
@@ -708,6 +721,7 @@ function EvidenceTimeline({
   track,
 }: {
   durationSeconds: number;
+  loading: boolean;
   onSelectEvent: (id: string, seconds: number) => void;
   onSelectObservation: (id: string, seconds: number) => void;
   onSeek: (seconds: number) => void;
@@ -734,6 +748,7 @@ function EvidenceTimeline({
     <section
       className="evidence-timeline"
       aria-label="Recorded evidence timeline"
+      aria-busy={loading}
       style={{ "--timeline-progress": progress / 100 } as CSSProperties}
     >
       <header className="timeline-heading">
@@ -776,7 +791,9 @@ function EvidenceTimeline({
         </span>
         <div className="timeline-track detection-heatmap animal-box-heatmap">
           {spatialDetections.length === 0 ? (
-            <span className="empty-track">No animal boxes</span>
+            <span className="empty-track">
+              {loading ? "Loading animal boxes" : "No animal boxes"}
+            </span>
           ) : (
             spatialDetectionBins.map((count, index) => (
               <i
@@ -807,7 +824,9 @@ function EvidenceTimeline({
         </span>
         <div className="timeline-track">
           {track.observations.length === 0 ? (
-            <span className="empty-track">No structured observations</span>
+            <span className="empty-track">
+              {loading ? "Loading observations" : "No structured observations"}
+            </span>
           ) : (
             track.observations.map((observation) => {
               const span = boundedTimelineSpan(
@@ -860,7 +879,9 @@ function EvidenceTimeline({
         </span>
         <div className="timeline-track">
           {ruleChecks.length === 0 ? (
-            <span className="empty-track">No recorded rule checks</span>
+            <span className="empty-track">
+              {loading ? "Loading rule checks" : "No recorded rule checks"}
+            </span>
           ) : (
             ruleChecks.map((check) => {
               const fired =
@@ -921,7 +942,9 @@ function EvidenceTimeline({
         </span>
         <div className="timeline-track">
           {track.events.length === 0 ? (
-            <span className="empty-track">No deterministic rule events</span>
+            <span className="empty-track">
+              {loading ? "Loading fired events" : "No deterministic rule events"}
+            </span>
           ) : (
             track.events.map((event) => {
               const span = boundedTimelineSpan(
@@ -1015,6 +1038,13 @@ export function MonitorWorkspace() {
   const selectedAnalysisStatus = selectedCamera?.analysis_status;
   const selectedProbeDuration = selectedCamera?.probe_duration_seconds;
   const currentSeconds = (progress / 100) * durationSeconds;
+  const trackLoading = Boolean(
+    selectedCamera &&
+      track &&
+      track.source_path === selectedCamera.source_path &&
+      track.chunks.length === 0 &&
+      selectedCamera.chunk_count > 0,
+  );
   const usesTwelveLabs = Boolean(
     track?.observations.some((observation) => observation.provider === "twelvelabs"),
   );
@@ -1024,7 +1054,9 @@ export function MonitorWorkspace() {
     ),
   );
   const providerDisplayName =
-    usesTwelveLabs && usesFrameSampledAnalysis
+    trackLoading
+      ? "Loading track"
+      : usesTwelveLabs && usesFrameSampledAnalysis
       ? "Pegasus + OpenAI"
       : usesTwelveLabs
         ? "Pegasus 1.5"
@@ -1104,6 +1136,15 @@ export function MonitorWorkspace() {
         if (cancelled) return;
         hasLoaded = true;
         setVideos(sources);
+        setTrack((current) => {
+          if (
+            current &&
+            sources.some((source) => source.source_path === current.source_path)
+          ) {
+            return current;
+          }
+          return sources[0] ? emptyVideoTrack(sources[0]) : null;
+        });
         setLoadError(
           sources.length === 0
             ? "No analyzed video sources are available."
@@ -1159,6 +1200,7 @@ export function MonitorWorkspace() {
         sourcePath: detail.sourcePath,
         seconds: detail.seconds,
       };
+      setTrack(emptyVideoTrack(videos[targetIndex]));
       setCameraIndex(targetIndex);
     }
 
@@ -1181,6 +1223,7 @@ export function MonitorWorkspace() {
   useEffect(() => {
     if (!selectedSourcePath || !selectedEnclosureId || !selectedCameraId) return;
     let cancelled = false;
+    const controller = new AbortController();
     const assistantContext = {
       animalId: selectedAnimalId,
       animalName: selectedAnimalName,
@@ -1198,7 +1241,7 @@ export function MonitorWorkspace() {
       }),
     );
     api
-      .videoTrack(selectedSourcePath)
+      .videoTrack(selectedSourcePath, controller.signal)
       .then((payload) => {
         if (cancelled) return;
         setTrack(payload);
@@ -1207,6 +1250,7 @@ export function MonitorWorkspace() {
       })
       .catch((caught: unknown) => {
         if (cancelled) return;
+        if (caught instanceof Error && caught.name === "AbortError") return;
         setLoadError(
           caught instanceof Error
             ? caught.message
@@ -1215,6 +1259,7 @@ export function MonitorWorkspace() {
       });
     return () => {
       cancelled = true;
+      controller.abort();
     };
   }, [
     selectedAnalysisStatus,
@@ -1304,12 +1349,18 @@ export function MonitorWorkspace() {
   }
 
   function selectCamera(index: number) {
+    const nextCamera = videos[index];
+    if (!nextCamera) return;
     videoRef.current?.pause();
     setLoadError(null);
     setMediaError(null);
     setPlaying(false);
     setProgress(0);
-    setTrack(null);
+    const placeholder = emptyVideoTrack(nextCamera);
+    setTrack(placeholder);
+    setDurationSeconds(
+      authoritativeSourceDuration(nextCamera.probe_duration_seconds, placeholder),
+    );
     setSelectedEvidence(null);
     setCameraIndex(index);
   }
@@ -1437,14 +1488,21 @@ export function MonitorWorkspace() {
             <strong>Welfare event log</strong>
           </div>
           <small>
-            {selectedCamera.analysis_status === "analyzing"
+            {trackLoading
+              ? "Loading rule checks"
+              : selectedCamera.analysis_status === "analyzing"
               ? analysisLabel(selectedCamera)
               : track.events.length
               ? `${track.events.length} rule event${track.events.length === 1 ? "" : "s"}`
               : "No welfare rules fired"}
           </small>
         </header>
-        {track.events.length ? (
+        {trackLoading ? (
+          <p className="event-log-empty">
+            <span className="monitor-spinner" aria-hidden="true" />
+            Loading observations and deterministic rule checks.
+          </p>
+        ) : track.events.length ? (
           <div className="event-log-list">
             {track.events.map((event) => (
               <button
@@ -1775,6 +1833,7 @@ export function MonitorWorkspace() {
 
           <EvidenceTimeline
             durationSeconds={durationSeconds}
+            loading={trackLoading}
             onSelectEvent={(id, seconds) =>
               selectEvidence("event", id, seconds)
             }

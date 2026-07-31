@@ -46,6 +46,19 @@ UPLOAD_CHUNK_COUNT_FORM = Form(..., ge=1, le=MAX_UPLOAD_CHUNKS)
 UPLOAD_TOTAL_BYTES_FORM = Form(..., ge=1, le=MAX_UPLOAD_BYTES)
 
 
+def _sqlite_revision(database_path: Path) -> tuple[int, int, int, int]:
+    """Return a cache key that changes for main-file and WAL writes."""
+    values: list[int] = []
+    for path in (database_path, database_path.with_name(f"{database_path.name}-wal")):
+        try:
+            stat = path.stat()
+        except FileNotFoundError:
+            values.extend((0, 0))
+        else:
+            values.extend((stat.st_mtime_ns, stat.st_size))
+    return values[0], values[1], values[2], values[3]
+
+
 def _source_analysis_metadata(source: dict, job: dict | None) -> dict:
     """Describe whether a visible source is still partial or fully analyzed."""
     if job is not None:
@@ -386,6 +399,14 @@ def create_app(
     if graph_writer is not None:
         app.router.add_event_handler("shutdown", graph_writer.close)
 
+    @lru_cache(maxsize=32)
+    def cached_video_track(
+        source_path: str,
+        revision: tuple[int, int, int, int],
+    ) -> dict:
+        del revision
+        return store.video_track(source_path)
+
     @app.get("/api/health")
     def health() -> dict:
         return {"status": "ok"}
@@ -516,7 +537,7 @@ def create_app(
 
     @app.get("/api/videos/track")
     def video_track(source_path: str = Query(min_length=1, max_length=400)) -> dict:
-        track = store.video_track(source_path)
+        track = cached_video_track(source_path, _sqlite_revision(settings.database_path))
         if not track["chunks"]:
             raise HTTPException(status_code=404, detail="no analyzed video for that source")
         track["media_url"] = f"/media/{source_path}"

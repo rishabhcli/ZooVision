@@ -231,8 +231,26 @@ textarea {
   letter-spacing: 0.12em;
 }
 
-.mobile-chat-launch {
+.route-tabs .mobile-chat-launch {
   display: none;
+}
+
+@media (max-width: 760px) {
+  .app-frame.evidence-layout .route-tabs:has(.mobile-chat-launch) {
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+  }
+
+  .app-frame.evidence-layout .route-tabs .mobile-chat-launch {
+    display: flex;
+  }
+
+  .app-frame.evidence-layout .mobile-chat-launch[data-active="true"] {
+    color: var(--workspace-accent, #c4df6c);
+  }
+
+  .app-frame.evidence-layout .chat-rail[data-collapsed="true"] {
+    display: none;
+  }
 }
 
 .collapsed-chat-line {

@@ -259,9 +259,10 @@ export const api = {
         : "/api/graph",
     ),
   videos: () => request<{ videos: VideoSource[] }>("/api/videos"),
-  videoTrack: (sourcePath: string) =>
+  videoTrack: (sourcePath: string, signal?: AbortSignal) =>
     request<VideoTrack>(
       `/api/videos/track?source_path=${encodeURIComponent(sourcePath)}`,
+      { signal },
     ),
   morningReport: () => request<Record<string, unknown>>("/api/morning-report"),
   ingestJobs: () => request<{ jobs: IngestJob[] }>("/api/ingest/jobs"),

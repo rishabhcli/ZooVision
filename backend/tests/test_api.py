@@ -396,6 +396,46 @@ def test_video_track_places_events_on_the_media_timeline(client):
         assert detection["source"] == "motion_region"
 
 
+def test_video_track_cache_reuses_stable_data_and_invalidates_after_write(
+    tmp_path,
+    monkeypatch,
+):
+    settings = Settings(
+        ZOOVISION_STORAGE_ROOT=tmp_path,
+        ZOOVISION_FIXTURE_MODE=True,
+        _env_file=None,
+    )
+    store = SQLiteStore(tmp_path / "zoovision.db")
+    original_video_track = store.video_track
+    calls = 0
+
+    def counted_video_track(source_path: str) -> dict:
+        nonlocal calls
+        calls += 1
+        return original_video_track(source_path)
+
+    monkeypatch.setattr(store, "video_track", counted_video_track)
+    test_client = TestClient(create_app(settings, store, graph_reader=FakeGraphReader()))
+    source_path = test_client.get("/api/videos").json()["videos"][0]["source_path"]
+
+    assert test_client.get(
+        "/api/videos/track",
+        params={"source_path": source_path},
+    ).status_code == 200
+    assert test_client.get(
+        "/api/videos/track",
+        params={"source_path": source_path},
+    ).status_code == 200
+    assert calls == 1
+
+    assert test_client.post("/api/demo/reset").status_code == 200
+    assert test_client.get(
+        "/api/videos/track",
+        params={"source_path": source_path},
+    ).status_code == 200
+    assert calls == 2
+
+
 def test_video_track_rule_checks_only_link_persisted_non_none_events(client):
     client.post("/api/demo/reset")
     videos = client.get("/api/videos").json()["videos"]
