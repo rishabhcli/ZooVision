@@ -232,6 +232,35 @@ export type ChatMoment = {
   animal_name: string;
 };
 
+const CAMERA_SOURCE_ORDER = [
+  "enc03_mountain_gorilla_15m.mp4",
+  "enc07_lion_night_30m.mp4",
+  "lion-provider-probe-30s.mp4",
+  "enc05_elephant_15m.mp4",
+  "enc07_badger_night_30m.mp4",
+  "badger-provider-probe-30s.mp4",
+  "enc05_condor_nest_15m.mp4",
+  "enc03_trailcam_night_15m.mp4",
+  "backyard-squirrel-staircase.mp4",
+  "backyard-squirrels-and-birds.mp4",
+] as const;
+
+const CAMERA_SOURCE_RANK = new Map<string, number>(
+  CAMERA_SOURCE_ORDER.map((sourceName, index) => [sourceName, index]),
+);
+
+export function orderVideoSources(sources: VideoSource[]) {
+  return [...sources].sort((left, right) => {
+    const leftName = left.source_path.split("/").at(-1) ?? left.source_path;
+    const rightName = right.source_path.split("/").at(-1) ?? right.source_path;
+    const fallbackRank = CAMERA_SOURCE_ORDER.length;
+    return (
+      (CAMERA_SOURCE_RANK.get(leftName) ?? fallbackRank) -
+      (CAMERA_SOURCE_RANK.get(rightName) ?? fallbackRank)
+    );
+  });
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(path, {
     ...init,
@@ -262,7 +291,10 @@ export const api = {
     if (enclosureId) parameters.set("enclosure_id", enclosureId);
     return request<GraphPayload>(`/api/graph?${parameters.toString()}`);
   },
-  videos: () => request<{ videos: VideoSource[] }>("/api/videos"),
+  videos: async () => {
+    const payload = await request<{ videos: VideoSource[] }>("/api/videos");
+    return { videos: orderVideoSources(payload.videos) };
+  },
   videoTrack: (sourcePath: string, signal?: AbortSignal) =>
     request<VideoTrack>(
       `/api/videos/track?source_path=${encodeURIComponent(sourcePath)}`,
