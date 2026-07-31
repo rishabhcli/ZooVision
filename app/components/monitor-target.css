@@ -765,6 +765,7 @@
 
 .stage-context > span {
   display: inline-flex;
+  min-width: 0;
   min-height: 26px;
   align-items: center;
   gap: 6px;
@@ -776,6 +777,13 @@
   font-size: 14px;
   font-weight: 610;
   backdrop-filter: blur(8px);
+}
+
+.stage-context-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .stage-context .event-active {
@@ -1910,6 +1918,10 @@
 
   .stage-context > span:last-child {
     display: none;
+  }
+
+  .stage-context > span:first-child {
+    max-width: 100%;
   }
 
   .video-transport {

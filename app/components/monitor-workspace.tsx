@@ -1300,9 +1300,11 @@ export function MonitorWorkspace() {
                   ) : (
                     <Activity size={13} />
                   )}
-                  {currentEventActive
-                    ? `${selectedEvent?.severity} · ${formatBehavior(selectedEvent?.behavior)}`
-                    : `Observed activity · ${currentActivity}`}
+                  <span className="stage-context-label">
+                    {currentEventActive
+                      ? `${selectedEvent?.severity} · ${formatBehavior(selectedEvent?.behavior)}`
+                      : `Observed activity · ${currentActivity}`}
+                  </span>
                 </span>
                 <span>
                   {isFixtureEvidence
