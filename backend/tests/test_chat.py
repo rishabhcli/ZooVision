@@ -565,6 +565,521 @@ def test_recording_inventory_keeps_late_animal_types_inside_context_cap() -> Non
     assert "obs-birds-late" in activity_ids
 
 
+def test_recording_inventory_reply_is_timeline_wide_and_deterministic(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = _StubClient(RuntimeError("recording inventory must not call the model"))
+    monkeypatch.setattr(
+        chat_module,
+        "build_context",
+        lambda *_args, **_kwargs: _backyard_bird_timing_context(),
+    )
+
+    reply = GroundedChat(
+        _seeded_store(tmp_path),
+        client=client,
+        model="gpt-test",
+    ).reply(
+        ChatRequest(
+            messages=[
+                ChatMessage(
+                    role="user",
+                    content=(
+                        "What animals and activities were documented across this full recording?"
+                    ),
+                )
+            ],
+            animal_id="animal-backyard",
+            enclosure_id="ENC-BACKYARD",
+            camera_id="CAM-BY2",
+            source_path="uploads/backyard-squirrels-and-birds.mp4",
+        )
+    )
+
+    assert reply.mode == "deterministic"
+    assert client.responses.calls == []
+    assert "Birds: foraging" in reply.answer
+    assert "Squirrels: foraging" in reply.answer
+    assert "41 structured observations" in reply.answer
+    assert "0 deterministic rule events" in reply.answer
+    assert "1:11:52" in reply.answer
+    assert reply.uncertainty == []
+    assert len(reply.cited_ids) == 20
+    assert any(moment.observation_id.startswith("obs-bird-") for moment in reply.moments)
+    assert any(moment.observation_id == "obs-bird-1h11m52" for moment in reply.moments)
+
+
+def test_recording_inventory_reserves_rare_cat_from_generic_wildlife_profile() -> None:
+    base_moment = {
+        "animal_id": "animal-trail",
+        "animal_name": "Trail camera wildlife",
+        "species": "Unspecified wildlife",
+        "enclosure_id": "ENC-03",
+        "camera_id": "CAM-03T",
+        "source_path": "uploads/trail-camera.mp4",
+        "behavior": "foraging",
+        "evidence_kind": "provider_structured",
+    }
+    moments = [
+        {
+            **base_moment,
+            "observation_id": f"obs-bird-{index:02d}",
+            "activity_label": "One bird foraging",
+            "evidence": "One bird is visible foraging.",
+            "start_seconds": float(index * 60),
+            "end_seconds": float(index * 60 + 20),
+        }
+        for index in range(24)
+    ]
+    moments.append(
+        {
+            **base_moment,
+            "observation_id": "obs-cat-rare",
+            "behavior": "walking",
+            "activity_label": "One cat walking past the trail camera",
+            "evidence": "A cat walks across the frame.",
+            "start_seconds": 2_400.0,
+            "end_seconds": 2_415.0,
+        }
+    )
+    full_context = {
+        "scope": {
+            "enclosure_id": "ENC-03",
+            "animal_id": "animal-trail",
+            "camera_id": "CAM-03T",
+            "source_path": "uploads/trail-camera.mp4",
+        },
+        "animals": [
+            {
+                "animal_id": "animal-trail",
+                "name": "Trail camera wildlife",
+                "species": "Unspecified wildlife",
+                "enclosure_id": "ENC-03",
+                "baseline_state": "shadow",
+                "baseline_day_shifts": 0,
+                "event_count": 0,
+            }
+        ],
+        "events": [],
+        "moments": moments,
+        "data_gaps": [],
+        "recording_summary": {
+            "source_path": "uploads/trail-camera.mp4",
+            "camera_id": "CAM-03T",
+            "observation_count": len(moments),
+            "event_count": 0,
+            "coverage_gap_count": 0,
+            "indexing_gap_count": 0,
+        },
+        "policy": {},
+    }
+    messages = [
+        ChatMessage(
+            role="user",
+            content="What animals are visible in this recording, and what are they doing?",
+        )
+    ]
+
+    context = retrieve_context(full_context, messages)
+    reply = summarize(context, messages)
+
+    assert "obs-cat-rare" in {moment["observation_id"] for moment in context["moments"]}
+    assert "Birds: foraging" in reply.answer
+    assert "Cats: walking" in reply.answer
+    assert "obs-cat-rare" in reply.cited_ids
+    assert "obs-cat-rare" in reply.moment_ids
+
+
+def test_recording_inventory_does_not_turn_no_animal_evidence_into_activity() -> None:
+    moment = {
+        "observation_id": "obs-empty-frame",
+        "animal_id": "animal-trail",
+        "animal_name": "Trail camera wildlife",
+        "species": "Unspecified wildlife",
+        "enclosure_id": "ENC-03",
+        "camera_id": "CAM-03T",
+        "source_path": "uploads/trail-camera.mp4",
+        "behavior": "inactivity",
+        "activity_label": "No animal visible",
+        "evidence": "No animal is visible in the frame.",
+        "evidence_kind": "provider_structured",
+        "start_seconds": 0.0,
+        "end_seconds": 60.0,
+    }
+    context = {
+        "animals": [
+            {
+                "animal_id": "animal-trail",
+                "name": "Trail camera wildlife",
+                "species": "Unspecified wildlife",
+                "enclosure_id": "ENC-03",
+                "baseline_state": "shadow",
+                "baseline_day_shifts": 0,
+                "event_count": 0,
+            }
+        ],
+        "events": [],
+        "moments": [moment],
+        "data_gaps": [],
+        "recording_summary": {
+            "observation_count": 1,
+            "event_count": 0,
+        },
+        "retrieval": {"recording_inventory": True},
+    }
+
+    reply = summarize(context, "What animals are visible in this recording?")
+
+    assert "does not explicitly identify an animal" in reply.answer
+    assert "Recorded animal activity" not in reply.answer
+    assert "1 structured observation and 0 deterministic rule events" in reply.answer
+    assert reply.cited_ids == ["obs-empty-frame"]
+    assert reply.uncertainty == ["The available structured text does not identify an animal type."]
+
+
+@pytest.mark.parametrize(
+    ("activity_label", "evidence", "animal_heading"),
+    [
+        (
+            "No animals visible; static brick bird feeder",
+            "The empty scene contains a brick bird feeder and scattered seed.",
+            "Birds:",
+        ),
+        (
+            "No animals visible beside the cat flap",
+            "The doorway and cat flap remain in view, with no animal present.",
+            "Cats:",
+        ),
+    ],
+)
+def test_recording_inventory_ignores_animal_words_in_environment_labels(
+    activity_label: str,
+    evidence: str,
+    animal_heading: str,
+) -> None:
+    context = {
+        "animals": [{"name": "Trail camera wildlife", "event_count": 0}],
+        "events": [],
+        "moments": [
+            {
+                "observation_id": "obs-empty-environment",
+                "behavior": "inactivity",
+                "activity_label": activity_label,
+                "evidence": evidence,
+                "start_seconds": 0.0,
+                "end_seconds": 30.0,
+            }
+        ],
+        "data_gaps": [],
+        "recording_summary": {"observation_count": 1, "event_count": 0},
+        "retrieval": {"recording_inventory": True},
+    }
+
+    reply = summarize(context, "What animals are visible in this recording?")
+
+    assert animal_heading not in reply.answer
+    assert "does not explicitly identify an animal" in reply.answer
+    assert reply.uncertainty
+
+
+def test_recording_inventory_keeps_bird_observed_on_feeder() -> None:
+    context = {
+        "animals": [{"name": "Backyard wildlife", "event_count": 0}],
+        "events": [],
+        "moments": [
+            {
+                "observation_id": "obs-bird-on-feeder",
+                "behavior": "foraging",
+                "activity_label": "One bird foraging on the feeder",
+                "evidence": "A bird is visible on the feeder, pecking at seeds.",
+                "start_seconds": 30.0,
+                "end_seconds": 40.0,
+            }
+        ],
+        "data_gaps": [],
+        "recording_summary": {"observation_count": 1, "event_count": 0},
+        "retrieval": {"recording_inventory": True},
+    }
+
+    reply = summarize(context, "What animals are visible in this recording?")
+
+    assert "Birds: foraging" in reply.answer
+    assert reply.uncertainty == []
+
+
+@pytest.mark.parametrize(
+    ("activity_label", "evidence"),
+    [
+        ("No cat visible", "No cat is visible anywhere in the frame."),
+        ("No birds or cats were observed", "No birds or cats were observed in this clip."),
+        ("Cat absent", "The cat is absent from the frame."),
+        ("No cat in frame", "No cat in frame."),
+        ("Cat not in frame", "The cat is not in the frame."),
+        ("Neither cat nor bird visible", "Neither a cat nor a bird is visible."),
+        (
+            "Animal identity uncertain",
+            "The animal is not clearly identifiable as a cat.",
+        ),
+        (
+            "Animal identity uncertain",
+            "The animal is not clearly identifiable as either a cat or a bird.",
+        ),
+    ],
+)
+def test_recording_inventory_ignores_negated_species_mentions(
+    activity_label: str,
+    evidence: str,
+) -> None:
+    moment = {
+        "observation_id": "obs-negative-animal",
+        "behavior": "inactivity",
+        "activity_label": activity_label,
+        "evidence": evidence,
+        "start_seconds": 0.0,
+        "end_seconds": 30.0,
+    }
+    context = {
+        "animals": [{"name": "Trail camera wildlife", "event_count": 0}],
+        "events": [],
+        "moments": [moment],
+        "data_gaps": [],
+        "recording_summary": {"observation_count": 1, "event_count": 0},
+        "retrieval": {"recording_inventory": True},
+    }
+
+    reply = summarize(context, "What animals are visible in this recording?")
+
+    assert "Cats:" not in reply.answer
+    assert "Birds:" not in reply.answer
+    assert "does not explicitly identify an animal" in reply.answer
+    assert reply.uncertainty
+
+
+@pytest.mark.parametrize(
+    ("activity_label", "evidence", "possible_heading"),
+    [
+        (
+            "Possible cat walking",
+            "The animal may be a cat, but identity is uncertain.",
+            "Possible cats:",
+        ),
+        (
+            "Possible squirrel moving",
+            "Possibly a squirrel is moving through the frame.",
+            "Possible squirrels:",
+        ),
+        (
+            "Possible bird walking",
+            "The reviewer cannot confirm whether this is a bird.",
+            "Possible birds:",
+        ),
+        (
+            "Bird-like animal moving",
+            "A bird-like animal moves across the grass; species identity is uncertain.",
+            "Possible birds:",
+        ),
+        ("Animal walking", "The animal looks like a cat.", "Possible cats:"),
+        ("Animal walking", "The animal seems to be a cat.", "Possible cats:"),
+        ("Animal walking", "The animal is probably a cat.", "Possible cats:"),
+        ("Animal walking", "The animal resembles a cat.", "Possible cats:"),
+    ],
+)
+def test_recording_inventory_preserves_tentative_species_identity(
+    activity_label: str,
+    evidence: str,
+    possible_heading: str,
+) -> None:
+    context = {
+        "animals": [{"name": "Trail camera wildlife", "event_count": 0}],
+        "events": [],
+        "moments": [
+            {
+                "observation_id": "obs-tentative-animal",
+                "behavior": "walking",
+                "activity_label": activity_label,
+                "evidence": evidence,
+                "start_seconds": 10.0,
+                "end_seconds": 20.0,
+            }
+        ],
+        "data_gaps": [],
+        "recording_summary": {"observation_count": 1, "event_count": 0},
+        "retrieval": {"recording_inventory": True},
+    }
+
+    reply = summarize(context, "What animals are visible in this recording?")
+
+    assert possible_heading in reply.answer
+    assert "identity is uncertain" in reply.answer
+    assert reply.uncertainty == [
+        "Some animal identities are tentative in the structured observations."
+    ]
+
+
+def test_recording_inventory_separates_confirmed_and_tentative_species() -> None:
+    context = {
+        "animals": [{"name": "Trail camera wildlife", "event_count": 0}],
+        "events": [],
+        "moments": [
+            {
+                "observation_id": "obs-confirmed-cat-possible-bird",
+                "behavior": "walking",
+                "activity_label": "Cat with a possible bird",
+                "evidence": "A cat is visible; the second animal may be a bird.",
+                "start_seconds": 10.0,
+                "end_seconds": 20.0,
+            }
+        ],
+        "data_gaps": [],
+        "recording_summary": {"observation_count": 1, "event_count": 0},
+        "retrieval": {"recording_inventory": True},
+    }
+
+    reply = summarize(context, "What animals are visible in this recording?")
+
+    assert "- Cats: walking" in reply.answer
+    assert "- Possible birds: identity is uncertain" in reply.answer
+    assert reply.uncertainty
+
+
+@pytest.mark.parametrize(
+    ("evidence", "confirmed_heading", "possible_heading"),
+    [
+        (
+            "A possible bird and a cat are visible.",
+            "- Cats: walking",
+            "- Possible birds: identity is uncertain",
+        ),
+        (
+            "A possible cat and a confirmed bird are visible.",
+            "- Birds: walking",
+            "- Possible cats: identity is uncertain",
+        ),
+    ],
+)
+def test_recording_inventory_bounds_certainty_to_each_animal_mention(
+    evidence: str,
+    confirmed_heading: str,
+    possible_heading: str,
+) -> None:
+    context = {
+        "animals": [{"name": "Trail camera wildlife", "event_count": 0}],
+        "events": [],
+        "moments": [
+            {
+                "observation_id": "obs-mixed-certainty-animals",
+                "behavior": "walking",
+                "activity_label": "Two animals visible",
+                "evidence": evidence,
+                "start_seconds": 10.0,
+                "end_seconds": 20.0,
+            }
+        ],
+        "data_gaps": [],
+        "recording_summary": {"observation_count": 1, "event_count": 0},
+        "retrieval": {"recording_inventory": True},
+    }
+
+    reply = summarize(context, "What animals are visible in this recording?")
+
+    assert confirmed_heading in reply.answer
+    assert possible_heading in reply.answer
+    assert reply.uncertainty
+
+
+def test_recording_inventory_keeps_positive_species_after_absence_clause() -> None:
+    moment = {
+        "observation_id": "obs-cat-after-empty-frame",
+        "behavior": "walking",
+        "activity_label": "Cat enters after an empty frame",
+        "evidence": (
+            "No animal is visible at 4 seconds; a black-and-white cat is visible "
+            "near the doorway at 8 seconds."
+        ),
+        "start_seconds": 4.0,
+        "end_seconds": 12.0,
+    }
+    context = {
+        "animals": [{"name": "Trail camera wildlife", "event_count": 0}],
+        "events": [],
+        "moments": [moment],
+        "data_gaps": [],
+        "recording_summary": {"observation_count": 1, "event_count": 0},
+        "retrieval": {"recording_inventory": True},
+    }
+
+    reply = summarize(context, "What animals are visible in this recording?")
+
+    assert "Cats: walking" in reply.answer
+    assert reply.cited_ids == ["obs-cat-after-empty-frame"]
+    assert reply.uncertainty == []
+
+
+def test_recording_inventory_tracks_each_species_polarity_per_clause() -> None:
+    moment = {
+        "observation_id": "obs-cat-present-bird-absent",
+        "behavior": "walking",
+        "activity_label": "Cat present; bird absent",
+        "evidence": "A cat is present; the bird is absent.",
+        "start_seconds": 4.0,
+        "end_seconds": 12.0,
+    }
+    context = {
+        "animals": [{"name": "Trail camera wildlife", "event_count": 0}],
+        "events": [],
+        "moments": [moment],
+        "data_gaps": [],
+        "recording_summary": {"observation_count": 1, "event_count": 0},
+        "retrieval": {"recording_inventory": True},
+    }
+
+    reply = summarize(context, "What animals are visible in this recording?")
+
+    assert "Cats: walking" in reply.answer
+    assert "Birds:" not in reply.answer
+    assert reply.uncertainty == []
+
+
+@pytest.mark.parametrize(
+    ("activity_label", "evidence"),
+    [
+        ("Cat walking continuously", "The cat walks without stopping."),
+        (
+            "Cat entering the frame",
+            "A cat appears from behind the tree and crosses the frame.",
+        ),
+        ("Cat resting", "A cat is visible and may be resting."),
+        ("Cat grooming", "A cat is visible and appears to be grooming."),
+    ],
+)
+def test_recording_inventory_keeps_confirmed_species_when_behavior_is_uncertain(
+    activity_label: str,
+    evidence: str,
+) -> None:
+    moment = {
+        "observation_id": "obs-cat-walking-continuously",
+        "behavior": "walking",
+        "activity_label": activity_label,
+        "evidence": evidence,
+        "start_seconds": 4.0,
+        "end_seconds": 12.0,
+    }
+    context = {
+        "animals": [{"name": "Trail camera wildlife", "event_count": 0}],
+        "events": [],
+        "moments": [moment],
+        "data_gaps": [],
+        "recording_summary": {"observation_count": 1, "event_count": 0},
+        "retrieval": {"recording_inventory": True},
+    }
+
+    reply = summarize(context, "What animals are visible in this recording?")
+
+    assert "Cats: walking" in reply.answer
+    assert reply.uncertainty == []
+
+
 def test_direct_bird_timing_keeps_all_documented_intervals_across_recording(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1106,7 +1621,8 @@ def test_model_failure_still_answers_from_the_record(tmp_path: Path) -> None:
 
     assert reply.mode == "deterministic_fallback"
     assert "R005_PACING_10M" in reply.answer
-    assert any("unavailable" in item for item in reply.uncertainty)
+    assert any("verified shift record" in item for item in reply.uncertainty)
+    assert all("RuntimeError" not in item for item in reply.uncertainty)
 
 
 def test_strict_chat_does_not_fall_back_locally(tmp_path: Path) -> None:
@@ -1187,7 +1703,8 @@ def test_model_failure_fallback_keeps_exact_video_scope(tmp_path: Path) -> None:
     assert [moment.source_path for moment in reply.moments] == ["fixtures/badger-secondary.mp4"]
     assert "obs-2" not in reply.answer
     assert "CAM-07A" not in reply.answer
-    assert any("unavailable" in item for item in reply.uncertainty)
+    assert any("verified shift record" in item for item in reply.uncertainty)
+    assert all("RuntimeError" not in item for item in reply.uncertainty)
 
 
 def test_time_query_prioritizes_structured_moment_over_embedding_gap(

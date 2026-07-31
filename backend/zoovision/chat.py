@@ -193,6 +193,7 @@ _COMMON_ANIMAL_TYPE_TERMS = {
     "badger",
     "bear",
     "bird",
+    "cat",
     "condor",
     "deer",
     "elephant",
@@ -502,6 +503,7 @@ class GroundedChat:
             or _asks_for_prohibited_guidance(current_question)
             or _asks_for_recording_counts(current_question)
             or bool(context.get("retrieval", {}).get("animal_timing_terms"))
+            or bool(context.get("retrieval", {}).get("recording_inventory"))
         ):
             answer = summarize(context, request.messages)
             return ChatReply(
@@ -532,8 +534,8 @@ class GroundedChat:
                     raise RuntimeError("live OpenAI chat is unavailable") from error
                 fallback = summarize(context, request.messages)
                 fallback.uncertainty.append(
-                    f"The language model was unavailable ({type(error).__name__}); "
-                    "this answer was assembled directly from the shift record."
+                    "This answer was assembled directly from the verified shift record "
+                    "because live synthesis did not return a valid grounded response."
                 )
                 return ChatReply(
                     answer=fallback.answer,
@@ -703,7 +705,7 @@ def retrieve_context(
     animal_timing_matches = [
         moment
         for moment in candidate_moments
-        if animal_timing_terms & _moment_descriptive_animal_terms(moment)
+        if animal_timing_terms & _moment_present_animal_terms(moment)
     ]
     animal_timing_matches.sort(
         key=lambda moment: (
@@ -758,7 +760,6 @@ def retrieve_context(
     if recording_inventory:
         relevant_moments = _select_recording_inventory_moments(
             ranked_moments,
-            animals,
             limit=20,
         )
     if animal_timing_terms:
@@ -981,6 +982,140 @@ def _summarize_animal_timing(context: dict[str, Any]) -> ChatAnswer:
     )
 
 
+def _plural_animal_label(term: str) -> str:
+    if term == "deer":
+        return "Deer"
+    if term.endswith("s"):
+        return term.capitalize()
+    return f"{term.capitalize()}s"
+
+
+def _summarize_recording_inventory(context: dict[str, Any]) -> ChatAnswer:
+    """Summarize a whole recording without over-weighting its opening minutes."""
+    moments = context.get("moments", [])
+    summary = context.get("recording_summary") or {}
+    if not moments:
+        return ChatAnswer(
+            answer="No structured animal observations match this recording.",
+            cited_ids=[],
+            uncertainty=["No matching record was found; this is not proof that nothing happened."],
+            moment_ids=[],
+        )
+
+    terms_by_id = {
+        moment["observation_id"]: _moment_present_animal_terms(moment) for moment in moments
+    }
+    uncertain_terms_by_id = {
+        moment["observation_id"]: _moment_uncertain_animal_terms(moment) for moment in moments
+    }
+    documented_terms = sorted(set().union(*terms_by_id.values()) & _COMMON_ANIMAL_TYPE_TERMS)
+    uncertain_terms = sorted(
+        (set().union(*uncertain_terms_by_id.values()) & _COMMON_ANIMAL_TYPE_TERMS)
+        - set(documented_terms)
+    )
+    lines = ["Across the selected recording, the structured observations document:"]
+    cited_ids: list[str] = []
+    moment_ids: list[str] = []
+
+    for term in documented_terms:
+        matches = [moment for moment in moments if term in terms_by_id[moment["observation_id"]]]
+        if not matches:
+            continue
+        matches.sort(key=lambda item: float(item.get("start_seconds") or 0))
+        behaviors = sorted(
+            {
+                str(moment.get("behavior") or "recorded activity").replace("_", " ")
+                for moment in matches
+                if str(moment.get("behavior") or "").lower() != "other"
+            }
+        )
+        activity_text = _natural_join(behaviors[:4]) if behaviors else "recorded activity"
+        start = float(matches[0].get("start_seconds") or 0)
+        last_start = float(matches[-1].get("start_seconds") or 0)
+        evidence_positions = f"at {_display_offset(start)}"
+        if matches[-1]["observation_id"] != matches[0]["observation_id"]:
+            evidence_positions += f" and {_display_offset(last_start)}"
+        lines.append(
+            f"- {_plural_animal_label(term)}: {activity_text}; representative observations "
+            f"include evidence {evidence_positions}."
+        )
+        for moment in matches:
+            if moment["observation_id"] not in cited_ids:
+                cited_ids.append(moment["observation_id"])
+        for moment in (matches[0], matches[-1]):
+            if moment["observation_id"] not in moment_ids and len(moment_ids) < 5:
+                moment_ids.append(moment["observation_id"])
+
+    for term in uncertain_terms:
+        matches = [
+            moment for moment in moments if term in uncertain_terms_by_id[moment["observation_id"]]
+        ]
+        matches.sort(key=lambda item: float(item.get("start_seconds") or 0))
+        behaviors = sorted(
+            {
+                str(moment.get("behavior") or "recorded activity").replace("_", " ")
+                for moment in matches
+                if str(moment.get("behavior") or "").lower() != "other"
+            }
+        )
+        activity_text = _natural_join(behaviors[:4]) if behaviors else "recorded activity"
+        positions = f"at {_display_offset(float(matches[0].get('start_seconds') or 0))}"
+        if matches[-1]["observation_id"] != matches[0]["observation_id"]:
+            positions += f" and {_display_offset(float(matches[-1].get('start_seconds') or 0))}"
+        lines.append(
+            f"- Possible {_plural_animal_label(term).lower()}: identity is uncertain; "
+            f"the recorded activity is {activity_text}, with evidence {positions}."
+        )
+        for moment in matches:
+            if moment["observation_id"] not in cited_ids:
+                cited_ids.append(moment["observation_id"])
+        for moment in (matches[0], matches[-1]):
+            if moment["observation_id"] not in moment_ids and len(moment_ids) < 5:
+                moment_ids.append(moment["observation_id"])
+
+    if not documented_terms and not uncertain_terms:
+        first = min(moments, key=lambda item: float(item.get("start_seconds") or 0))
+        last = max(moments, key=lambda item: float(item.get("end_seconds") or 0))
+        lines.append(
+            "- The structured text does not explicitly identify an animal. "
+            f"Representative observations occur at "
+            f"{_display_offset(float(first.get('start_seconds') or 0))}"
+            + (
+                f" and {_display_offset(float(last.get('start_seconds') or 0))}."
+                if last["observation_id"] != first["observation_id"]
+                else "."
+            )
+        )
+        cited_ids = [moment["observation_id"] for moment in moments]
+        moment_ids = [first["observation_id"]]
+        if last["observation_id"] != first["observation_id"]:
+            moment_ids.append(last["observation_id"])
+
+    if summary:
+        observation_count = int(summary.get("observation_count", len(moments)))
+        event_count = int(summary.get("event_count", 0))
+        lines.append(
+            f"The full recording contains {observation_count} structured "
+            f"observation{'s' if observation_count != 1 else ''} and {event_count} "
+            f"deterministic rule event{'s' if event_count != 1 else ''}."
+        )
+
+    return ChatAnswer(
+        answer="\n".join(lines),
+        cited_ids=cited_ids[:20],
+        uncertainty=(
+            ["Some animal identities are tentative in the structured observations."]
+            if uncertain_terms
+            else (
+                []
+                if documented_terms
+                else ["The available structured text does not identify an animal type."]
+            )
+        ),
+        moment_ids=moment_ids,
+    )
+
+
 def summarize(
     context: dict[str, Any],
     question: str | list[ChatMessage],
@@ -1068,6 +1203,9 @@ def summarize(
 
     if context.get("retrieval", {}).get("animal_timing_terms"):
         return _summarize_animal_timing(context)
+
+    if context.get("retrieval", {}).get("recording_inventory"):
+        return _summarize_recording_inventory(context)
 
     lines: list[str] = []
     cited: list[str] = []
@@ -1511,14 +1649,7 @@ def _undocumented_requested_profile_terms(
 
     documented: set[str] = set()
     for moment in moments:
-        documented.update(
-            _normalized_lexemes(
-                " ".join(
-                    str(moment.get(field) or "")
-                    for field in ("activity_label", "evidence", "behavior")
-                )
-            )
-        )
+        documented.update(_moment_present_animal_terms(moment))
     return requested - documented
 
 
@@ -1557,12 +1688,203 @@ def _requested_animal_timing_terms(question: str) -> set[str]:
     return _normalized_lexemes(question) & _COMMON_ANIMAL_TYPE_TERMS
 
 
-def _moment_descriptive_animal_terms(moment: dict[str, Any]) -> set[str]:
-    return _normalized_lexemes(
-        " ".join(
-            str(moment.get(field) or "") for field in ("activity_label", "evidence", "behavior")
-        )
+def _animal_mention_is_negated(tokens: list[str], index: int) -> bool:
+    scope_fillers = {
+        "a",
+        "an",
+        "and",
+        "any",
+        "as",
+        "clearly",
+        "confirmed",
+        "either",
+        "evidence",
+        "identifiable",
+        "known",
+        "nor",
+        "of",
+        "or",
+        "sign",
+        "signs",
+        "single",
+        "sighting",
+        "sightings",
+        "the",
+    }
+    for negator_index in range(max(0, index - 12), index):
+        if tokens[negator_index] not in {"neither", "no", "not", "without", "zero"}:
+            continue
+        between = tokens[negator_index + 1 : index]
+        if all(
+            token in scope_fillers or bool(_normalized_lexemes(token) & _COMMON_ANIMAL_TYPE_TERMS)
+            for token in between
+        ):
+            return True
+
+    if any(token in {"absent", "missing"} for token in tokens[max(0, index - 2) : index]):
+        return True
+
+    following = tokens[index + 1 : index + 9]
+    if any(token in {"absent", "missing"} for token in following[:4]):
+        return True
+
+    absence_markers = {
+        "detected",
+        "found",
+        "frame",
+        "observed",
+        "present",
+        "seen",
+        "there",
+        "view",
+        "visible",
+    }
+    for negator_index, token in enumerate(following[:5]):
+        if token in {"not", "never"} and any(
+            marker in absence_markers for marker in following[negator_index + 1 :]
+        ):
+            return True
+        if (
+            token == "no"
+            and negator_index + 1 < len(following)
+            and following[negator_index + 1] == "longer"
+            and any(marker in absence_markers for marker in following[negator_index + 2 :])
+        ):
+            return True
+    return False
+
+
+def _animal_mention_is_environment_label(tokens: list[str], index: int) -> bool:
+    if index + 1 >= len(tokens):
+        return False
+    return tokens[index + 1] in {
+        "bath",
+        "camera",
+        "door",
+        "enclosure",
+        "feed",
+        "feeder",
+        "flap",
+        "food",
+        "habitat",
+        "house",
+        "nest",
+        "print",
+        "prints",
+        "shelter",
+        "sign",
+        "table",
+        "track",
+        "tracks",
+    }
+
+
+def _animal_mention_is_uncertain(tokens: list[str], index: int) -> bool:
+    prior_animal_indexes = [
+        token_index
+        for token_index, token in enumerate(tokens[:index])
+        if _normalized_lexemes(token) & _COMMON_ANIMAL_TYPE_TERMS
+    ]
+    scope_start = prior_animal_indexes[-1] + 1 if prior_animal_indexes else 0
+    preceding = tokens[max(scope_start, index - 7) : index]
+    following = tokens[index + 1 : index + 10]
+    if "confirmed" in preceding[-3:]:
+        return False
+    direct_identity_markers = {
+        "apparent",
+        "apparently",
+        "likely",
+        "perhaps",
+        "possible",
+        "possibly",
+        "probably",
+        "suspected",
+        "tentative",
+        "tentatively",
+    }
+    if any(marker in direct_identity_markers for marker in preceding[-5:]):
+        return True
+    if "cannot" in preceding and "confirm" in preceding:
+        return True
+    if "can" in preceding and "not" in preceding and "confirm" in preceding:
+        return True
+    for marker in ("could", "may", "might"):
+        if marker in preceding:
+            marker_index = preceding.index(marker)
+            if "be" in preceding[marker_index + 1 :]:
+                return True
+    if "appears" in preceding:
+        marker_index = preceding.index("appears")
+        if {"be", "to"}.issubset(preceding[marker_index + 1 :]):
+            return True
+    if any(marker in preceding for marker in ("look", "looks")) and "like" in preceding:
+        return True
+    if any(marker in preceding for marker in ("seem", "seems")):
+        return True
+    if any(marker in preceding for marker in ("resemble", "resembles", "resembling")):
+        return True
+    if following[:1] == ["like"]:
+        return True
+
+    presence_markers = {"detected", "observed", "present", "seen", "there", "visible"}
+    for marker in ("could", "may", "might"):
+        if marker in following[:4]:
+            marker_index = following.index(marker)
+            if any(presence in presence_markers for presence in following[marker_index + 1 :]):
+                return True
+
+    identity_markers = {"identification", "identity", "species", "type"}
+    uncertainty_markers = {"uncertain", "unclear", "unconfirmed", "unknown"}
+    nearby = preceding[-4:] + following[:7]
+    return bool(identity_markers.intersection(nearby) and uncertainty_markers.intersection(nearby))
+
+
+def _moment_animal_terms_by_certainty(
+    moment: dict[str, Any],
+) -> tuple[set[str], set[str]]:
+    text = ". ".join(
+        str(moment.get(field) or "") for field in ("activity_label", "evidence", "behavior")
     )
+    confirmed: set[str] = set()
+    uncertain: set[str] = set()
+    clauses = re.split(
+        r"(?:[.;:\n]+|\b(?:although|but|except|however)\b)",
+        text,
+        flags=re.IGNORECASE,
+    )
+    for clause in clauses:
+        tokens = _TOKEN_PATTERN.findall(clause.lower())
+        terms = {
+            term
+            for token in tokens
+            for term in _normalized_lexemes(token) & _COMMON_ANIMAL_TYPE_TERMS
+        }
+        for term in terms:
+            mention_indexes = [
+                index for index, token in enumerate(tokens) if term in _normalized_lexemes(token)
+            ]
+            valid_mentions = [
+                index
+                for index in mention_indexes
+                if not _animal_mention_is_environment_label(tokens, index)
+                and not _animal_mention_is_negated(tokens, index)
+            ]
+            if any(not _animal_mention_is_uncertain(tokens, index) for index in valid_mentions):
+                confirmed.add(term)
+                uncertain.discard(term)
+            elif valid_mentions and term not in confirmed:
+                uncertain.add(term)
+    return confirmed, uncertain
+
+
+def _moment_present_animal_terms(moment: dict[str, Any]) -> set[str]:
+    """Return animal types the structured text presents with confirmed identity."""
+    return _moment_animal_terms_by_certainty(moment)[0]
+
+
+def _moment_uncertain_animal_terms(moment: dict[str, Any]) -> set[str]:
+    """Return tentatively identified animal types without promoting them to facts."""
+    return _moment_animal_terms_by_certainty(moment)[1]
 
 
 def _asks_for_recording_inventory(question: str) -> bool:
@@ -1588,16 +1910,15 @@ def _asks_for_recording_inventory(question: str) -> bool:
 
 def _select_recording_inventory_moments(
     ranked_moments: list[tuple[int, dict[str, Any]]],
-    animals: list[dict[str, Any]],
     *,
     limit: int,
 ) -> list[dict[str, Any]]:
-    """Represent named animal types and the full timeline within the context cap.
+    """Represent documented animal types and the full timeline within the context cap.
 
     Broad inventory language gives most moments the same lexical score. Taking
     that ranking's first records therefore over-represents the start of a long
-    video. Reserve evidence for animal terms grounded in the selected profile,
-    then fill the remaining slots evenly across the recording.
+    video. Reserve evidence for animal terms actually named in the structured
+    observations, then fill the remaining slots evenly across the recording.
     """
     if limit <= 0 or not ranked_moments:
         return []
@@ -1614,16 +1935,9 @@ def _select_recording_inventory_moments(
     if len(chronological) <= limit:
         return chronological
 
-    profile_terms: set[str] = set()
-    for animal in animals:
-        profile_terms.update(_tokens(f"{animal.get('name', '')} {animal.get('species', '')}"))
-    profile_terms -= _GENERIC_ANIMAL_PROFILE_TERMS
-
     descriptive_tokens = {
-        moment["observation_id"]: _tokens(
-            " ".join(
-                str(moment.get(field) or "") for field in ("activity_label", "evidence", "behavior")
-            )
+        moment["observation_id"]: (
+            _moment_present_animal_terms(moment) | _moment_uncertain_animal_terms(moment)
         )
         for moment in chronological
     }
@@ -1633,7 +1947,7 @@ def _select_recording_inventory_moments(
             for moment in chronological
             if term in descriptive_tokens[moment["observation_id"]]
         ]
-        for term in profile_terms
+        for term in _COMMON_ANIMAL_TYPE_TERMS
     }
 
     selected: dict[str, dict[str, Any]] = {}
@@ -1644,13 +1958,13 @@ def _select_recording_inventory_moments(
         representative = max(
             matches,
             key=lambda moment: (
-                len(profile_terms & descriptive_tokens[moment["observation_id"]]),
                 score_by_id[moment["observation_id"]],
+                float(moment.get("end_seconds") or 0) - float(moment.get("start_seconds") or 0),
                 -float(moment.get("start_seconds") or 0),
             ),
         )
         selected[representative["observation_id"]] = representative
-        if len(selected) >= min(limit, 6):
+        if len(selected) >= limit:
             break
 
     remaining_slots = limit - len(selected)
