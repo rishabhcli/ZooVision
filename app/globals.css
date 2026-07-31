@@ -231,6 +231,10 @@ textarea {
   letter-spacing: 0.12em;
 }
 
+.mobile-chat-launch {
+  display: none;
+}
+
 .collapsed-chat-line {
   width: 1px;
   height: 110px;

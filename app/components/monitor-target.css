@@ -2159,7 +2159,7 @@
     display: grid;
     min-width: 0;
     flex: 1;
-    grid-template-columns: repeat(4, minmax(0, 1fr));
+    grid-template-columns: repeat(5, minmax(0, 1fr));
   }
 
   .evidence-layout:has(.monitor-page) .route-tabs button {
@@ -2174,14 +2174,16 @@
     padding-left: 0;
   }
 
+  .evidence-layout:has(.monitor-page) .mobile-chat-launch {
+    display: flex;
+  }
+
+  .evidence-layout:has(.monitor-page) .mobile-chat-launch[data-active="true"] {
+    color: var(--monitor-lime);
+  }
+
   .evidence-layout:has(.monitor-page) .chat-rail[data-collapsed="true"] {
-    top: auto;
-    right: 12px;
-    bottom: max(12px, env(safe-area-inset-bottom));
-    left: auto;
-    width: 50px !important;
-    height: 50px;
-    border-radius: 50%;
+    display: none;
   }
 
   .evidence-layout:has(.monitor-page)

@@ -548,6 +548,7 @@ export function WorkspaceShell({
         </AnimatePresence>
 
         <motion.aside
+          id="zoovision-assistant"
           className="chat-rail"
           animate={{ width: chatCollapsed ? 56 : isEvidenceLayout ? 220 : 326 }}
           data-collapsed={chatCollapsed}
@@ -790,6 +791,23 @@ export function WorkspaceShell({
                   </button>
                 );
               })}
+              <button
+                type="button"
+                className="mobile-chat-launch"
+                data-active={!chatCollapsed}
+                aria-label={chatCollapsed ? "Open AI assistant" : "Close AI assistant"}
+                aria-controls="zoovision-assistant"
+                aria-expanded={!chatCollapsed}
+                title={chatCollapsed ? "Open AI assistant" : "Close AI assistant"}
+                onClick={() => setChatCollapsed((current) => !current)}
+              >
+                <MessageSquareText
+                  className="route-tab-icon"
+                  size={16}
+                  aria-hidden="true"
+                />
+                <span>AI assistant</span>
+              </button>
             </nav>
 
             <div className="topbar-right">
