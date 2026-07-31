@@ -42,6 +42,8 @@ data/clips/
 data/analysis/
 data/*.db
 data/*.db-*
+/backend/data/*.db
+/backend/data/*.db-*
 artifacts/
 
 # Tooling
