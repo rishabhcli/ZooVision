@@ -4,12 +4,10 @@ from datetime import datetime, time, timedelta
 from pathlib import Path
 
 from .baselines import calculate_baseline
-from .detection import DetectorConfig, detections_for_chunk
 from .domain import (
     AckState,
     Behavior,
     DataGap,
-    Detection,
     EventRecord,
     EvidenceKind,
     Observation,
@@ -155,14 +153,6 @@ def seed_demo(store: SQLiteStore, settings: Settings, *, now: datetime | None = 
             content_sha256=_media_fingerprint(path),
             status="ready" if path.exists() else "fixture_missing",
         )
-        store.save_detections(
-            _fixture_detections(
-                path,
-                chunk_id,
-                offset,
-                detector_config=settings.detector_config,
-            )
-        )
 
     observations = [
         Observation(
@@ -293,39 +283,6 @@ def seed_demo(store: SQLiteStore, settings: Settings, *, now: datetime | None = 
             detail="The fixture scenario records an 18-minute coverage gap.",
         )
     )
-
-
-#: Seeding runs at first console start, so fixture motion is measured over a
-#: bounded window rather than a whole 15-minute chunk.
-FIXTURE_DETECTION_SECONDS = 120.0
-
-
-def _fixture_detections(
-    path: Path,
-    chunk_id: str,
-    offset: float,
-    *,
-    detector_config: DetectorConfig,
-) -> list[Detection]:
-    """Measure real object and motion regions for a fixture chunk.
-
-    The observations seeded alongside these are synthetic scenarios, but the
-    boxes are measured from the actual licensed footage, so the console's
-    overlay always reflects real pixels. A missing or unreadable fixture yields
-    no boxes rather than invented ones.
-    """
-    if not path.exists():
-        return []
-    try:
-        return detections_for_chunk(
-            path,
-            chunk_id=chunk_id,
-            start_seconds=offset,
-            duration_seconds=FIXTURE_DETECTION_SECONDS,
-            config=detector_config,
-        )
-    except (ValueError, OSError):
-        return []
 
 
 def _media_fingerprint(path: Path) -> str:

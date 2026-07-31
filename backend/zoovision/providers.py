@@ -23,6 +23,14 @@ exiting the frame, and vocalizing when the audio clearly supports it. Also
 record the constrained welfare-relevant behaviors in the schema when they are
 visibly supported.
 
+Inspect the entire frame, including edges and background, rather than following
+only the most prominent animal. For each observation, state the visible animal
+type, the number visibly present when it can be counted, and what each visible
+animal or group is doing. Split the interval when the visible count changes or
+when different animals begin different activities. Make `activity_label` a
+concise keeper-readable summary such as "Three squirrels feeding on scattered
+seed" rather than a generic label such as "activity" or "movement."
+
 Use one observation per continuous activity. Split an observation whenever the
 activity changes, and merge adjacent intervals only when the same activity
 clearly continues. Prefer the specific behavior enum. Use `other` only when a
@@ -145,7 +153,8 @@ def normalize_batch(
 def _is_retryable_provider_error(error: BaseException) -> bool:
     if isinstance(error, (OSError, TimeoutError)):
         return True
-    return isinstance(error, ApiError) and int(getattr(error, "status_code", 0) or 0) >= 500
+    status = int(getattr(error, "status_code", 0) or 0)
+    return isinstance(error, ApiError) and (status == 429 or status >= 500)
 
 
 class TwelveLabsAnalyzer:
@@ -160,7 +169,7 @@ class TwelveLabsAnalyzer:
         self.client = client or TwelveLabs(api_key=api_key)
 
     @retry(
-        stop=stop_after_attempt(2),
+        stop=stop_after_attempt(3),
         wait=wait_exponential(multiplier=0.5, min=0.5, max=2),
         retry=retry_if_exception(_is_retryable_provider_error),
         reraise=True,

@@ -2,8 +2,8 @@
 
 The console ships with pinned fixtures, but the product has to accept whatever
 footage a facility actually has. This module owns that path: probe a real
-container, split it into analyzable segments, measure motion regions, ask the
-video provider for behavior semantics, and hand each segment to the existing
+container, split it into analyzable segments, ask TwelveLabs for structured
+behavior semantics, and hand each segment to the existing
 deterministic :class:`~zoovision.workflow.SegmentWorkflow`.
 
 Nothing here assigns severity. Segments route through the same triage rules and
@@ -24,24 +24,13 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from .detection import (
-    DetectorConfig,
-    VideoProbe,
-    detections_for_chunk,
-    probe_video,
-    run_media_tool,
-)
+from .detection import VideoProbe, probe_video, run_media_tool
 from .domain import (
     BaselineState,
-    Behavior,
-    Detection,
-    DetectionSource,
-    EvidenceKind,
-    Observation,
     ShiftMode,
 )
 from .ids import stable_id
-from .providers import ProviderAnalysis, VideoChunkContext
+from .providers import VideoChunkContext
 from .store import SQLiteStore
 from .workflow import SegmentWorkflow, SegmentWorkflowInput
 
@@ -63,8 +52,6 @@ class IngestRequest(BaseModel):
     shift_mode: ShiftMode = ShiftMode.NIGHT
     segment_seconds: int = Field(default=120, ge=10, le=900)
     max_segments: int = Field(default=12, ge=1, le=240)
-    use_provider: bool = True
-
     @model_validator(mode="after")
     def validate_start(self) -> IngestRequest:
         if self.start_ts.tzinfo is None:
@@ -105,155 +92,6 @@ class IngestJob(BaseModel):
     segments: list[IngestSegmentResult] = Field(default_factory=list)
     probe: VideoProbe | None = None
     error: str | None = None
-
-
-class MotionEvidenceAnalyzer:
-    """Derives observations from measured motion, with no model in the loop.
-
-    This is the analyzer of record when no video provider is configured, and it
-    runs alongside the provider when one is. It can only state what the pixels
-    support: that motion regions were present, or that none were measured for a
-    sustained stretch. Behavior naming stops at ``OTHER`` and ``INACTIVITY``
-    because motion alone cannot distinguish pacing from foraging.
-    """
-
-    provider = "zoovision-motion"
-    provider_model = "mog2-v1"
-
-    def __init__(
-        self,
-        detections: list[Detection],
-        *,
-        sample_fps: float = 2.0,
-        min_inactivity_minutes: float = 2.0,
-        min_activity_seconds: float = 4.0,
-        merge_gap_seconds: float = 2.0,
-    ):
-        self.detections = detections
-        self.sample_fps = sample_fps
-        self.min_inactivity_minutes = min_inactivity_minutes
-        self.min_activity_seconds = min_activity_seconds
-        self.merge_gap_seconds = merge_gap_seconds
-
-    def safe_analyze_file(self, path: str | Path, chunk: VideoChunkContext) -> ProviderAnalysis:
-        del path
-        return self.analyze(chunk)
-
-    def safe_analyze_url(self, video_url: str, chunk: VideoChunkContext) -> ProviderAnalysis:
-        del video_url
-        return self.analyze(chunk)
-
-    def analyze(self, chunk: VideoChunkContext) -> ProviderAnalysis:
-        spans = self._motion_spans(chunk.duration_seconds)
-        observations: list[Observation] = []
-        for kind, start, end in spans:
-            if end <= start:
-                continue
-            behavior = Behavior.INACTIVITY if kind == "still" else Behavior.OTHER
-            tracks = {d.track_id for d in self.detections if start <= d.relative_seconds <= end}
-            if kind == "still":
-                evidence = (
-                    f"No motion region was measured for {(end - start) / 60:.1f} minutes "
-                    "of this segment."
-                )
-            else:
-                evidence = (
-                    f"Motion regions were measured for {end - start:.0f} seconds "
-                    f"across {len(tracks)} track(s). Motion alone does not identify "
-                    "the behavior."
-                )
-            observations.append(
-                Observation(
-                    observation_id=stable_id(
-                        "obs",
-                        chunk.chunk_id,
-                        self.provider,
-                        kind,
-                        round(start, 2),
-                    ),
-                    animal_id=chunk.animal_id,
-                    enclosure_id=chunk.enclosure_id,
-                    chunk_id=chunk.chunk_id,
-                    behavior=behavior,
-                    start_ts=chunk.start_ts + timedelta(seconds=start),
-                    end_ts=chunk.start_ts + timedelta(seconds=end),
-                    confidence=0.6,
-                    evidence=evidence,
-                    provider=self.provider,
-                    provider_model=self.provider_model,
-                    evidence_kind=EvidenceKind.MEASURED_MOTION,
-                )
-            )
-        return ProviderAnalysis(observations=observations, data_gap=None)
-
-    def _motion_spans(self, duration_seconds: float) -> list[tuple[str, float, float]]:
-        step = 1.0 / self.sample_fps
-        active = sorted({round(d.relative_seconds, 3) for d in self.detections})
-        spans: list[tuple[str, float, float]] = []
-        cursor = 0.0
-        for moment in active:
-            if moment - cursor >= self.min_inactivity_minutes * 60:
-                spans.append(("still", cursor, moment))
-            cursor = max(cursor, moment + step)
-        if duration_seconds - cursor >= self.min_inactivity_minutes * 60:
-            spans.append(("still", cursor, duration_seconds))
-        if active:
-            # A body is routinely missed for a few sampled frames while it pauses
-            # or blends into the background. Merging across a real duration rather
-            # than a multiple of the sampling step keeps one continuous movement
-            # as one span; splitting on the step fragments it into slivers that
-            # the activity floor then discards, reporting no motion at all.
-            merge_gap = max(self.merge_gap_seconds, step * 3)
-            run_start = active[0]
-            previous = active[0]
-            for moment in active[1:]:
-                if moment - previous > merge_gap:
-                    spans.append(("motion", run_start, previous + step))
-                    run_start = moment
-                previous = moment
-            spans.append(("motion", run_start, min(previous + step, duration_seconds)))
-        return [
-            (kind, start, end)
-            for kind, start, end in spans
-            if kind == "still" or end - start >= self.min_activity_seconds
-        ]
-
-
-class CompositeAnalyzer:
-    """Provider semantics plus measured motion, merged into one analysis.
-
-    A provider failure still yields the motion track and a recorded
-    :class:`~zoovision.domain.DataGap`, so reduced coverage is visible rather
-    than silently converted into a normal result.
-    """
-
-    def __init__(self, primary: Any, motion: MotionEvidenceAnalyzer):
-        self.primary = primary
-        self.motion = motion
-
-    def safe_analyze_file(self, path: str | Path, chunk: VideoChunkContext) -> ProviderAnalysis:
-        return self._merge(self.primary.safe_analyze_file(path, chunk), chunk)
-
-    def safe_analyze_url(self, video_url: str, chunk: VideoChunkContext) -> ProviderAnalysis:
-        return self._merge(self.primary.safe_analyze_url(video_url, chunk), chunk)
-
-    def _merge(
-        self,
-        provider_analysis: ProviderAnalysis,
-        chunk: VideoChunkContext,
-    ) -> ProviderAnalysis:
-        motion_analysis = self.motion.analyze(chunk)
-        seen = {item.observation_id for item in provider_analysis.observations}
-        merged = list(provider_analysis.observations)
-        for observation in motion_analysis.observations:
-            if observation.observation_id not in seen:
-                merged.append(observation)
-        merged.sort(key=lambda item: (item.start_ts, item.observation_id))
-        return ProviderAnalysis(
-            observations=merged,
-            data_gap=provider_analysis.data_gap,
-            uncertainty=provider_analysis.uncertainty,
-        )
 
 
 def segment_video(
@@ -320,7 +158,6 @@ class VideoIngestService:
         store: SQLiteStore,
         raw_root: Path,
         analyzer_factory: Callable[[], Any] | None = None,
-        detector_config: DetectorConfig | None = None,
         graph_writer: Any | None = None,
         archive: Any | None = None,
         embedder: Any | None = None,
@@ -335,7 +172,6 @@ class VideoIngestService:
         self.store = store
         self.raw_root = Path(raw_root)
         self.analyzer_factory = analyzer_factory
-        self.detector_config = detector_config or DetectorConfig()
         self.graph_writer = graph_writer
         self.archive = archive
         self.embedder = embedder
@@ -391,7 +227,7 @@ class VideoIngestService:
             enclosure_id=request.enclosure_id,
             created_at=moment,
             updated_at=moment,
-            analyzer="provider+motion" if request.use_provider else "motion",
+            analyzer="twelvelabs",
         )
 
     def _run_guarded(self, job_id: str, request: IngestRequest) -> IngestJob:
@@ -411,6 +247,8 @@ class VideoIngestService:
         job = self.status(job_id)
         if job is None:
             raise RuntimeError("ingest job disappeared before it started")
+        if self.analyzer_factory is None:
+            raise RuntimeError("TwelveLabs is required for video ingestion")
         source = self.resolve_source(request.source_name)
         job.probe = probe_video(source)
         job.status = "running"
@@ -455,14 +293,7 @@ class VideoIngestService:
     ) -> IngestSegmentResult:
         chunk_id = stable_id("chk", request.source_name, request.animal_id, index)
         start_ts = request.start_ts + timedelta(seconds=offset)
-        detections = detections_for_chunk(
-            piece,
-            chunk_id=chunk_id,
-            config=self.detector_config,
-        )
-        analyzer = self._analyzer_for(detections, request)
-        # Motion regions are measured on the full-resolution segment; only the
-        # copy offered to the provider is shrunk to fit its payload ceiling.
+        analyzer = self.analyzer_factory()
         analyzable = _provider_ready(piece)
         workflow = SegmentWorkflow(
             analyzer=analyzer,
@@ -499,9 +330,6 @@ class VideoIngestService:
                 webhook_configured=self.webhook_configured,
             )
         )
-        # Detections are saved after the workflow, because the chunk row they
-        # reference is created during its ingest node.
-        self.store.save_detections(detections)
         return IngestSegmentResult(
             index=index,
             chunk_id=chunk_id,
@@ -509,24 +337,11 @@ class VideoIngestService:
             duration_seconds=duration,
             route=outcome.route,
             observation_count=outcome.observation_count,
-            detection_count=len(detections),
+            detection_count=0,
             event_ids=outcome.event_ids,
             rules_fired=outcome.rules_fired,
             data_gap_id=outcome.data_gap_id,
         )
-
-    def _analyzer_for(self, detections: list[Detection], request: IngestRequest) -> Any:
-        motion = MotionEvidenceAnalyzer(
-            [
-                detection
-                for detection in detections
-                if detection.source is DetectionSource.MOTION_REGION
-            ],
-            sample_fps=self.detector_config.sample_fps,
-        )
-        if not request.use_provider or self.analyzer_factory is None:
-            return motion
-        return CompositeAnalyzer(primary=self.analyzer_factory(), motion=motion)
 
     def _persist(self, job: IngestJob) -> None:
         with self._lock:

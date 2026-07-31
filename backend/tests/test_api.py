@@ -1,6 +1,6 @@
 import pytest
 from fastapi.testclient import TestClient
-from zoovision.api import create_app
+from zoovision.api import IngestStartRequest, create_app
 from zoovision.settings import Settings
 from zoovision.store import SQLiteStore
 
@@ -276,7 +276,7 @@ def test_video_track_places_events_on_the_media_timeline(client):
         assert detection["video_seconds"] >= 0
         assert 0 <= detection["box"]["x"] <= 1
         assert 0 <= detection["box"]["y"] <= 1
-        assert detection["source"] in {"motion_region", "yolov8_object"}
+        assert detection["source"] == "motion_region"
 
 
 def test_video_track_404s_for_an_unknown_source(client):
@@ -294,7 +294,7 @@ def test_event_detail_includes_detections_for_its_source_chunks(client):
 
     assert "detections" in body
     for detection in body["detections"]:
-        assert detection["source"] in {"motion_region", "yolov8_object"}
+        assert detection["source"] == "motion_region"
         assert 0 <= detection["box"]["width"] <= 1
 
 
@@ -393,46 +393,7 @@ def test_ingest_job_404s_when_unknown(client):
     assert client.get("/api/ingest/jobs").json() == {"jobs": []}
 
 
-def test_production_ingest_cannot_disable_live_provider(tmp_path):
-    settings = Settings(
-        ZOOVISION_ENV="production",
-        ZOOVISION_STORAGE_ROOT=tmp_path,
-        ZOOVISION_FIXTURE_MODE=False,
-        OPENAI_API_KEY="test-openai",
-        TWELVELABS_API_KEY="test-twelve",
-        NEO4J_URI="neo4j+s://example.databases.neo4j.io",
-        NEO4J_USERNAME="test-user",
-        NEO4J_PASSWORD="test-password",
-        ZOOVISION_AWS_STORAGE_ENABLED=True,
-        ZOOVISION_BEDROCK_EMBEDDING_ENABLED=True,
-        ZOOVISION_OPENAI_ENRICHMENT_ENABLED=True,
-        ZOOVISION_S3_RAW_BUCKET="raw",
-        ZOOVISION_S3_ANALYSIS_BUCKET="analysis",
-        ZOOVISION_S3_CLIPS_BUCKET="clips",
-        ZOOVISION_PROXY_SHARED_SECRET="p" * 32,
-        _env_file=None,
-    )
-    store = SQLiteStore(tmp_path / "zoovision.db")
-    production_client = TestClient(
-        create_app(
-            settings,
-            store,
-            graph_reader=FakeGraphReader(),
-            graph_writer=FakeGraphWriter(),
-        )
-    )
+def test_production_ingest_contract_has_no_motion_only_override():
+    properties = IngestStartRequest.model_json_schema()["properties"]
 
-    response = production_client.post(
-        "/api/ingest/jobs",
-        headers={"x-zoovision-proxy-secret": "p" * 32},
-        json={
-            "source_name": "clip.mp4",
-            "animal_id": "animal-live",
-            "animal_name": "Live animal",
-            "enclosure_id": "ENC-LIVE",
-            "use_provider": False,
-        },
-    )
-
-    assert response.status_code == 422
-    assert response.json()["detail"] == "production ingest requires live provider analysis"
+    assert "use_provider" not in properties

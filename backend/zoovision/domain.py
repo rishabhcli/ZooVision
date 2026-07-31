@@ -79,13 +79,11 @@ class ReviewState(StrEnum):
 class DetectionSource(StrEnum):
     """Provenance of a spatial box.
 
-    ``MOTION_REGION`` marks pixels that changed against a learned fixed-camera
-    background. ``YOLOV8_OBJECT`` is a model-produced object candidate. Neither
-    source may be presented as animal identity, behavior, or diagnosis.
+    ``MOTION_REGION`` is retained for legacy fixture records only. Spatial boxes
+    are not part of the uploaded-video analysis path.
     """
 
     MOTION_REGION = "motion_region"
-    YOLOV8_OBJECT = "yolov8_object"
 
 
 class BoundingBox(BaseModel):

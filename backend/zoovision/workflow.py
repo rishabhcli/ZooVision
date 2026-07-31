@@ -277,7 +277,7 @@ class SegmentWorkflow:
             analysis = self.analyzer.safe_analyze_file(request.local_video_path, chunk)
         state["analysis"] = analysis
         if analysis.data_gap is None:
-            self.store.clear_provider_gaps(chunk.chunk_id)
+            self.store.replace_chunk_analysis(chunk.chunk_id)
         if self.archive is not None:
             state["analysis_archive_uri"] = self.archive.upload_json(
                 AssetKind.ANALYSIS,

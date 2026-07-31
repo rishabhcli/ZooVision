@@ -182,7 +182,7 @@ class SQLiteStore:
 
     @staticmethod
     def _migrate_detection_provenance(connection: sqlite3.Connection) -> None:
-        """Add YOLO provenance columns to databases created before object detection."""
+        """Add provenance columns to databases created before labeled detections."""
         columns = {row["name"] for row in connection.execute("PRAGMA table_info(detections)")}
         for name, sql_type in (
             ("label", "TEXT"),
@@ -546,6 +546,36 @@ class SQLiteStore:
                 (chunk_id,),
             )
             return cursor.rowcount
+
+    def replace_chunk_analysis(self, chunk_id: str) -> None:
+        """Remove superseded derived evidence before a successful reanalysis.
+
+        Stable chunk IDs make reruns idempotent, but provider observations can
+        change when a prompt or model improves. Replacing the derived rows keeps
+        stale fallback observations, detections, and their rule events from
+        surviving alongside the new provider result.
+        """
+        with self.connect() as connection:
+            event_ids = [
+                row["event_id"]
+                for row in connection.execute(
+                    """
+                    SELECT DISTINCT es.event_id
+                    FROM event_sources es
+                    JOIN observations o ON o.observation_id = es.observation_id
+                    WHERE o.chunk_id = ?
+                    """,
+                    (chunk_id,),
+                )
+            ]
+            for event_id in event_ids:
+                connection.execute("DELETE FROM outcomes WHERE event_id = ?", (event_id,))
+                connection.execute("DELETE FROM alerts WHERE event_id = ?", (event_id,))
+                connection.execute("DELETE FROM event_narratives WHERE event_id = ?", (event_id,))
+                connection.execute("DELETE FROM events WHERE event_id = ?", (event_id,))
+            connection.execute("DELETE FROM observations WHERE chunk_id = ?", (chunk_id,))
+            connection.execute("DELETE FROM detections WHERE chunk_id = ?", (chunk_id,))
+            connection.execute("DELETE FROM data_gaps WHERE chunk_id = ?", (chunk_id,))
 
     def save_alert(
         self,

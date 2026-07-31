@@ -16,7 +16,6 @@ import {
   Moon,
   Pause,
   Play,
-  ScanLine,
   ShieldCheck,
   SkipBack,
   SkipForward,
@@ -35,13 +34,12 @@ import {
 } from "react";
 import {
   api,
-  type VideoDetection,
   type VideoSource,
   type VideoTrack,
 } from "../lib/api";
 
 const PLAYBACK_SPEEDS = [0.5, 1, 2] as const;
-const MOTION_BINS = 72;
+const COVERAGE_BINS = 72;
 const POSTER_BY_SOURCE_PATH: Record<string, string> = {
   "uploads/badger-provider-probe-30s.mp4":
     "/camera-posters/source-badger-provider-probe-30s.jpg",
@@ -104,12 +102,6 @@ function confidenceSummary(value?: number | null) {
   return `Limited supporting evidence (${percent}%); verify the clip`;
 }
 
-function trackRole(index: number) {
-  if (index === 0) return "Primary subject";
-  if (index === 1) return "Companion subject";
-  return `Context track ${String(index - 1).padStart(2, "0")}`;
-}
-
 function formatDuration(seconds: number) {
   const safeSeconds = Math.max(0, Math.round(seconds));
   const hours = Math.floor(safeSeconds / 3600);
@@ -143,7 +135,6 @@ function formatWallClock(start: string, offsetSeconds: number) {
 function maximumTrackSeconds(track: VideoTrack) {
   return Math.max(
     1,
-    ...track.detections.map((item) => item.video_seconds),
     ...track.events.map((item) => item.end_seconds),
     ...track.observations.map((item) => item.end_seconds),
     ...track.chunks.map((chunk) => {
@@ -158,28 +149,7 @@ function maximumTrackSeconds(track: VideoTrack) {
   );
 }
 
-function preferredDetections(track: VideoTrack) {
-  const yolo = track.detections.filter(
-    (item) => item.source === "yolov8_object",
-  );
-  return yolo.length > 0
-    ? yolo
-    : track.detections.filter((item) => item.source === "motion_region");
-}
-
 function initialEvidenceSeconds(track: VideoTrack) {
-  const detections = preferredDetections(track);
-  const visibleDetection = detections.reduce<VideoDetection | null>(
-    (largest, detection) => {
-    if (!largest) return detection;
-    const area = detection.box.width * detection.box.height;
-    const largestArea = largest.box.width * largest.box.height;
-    return area > largestArea ? detection : largest;
-    },
-    null,
-  );
-  if (visibleDetection) return visibleDetection.video_seconds;
-
   const event = track.events[0];
   if (event) {
     return event.start_seconds + Math.min(5, Math.max(0, event.end_seconds - event.start_seconds) / 2);
@@ -191,7 +161,7 @@ function initialEvidenceSeconds(track: VideoTrack) {
       Math.min(5, Math.max(0, observation.end_seconds - observation.start_seconds) / 2)
     );
   }
-  return detections[0]?.video_seconds ?? 0;
+  return 0;
 }
 
 function nearestByStart<T extends { start_seconds: number }>(
@@ -247,22 +217,23 @@ function EvidenceTimeline({
   selectedEventId?: string;
   track: VideoTrack;
 }) {
-  const detections = useMemo(() => preferredDetections(track), [track]);
-  const usesYolo = detections.some(
-    (detection) => detection.source === "yolov8_object",
-  );
   const bins = useMemo(() => {
-    const next = Array.from({ length: MOTION_BINS }, () => 0);
-    for (const detection of detections) {
-      const index = clamp(
-        Math.floor((detection.video_seconds / durationSeconds) * MOTION_BINS),
+    const next = Array.from({ length: COVERAGE_BINS }, () => 0);
+    for (const observation of track.observations) {
+      const first = clamp(
+        Math.floor((observation.start_seconds / durationSeconds) * COVERAGE_BINS),
         0,
-        MOTION_BINS - 1,
+        COVERAGE_BINS - 1,
       );
-      next[index] += 1;
+      const last = clamp(
+        Math.ceil((observation.end_seconds / durationSeconds) * COVERAGE_BINS),
+        first,
+        COVERAGE_BINS - 1,
+      );
+      for (let index = first; index <= last; index += 1) next[index] += 1;
     }
     return next;
-  }, [detections, durationSeconds]);
+  }, [durationSeconds, track.observations]);
   const peak = Math.max(1, ...bins);
   const timeTicks = Array.from({ length: 5 }, (_, index) =>
     (durationSeconds / 4) * index,
@@ -285,7 +256,7 @@ function EvidenceTimeline({
         </div>
         <p>
           <span className="legend-swatch motion" />
-          {usesYolo ? "YOLO objects" : "Motion"}
+          Provider coverage
           <span className="legend-swatch observation" />
           Observation
           <span className="legend-swatch event" />
@@ -307,8 +278,8 @@ function EvidenceTimeline({
 
       <div className="timeline-row">
         <span className="timeline-label">
-          <ScanLine size={14} />
-          {usesYolo ? "Objects" : "Motion"}
+          <Video size={14} />
+          Coverage
         </span>
         <div className="timeline-track motion-heatmap" aria-hidden="true">
           {bins.map((count, index) => (
@@ -439,9 +410,7 @@ export function MonitorWorkspace() {
   const [playing, setPlaying] = useState(false);
   const [playbackRate, setPlaybackRate] = useState<(typeof PLAYBACK_SPEEDS)[number]>(1);
   const [progress, setProgress] = useState(0);
-  const [showAllTracks, setShowAllTracks] = useState(false);
   const [track, setTrack] = useState<VideoTrack | null>(null);
-  const [trackVisibility, setTrackVisibility] = useState<Record<string, boolean>>({});
   const [videos, setVideos] = useState<VideoSource[]>([]);
   const [selectedEvidence, setSelectedEvidence] = useState<{
     kind: "event" | "observation";
@@ -456,77 +425,9 @@ export function MonitorWorkspace() {
   const videoStageRef = useRef<HTMLDivElement>(null);
   const selectedCamera = videos[cameraIndex];
   const currentSeconds = (progress / 100) * durationSeconds;
-  const localizedDetections = useMemo(
-    () => (track ? preferredDetections(track) : []),
-    [track],
-  );
-  const usesYolo = localizedDetections.some(
-    (detection) => detection.source === "yolov8_object",
-  );
   const usesTwelveLabs = Boolean(
     track?.observations.some((observation) => observation.provider === "twelvelabs"),
   );
-
-  const trackIds = useMemo(() => {
-    const stats = new Map<
-      string,
-      { samples: number; score: number; largestArea: number }
-    >();
-    for (const detection of localizedDetections) {
-      const current = stats.get(detection.track_id) ?? {
-        samples: 0,
-        score: 0,
-        largestArea: 0,
-      };
-      current.samples += 1;
-      current.score += detection.score;
-      current.largestArea = Math.max(
-        current.largestArea,
-        detection.box.width * detection.box.height,
-      );
-      stats.set(detection.track_id, current);
-    }
-    return [...stats.entries()]
-      .sort(([, left], [, right]) => {
-        const persistence = right.samples - left.samples;
-        if (persistence !== 0) return persistence;
-        const prominence = right.largestArea - left.largestArea;
-        if (prominence !== 0) return prominence;
-        return right.score - left.score;
-      })
-      .map(([trackId]) => trackId);
-  }, [localizedDetections]);
-  const trackLabels = useMemo(
-    () =>
-      new Map(
-        trackIds.map((trackId, index) => [
-          trackId,
-          usesYolo ? trackRole(index) : `Motion ${String(index + 1).padStart(2, "0")}`,
-        ]),
-      ),
-    [trackIds, usesYolo],
-  );
-  const activeDetections = useMemo(() => {
-    const visible = localizedDetections.filter(
-      (detection) => trackVisibility[detection.track_id] !== false,
-    );
-    const nearestTimestamp = visible.reduce<number | null>((nearest, detection) => {
-      if (Math.abs(detection.video_seconds - currentSeconds) > 1.25) return nearest;
-      if (nearest == null) return detection.video_seconds;
-      return Math.abs(detection.video_seconds - currentSeconds) <
-        Math.abs(nearest - currentSeconds)
-        ? detection.video_seconds
-        : nearest;
-    }, null);
-    if (nearestTimestamp == null) return [];
-    return visible
-      .filter(
-        (detection) =>
-          Math.abs(detection.video_seconds - nearestTimestamp) < 0.001,
-      )
-      .sort((left, right) => right.score - left.score)
-      .slice(0, 4);
-  }, [currentSeconds, localizedDetections, trackVisibility]);
   const playheadEvent = useMemo(() => {
     if (!track) return null;
     return (
@@ -562,20 +463,6 @@ export function MonitorWorkspace() {
     }
     return playheadObservation;
   }, [playheadObservation, selectedEvidence, track]);
-  const orderedTrackIds = useMemo(() => {
-    const active = new Set(activeDetections.map((item) => item.track_id));
-    return [
-      ...trackIds.filter((trackId) => active.has(trackId)),
-      ...trackIds.filter((trackId) => !active.has(trackId)),
-    ];
-  }, [activeDetections, trackIds]);
-  const displayedTrackIds = showAllTracks
-    ? orderedTrackIds
-    : orderedTrackIds.slice(0, 6);
-  const allTracksVisible =
-    trackIds.length > 0 &&
-    trackIds.every((trackId) => trackVisibility[trackId] !== false);
-
   useEffect(() => {
     api
       .videos()
@@ -676,13 +563,6 @@ export function MonitorWorkspace() {
               : null,
         );
         setDurationSeconds(maximumTrackSeconds(payload));
-        setTrackVisibility(
-          Object.fromEntries(
-            [...new Set(preferredDetections(payload).map((item) => item.track_id))].map(
-              (trackId) => [trackId, true],
-            ),
-          ),
-        );
       })
       .catch((caught: unknown) =>
         setLoadError(
@@ -742,9 +622,6 @@ export function MonitorWorkspace() {
     const moments = [
       ...track.events.map((event) => event.start_seconds),
       ...track.observations.map((observation) => observation.start_seconds),
-      ...preferredDetections(track).map(
-        (detection) => detection.video_seconds,
-      ),
     ]
       .filter((value, index, items) => items.indexOf(value) === index)
       .sort((a, b) => a - b);
@@ -766,7 +643,6 @@ export function MonitorWorkspace() {
     setTrack(null);
     setSelectedEvidence(null);
     setCameraIndex(index);
-    setShowAllTracks(false);
   }
 
   function selectEvidence(
@@ -788,13 +664,6 @@ export function MonitorWorkspace() {
   function changeCamera(direction: -1 | 1) {
     if (videos.length === 0) return;
     selectCamera((cameraIndex + direction + videos.length) % videos.length);
-  }
-
-  function toggleAllTracks() {
-    const nextVisible = !allTracksVisible;
-    setTrackVisibility(
-      Object.fromEntries(trackIds.map((trackId) => [trackId, nextVisible])),
-    );
   }
 
   if (loadError) {
@@ -856,8 +725,8 @@ export function MonitorWorkspace() {
             <dd>{formatDate(selectedCamera.first_start_ts)}</dd>
           </div>
           <div>
-            <dt>{usesYolo ? "Spatial tracks" : "Motion regions"}</dt>
-            <dd>{trackIds.length}</dd>
+            <dt>Provider</dt>
+            <dd>{usesTwelveLabs ? "Pegasus 1.5" : "Unavailable"}</dd>
           </div>
           <div>
             <dt>Tracked moments</dt>
@@ -999,33 +868,10 @@ export function MonitorWorkspace() {
                   {selectedCamera.camera_id}
                 </span>
                 <span className="evidence-mode-badge">
-                  <ScanLine size={12} />
-                  {usesTwelveLabs
-                    ? "TwelveLabs analyzed"
-                    : usesYolo
-                      ? "YOLOv8n"
-                      : "Motion fallback"}
+                  <Video size={12} />
+                  {usesTwelveLabs ? "TwelveLabs analyzed" : "Provider analysis unavailable"}
                 </span>
               </div>
-
-              {activeDetections.map((detection) => (
-                <i
-                  className="motion-box"
-                  data-source={detection.source}
-                  key={detection.detection_id}
-                  style={{
-                    left: `${detection.box.x * 100}%`,
-                    top: `${detection.box.y * 100}%`,
-                    width: `${detection.box.width * 100}%`,
-                    height: `${detection.box.height * 100}%`,
-                  }}
-                >
-                  <span>
-                    {trackLabels.get(detection.track_id)}
-                    <b>{Math.round(detection.score * 100)}%</b>
-                  </span>
-                </i>
-              ))}
 
               {!playing && (
                 <button
@@ -1051,10 +897,10 @@ export function MonitorWorkspace() {
                 </span>
                 <span>
                   {isFixtureEvidence
-                    ? "Demo annotation · spatial tracks shown separately"
-                    : usesYolo
-                      ? `${activeDetections.length} localized at playhead · verify identity`
-                      : "Motion only · no identity or diagnosis inferred"}
+                    ? "Demo annotation · verify against the recorded clip"
+                    : usesTwelveLabs
+                      ? "Pegasus 1.5 observation · keeper verification required"
+                      : "No provider observation available for this recording"}
                 </span>
               </div>
             </div>
@@ -1318,79 +1164,37 @@ export function MonitorWorkspace() {
           <section className="motion-inspector">
             <header>
               <div>
-                <span>Overlay controls</span>
-                <strong>
-                  {usesYolo ? "Spatial subject tracks" : "Measured motion"}
-                </strong>
+                <span>Video analysis</span>
+                <strong>TwelveLabs evidence</strong>
               </div>
-              <button
-                type="button"
-                className="toggle-all"
-                onClick={toggleAllTracks}
-              >
-                {allTracksVisible ? "Hide all" : "Show all"}
-              </button>
             </header>
 
             <div className="motion-summary">
               <span>
-                <ScanLine size={14} />
-                {activeDetections.length} active
+                <Video size={14} />
+                {track.observations.length} structured observations
               </span>
               <span>
-                {trackIds.length} {usesYolo ? "object" : "motion"} tracks
+                {selectedCamera.chunk_count} analyzed chunks
               </span>
             </div>
 
-            <div className="track-controls">
-              {displayedTrackIds.map((trackId) => {
-                const activeDetection = activeDetections.find(
-                  (item) => item.track_id === trackId,
-                );
-                const active = activeDetection != null;
-                return (
-                  <label key={trackId} data-active={active}>
-                    <input
-                      type="checkbox"
-                      checked={trackVisibility[trackId] !== false}
-                      onChange={() =>
-                        setTrackVisibility((current) => ({
-                          ...current,
-                          [trackId]: current[trackId] === false,
-                        }))
-                      }
-                    />
-                    <i />
-                    <span>
-                      <strong>{trackLabels.get(trackId)}</strong>
-                      <small>
-                        {active
-                          ? usesYolo
-                            ? `Localized object · ${Math.round(
-                                (activeDetection?.score ?? 0) * 100,
-                              )}%`
-                            : "Visible at playhead"
-                          : usesYolo
-                            ? "Tracked spatial region"
-                            : trackId.slice(-8)}
-                      </small>
-                    </span>
-                  </label>
-                );
-              })}
+            <div className="observation-note">
+              <span>
+                <Eye size={14} />
+                Current provider finding
+              </span>
+              <strong>{currentActivity}</strong>
+              <p>
+                {selectedObservation?.evidence ??
+                  "Pegasus did not return an observation near this point."}
+              </p>
+              <small>
+                {usesTwelveLabs
+                  ? "Temporal video understanding, not spatial object tracking"
+                  : "Provider coverage is unavailable"}
+              </small>
             </div>
-
-            {orderedTrackIds.length > 6 && (
-              <button
-                type="button"
-                className="show-tracks"
-                onClick={() => setShowAllTracks((current) => !current)}
-              >
-                {showAllTracks
-                  ? "Show fewer tracks"
-                  : `Show ${orderedTrackIds.length - 6} more tracks`}
-              </button>
-            )}
           </section>
         </aside>
       </div>

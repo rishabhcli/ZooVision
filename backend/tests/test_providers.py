@@ -161,7 +161,7 @@ def test_provider_failure_becomes_data_gap_without_leaking_detail(chunk):
         "https://example.com/video.mp4",
         chunk,
     )
-    assert client.calls == 2
+    assert client.calls == 3
     assert result.observations == []
     assert result.data_gap is not None
     assert result.data_gap.reason == "provider_analysis_failed"

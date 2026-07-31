@@ -229,7 +229,6 @@ export function AnalysisWorkspace() {
         shift_mode: data.get("shift_mode") === "day" ? "day" : "night",
         segment_seconds: 120,
         max_segments: 240,
-        use_provider: data.get("use_provider") === "on",
       });
       form.reset();
       setShowIngest(false);
@@ -371,24 +370,22 @@ export function AnalysisWorkspace() {
             </label>
           </div>
           <footer>
-            <label className="analysis-provider-toggle">
-              <input
-                name="use_provider"
-                type="checkbox"
-                defaultChecked={providerReady}
-                disabled={!providerReady}
-              />
+            <div className="analysis-provider-toggle">
               <span>
-                <strong>TwelveLabs behavior analysis</strong>
+                <strong>TwelveLabs Pegasus 1.5</strong>
                 <small>
                   {providerReady
-                    ? "Configured and enabled; motion localization also runs."
-                    : "Unavailable; measured motion analysis will still run."}
+                    ? "Required and ready for structured video analysis."
+                    : "Required for video ingestion; configure it before starting."}
                 </small>
               </span>
-            </label>
+            </div>
             {ingestError && <p role="alert">{ingestError}</p>}
-            <button type="submit" className="primary-button" disabled={submitting}>
+            <button
+              type="submit"
+              className="primary-button"
+              disabled={submitting || !providerReady}
+            >
               {submitting ? <LoaderCircle className="spin" size={14} /> : <Play size={14} />}
               {submitting ? "Uploading…" : "Start analysis"}
             </button>

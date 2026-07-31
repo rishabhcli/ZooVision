@@ -48,7 +48,7 @@ def test_repeat_event_write_is_idempotent(tmp_path):
     ]
 
 
-def test_yolo_detection_provenance_round_trips(tmp_path):
+def test_legacy_detection_provenance_round_trips(tmp_path):
     store = SQLiteStore(tmp_path / "zoovision.db")
     store.initialize()
     store.upsert_video_chunk(
@@ -65,23 +65,23 @@ def test_yolo_detection_provenance_round_trips(tmp_path):
     store.save_detections(
         [
             Detection(
-                detection_id="det-yolo-1",
+                detection_id="det-motion-1",
                 chunk_id="chunk-1",
                 track_id="track-cat-1",
                 relative_seconds=4.5,
                 box=BoundingBox(x=0.1, y=0.2, width=0.3, height=0.4),
                 score=0.91,
-                source=DetectionSource.YOLOV8_OBJECT,
-                label="cat",
-                class_id=15,
-                model="yolov8n.pt",
+                source=DetectionSource.MOTION_REGION,
+                label=None,
+                class_id=None,
+                model="mog2-v1",
             )
         ]
     )
 
     row = store.detections_for_chunk("chunk-1")[0]
 
-    assert row["source"] == "yolov8_object"
-    assert row["label"] == "cat"
-    assert row["class_id"] == 15
-    assert row["model"] == "yolov8n.pt"
+    assert row["source"] == "motion_region"
+    assert row["label"] is None
+    assert row["class_id"] is None
+    assert row["model"] == "mog2-v1"

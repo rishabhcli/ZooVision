@@ -4,15 +4,14 @@ FROM python:3.13-slim-bookworm
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
-    PATH="/app/.venv/bin:${PATH}" \
-    YOLO_CONFIG_DIR="/data/ultralytics"
+    PATH="/app/.venv/bin:${PATH}"
 
 RUN apt-get update \
     && apt-get install --no-install-recommends -y ffmpeg libgl1 libglib2.0-0 \
     && rm -rf /var/lib/apt/lists/* \
     && groupadd --system zoovision \
     && useradd --system --gid zoovision --create-home zoovision \
-    && mkdir -p /app /data/ultralytics \
+    && mkdir -p /app /data \
     && chown -R zoovision:zoovision /app /data
 
 COPY --from=uv /uv /uvx /bin/

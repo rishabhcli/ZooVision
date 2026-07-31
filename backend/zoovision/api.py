@@ -77,7 +77,6 @@ class IngestStartRequest(BaseModel):
     shift_mode: Literal["day", "night"] = "night"
     segment_seconds: int = Field(default=120, ge=10, le=900)
     max_segments: int = Field(default=12, ge=1, le=240)
-    use_provider: bool = True
 
 
 @lru_cache
@@ -137,7 +136,6 @@ def build_ingest_service(
         store=store,
         raw_root=raw_root,
         analyzer_factory=analyzer_factory if settings.twelvelabs_api_key else None,
-        detector_config=settings.detector_config,
         fixture_mode=settings.fixture_mode,
         delivery_enabled=settings.alert_delivery_enabled,
         webhook_configured=bool(settings.slack_webhook_url),
@@ -313,15 +311,6 @@ def create_app(
     @app.get("/api/readiness")
     def readiness() -> dict:
         provider_states = {
-            "yolov8": {
-                "status": (
-                    "enabled_local_unverified" if settings.yolo_enabled else "configured_disabled"
-                ),
-                "configured": bool(settings.yolo_model),
-                "enabled": settings.yolo_enabled,
-                "model": settings.yolo_model,
-                "device": settings.yolo_device,
-            },
             "openai": _integration_state(
                 configured=bool(settings.openai_api_key),
                 enabled=settings.openai_enrichment_enabled,
@@ -562,19 +551,14 @@ def create_app(
 
     @app.post("/api/ingest/jobs", response_model=IngestJob)
     def start_ingest(payload: IngestStartRequest) -> IngestJob:
-        if settings.production_mode and not payload.use_provider:
-            raise HTTPException(
-                status_code=422,
-                detail="production ingest requires live provider analysis",
-            )
         try:
             ingest_service.resolve_source(payload.source_name)
         except FileNotFoundError as error:
             raise HTTPException(status_code=404, detail=str(error)) from error
-        if payload.use_provider and not settings.twelvelabs_api_key:
+        if not settings.twelvelabs_api_key:
             raise HTTPException(
                 status_code=503,
-                detail="TwelveLabs is not configured",
+                detail="TwelveLabs is required for video ingestion but is not configured",
             )
         start_ts = payload.start_ts or datetime.now(settings.timezone)
         if start_ts.tzinfo is None:
@@ -591,7 +575,6 @@ def create_app(
                 shift_mode=payload.shift_mode,
                 segment_seconds=payload.segment_seconds,
                 max_segments=payload.max_segments,
-                use_provider=payload.use_provider,
             )
         )
 

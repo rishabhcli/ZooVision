@@ -21,9 +21,6 @@ primary_region = "sjc"
   ZOOVISION_RAW_RETENTION_DAYS = "7"
   ZOOVISION_STORAGE_ROOT = "/data"
   ZOOVISION_TIMEZONE = "America/Los_Angeles"
-  ZOOVISION_YOLO_BATCH_SIZE = "4"
-  ZOOVISION_YOLO_DEVICE = "cpu"
-  ZOOVISION_YOLO_MODEL = "/data/models/yolov8n.pt"
 
 [http_service]
   internal_port = 8000

@@ -1,14 +1,10 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import TYPE_CHECKING
 from zoneinfo import ZoneInfo
 
 from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
-
-if TYPE_CHECKING:
-    from .detection import DetectorConfig
 
 
 class Settings(BaseSettings):
@@ -22,35 +18,6 @@ class Settings(BaseSettings):
     analysis_retention_days: int = Field(default=30, alias="ZOOVISION_ANALYSIS_RETENTION_DAYS")
     clip_retention_days: int = Field(default=90, alias="ZOOVISION_CLIP_RETENTION_DAYS")
     alert_ack_minutes: int = Field(default=20, alias="ZOOVISION_ALERT_ACK_MINUTES")
-    yolo_enabled: bool = Field(default=True, alias="ZOOVISION_YOLO_ENABLED")
-    yolo_model: str = Field(default="yolov8n.pt", alias="ZOOVISION_YOLO_MODEL")
-    yolo_device: str = Field(default="auto", alias="ZOOVISION_YOLO_DEVICE")
-    yolo_sample_fps: float = Field(
-        default=2.0,
-        gt=0,
-        le=30,
-        alias="ZOOVISION_YOLO_SAMPLE_FPS",
-    )
-    yolo_confidence: float = Field(
-        default=0.05,
-        ge=0.01,
-        le=1,
-        alias="ZOOVISION_YOLO_CONFIDENCE",
-    )
-    yolo_image_size: int = Field(
-        default=640,
-        ge=320,
-        le=1280,
-        multiple_of=32,
-        alias="ZOOVISION_YOLO_IMAGE_SIZE",
-    )
-    yolo_batch_size: int = Field(
-        default=16,
-        ge=1,
-        le=64,
-        alias="ZOOVISION_YOLO_BATCH_SIZE",
-    )
-
     openai_api_key: str | None = Field(default=None, alias="OPENAI_API_KEY")
     openai_enrichment_enabled: bool = Field(
         default=False,
@@ -168,20 +135,6 @@ class Settings(BaseSettings):
     @property
     def database_path(self) -> Path:
         return self.storage_root / "zoovision.db"
-
-    @property
-    def detector_config(self) -> DetectorConfig:
-        from .detection import DetectorConfig
-
-        return DetectorConfig(
-            sample_fps=self.yolo_sample_fps,
-            yolo_enabled=self.yolo_enabled,
-            yolo_model=self.yolo_model,
-            yolo_device=self.yolo_device,
-            yolo_confidence=self.yolo_confidence,
-            yolo_image_size=self.yolo_image_size,
-            yolo_batch_size=self.yolo_batch_size,
-        )
 
     @property
     def aws_storage_configured(self) -> bool:

@@ -9,7 +9,6 @@ services:
       ZOOVISION_ENV: production
       ZOOVISION_FIXTURE_MODE: "false"
       ZOOVISION_STORAGE_ROOT: /data
-      ZOOVISION_YOLO_MODEL: /data/models/yolov8n.pt
     restart: unless-stopped
     expose:
       - "8000"

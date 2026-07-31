@@ -18,15 +18,15 @@ The repository now contains a working fixture-mode product:
 - daytime-only per-animal baselines with learning, shadow, active, and paused states;
 - first-match deterministic triage with stable event IDs and `rule_fired`;
 - cross-chunk observation stitching and wall-clock timestamp provenance;
-- fast local YOLOv8n animal-object candidates plus a separate deterministic
-  motion-region fallback, both as normalized track-linked bounding boxes;
+- TwelveLabs Pegasus 1.5 structured, timestamped video observations with no
+  unsupported spatial bounding-box claim;
 - an ingest path that accepts an arbitrary uploaded video, probes it, segments
   it, and routes every segment through the same deterministic triage;
 - idempotent SQLite persistence and static, idempotent Neo4j `MERGE` writers;
 - a pinned Strands graph for bounded ingest, data-gap, day, night, triage, and
   indexing routes with a per-node audit trail;
 - a keeper workspace with an interactive knowledge graph, a playable camera
-  feed with labeled object boxes and an event timeline, an analysis pane, an
+  feed with provider observations and an event timeline, an analysis pane, an
   ingest console, and a grounded chat rail;
 - checksum-pinned, freely licensed fixed-camera video fixtures;
 - schema-constrained TwelveLabs and OpenAI adapters behind opt-in gates;
@@ -102,8 +102,8 @@ recordings.
 
 ```text
 camera chunk
+  -> TwelveLabs Pegasus 1.5 video analysis
   -> strict provider response validation
-  -> YOLOv8n object candidates + motion-region measurement
   -> wall-clock observation normalization
   -> cross-chunk stitching
   -> daytime baseline lookup
@@ -115,27 +115,19 @@ camera chunk
 
 ### What each layer may claim
 
-Three sources of evidence are kept separate and are labeled separately in the
-console, because they support different claims:
+The evidence sources are kept separate and labeled in the console because they
+support different claims:
 
 | Source | Produces | May claim | May not claim |
 | --- | --- | --- | --- |
-| YOLOv8n | normalized boxes, tracks, COCO class candidates | *where a candidate animal object appears* | identity, behavior, severity, diagnosis |
-| Motion-region detector (MOG2) | normalized boxes, tracks | *where* pixels changed | species, identity, behavior |
 | TwelveLabs Pegasus | timestamped behavior observations | *what a model read in the scene* | severity, diagnosis |
 | Triage rules | severity, `rule_fired`, action | *what policy says about the evidence* | anything not in the evidence |
 
-YOLOv8n runs locally at two sampled frames per second, uses Apple MPS or CUDA
-when available, and restricts inference to COCO animal classes. Its class text
-is always displayed as a model candidate requiring human verification. MOG2
-continues to provide deterministic motion evidence and is the only detection
-source passed into the motion-evidence analyzer. Neither detector assigns
-behavior, identity, severity, diagnosis, or treatment.
-
-The first YOLO run downloads `yolov8n.pt`; the weight file is ignored by Git.
-Ultralytics publishes its code and trained models under AGPL-3.0 and also offers
-an enterprise license. Deployments must comply with one of those licensing
-paths; see the [Ultralytics licensing documentation](https://www.ultralytics.com/license).
+Pegasus 1.5 is required for uploaded-video analysis. ZooVision does not claim
+that Pegasus returns spatial object tracks or bounding boxes: the console shows
+its temporal observations on the recording timeline and requires keeper
+verification. A failed or incomplete provider call is recorded as a `DataGap`;
+it is never replaced with a motion-only behavioral conclusion.
 
 ## Analyzing any video
 
@@ -151,8 +143,8 @@ curl -X POST http://127.0.0.1:8000/api/ingest/jobs \
 
 The job probes the container with ffprobe, splits it with ffmpeg's segment
 muxer, re-probes each piece so wall-clock placement uses true durations rather
-than the nominal segment length, localizes YOLOv8 object candidates and motion
-regions, asks the configured video provider for behavior semantics, and routes
+than the nominal segment length, asks TwelveLabs for structured behavior
+semantics, and routes
 every segment through the same
 deterministic triage as fixture footage. Segments larger than the provider's
 base64 ceiling are transcoded to a reduced proxy so coverage is analyzed instead
@@ -201,12 +193,8 @@ examples.
 - **OpenAI:** `gpt-5.6-luna` phrases evidence and `gpt-5.6-terra` phrases reports
   through strict Pydantic Structured Outputs. `store=false` is used. Both paths
   are non-authoritative and opt-in.
-- **Ultralytics YOLOv8:** `yolov8n.pt` runs locally for fast animal-object
-  candidates. `ZOOVISION_YOLO_*` settings control device, sampling, confidence,
-  image size, and batching. These boxes are non-authoritative and never enter
-  deterministic triage.
 - **TwelveLabs:** Pegasus 1.5 accepts a direct public raw-media URL and returns a
-  strict relative-timestamp schema. Live use is opt-in and should remain in
+  strict relative-timestamp schema. Uploaded-video ingest requires it and should remain in
   shadow mode until measured against labeled animal footage.
 - **AWS:** raw chunks, analysis JSON, and evidence clips use separate private S3
   buckets with 7, 30, and 90 day lifecycle policies. Marengo 3.0 is the Bedrock

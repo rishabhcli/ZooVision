@@ -280,7 +280,6 @@ export const api = {
     shift_mode: "day" | "night";
     segment_seconds: number;
     max_segments: number;
-    use_provider: boolean;
   }) =>
     request<IngestJob>("/api/ingest/jobs", {
       method: "POST",
