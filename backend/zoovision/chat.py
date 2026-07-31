@@ -52,6 +52,9 @@ Ground every statement in the supplied context JSON. Rules you must follow:
 - Prefer `provider_structured` moments for footage lookup. Use
   `synthetic_scenario` moments only when the user explicitly asks about a demo
   scenario or the deterministic rule event that cites it.
+- For a recording-wide question about which animals appear and what they do,
+  cover every distinct animal type explicitly documented by the supplied
+  moments. Do not infer an animal from the profile alone.
 - Answer the user's actual question instead of listing every available tag or
   record. Synthesize the smallest useful answer, connect evidence across records,
   and explain why each cited record is relevant.
@@ -163,6 +166,15 @@ _INTENT_TERMS = {
     "summarize",
     "summary",
     "tonight",
+}
+_GENERIC_ANIMAL_PROFILE_TERMS = {
+    "animal",
+    "backyard",
+    "camera",
+    "enclosure",
+    "selected",
+    "unspecified",
+    "wildlife",
 }
 
 
@@ -615,6 +627,17 @@ def retrieve_context(
         for score, moment in ranked_moments
         if score > 0 or moment["observation_id"] in event_source_ids
     ]
+    recording_inventory = bool(
+        requested_offset_seconds is None
+        and context.get("scope", {}).get("source_path")
+        and _asks_for_recording_inventory(question)
+    )
+    if recording_inventory:
+        relevant_moments = _select_recording_inventory_moments(
+            ranked_moments,
+            animals,
+            limit=20,
+        )
     if intents["summary"] and not content_terms and not relevant_moments:
         relevant_moments = [moment for _, moment in ranked_moments[:5]]
     if matched_animal_ids and _asks_about_activity_pattern(question) and not relevant_moments:
@@ -676,6 +699,7 @@ def retrieve_context(
             "intents": [name for name, active in intents.items() if active],
             "matched_animal_ids": sorted(matched_animal_ids),
             "requested_media_offset_seconds": requested_offset_seconds,
+            "recording_inventory": recording_inventory,
             "no_match": unresolved_scoped_subject
             or bool(
                 animals
@@ -1047,6 +1071,126 @@ def _asks_about_activity_pattern(question: str) -> bool:
             "activity pattern",
         )
     )
+
+
+def _asks_for_recording_inventory(question: str) -> bool:
+    """Recognize a broad request to inventory animals across one recording."""
+    lowered = question.lower()
+    asks_which_animals = any(
+        phrase in lowered
+        for phrase in (
+            "what animal",
+            "which animal",
+            "what species",
+            "which species",
+            "animals are visible",
+            "animals were visible",
+        )
+    )
+    recording_language = any(
+        term in _tokens(lowered)
+        for term in ("camera", "clip", "footage", "recording", "video", "visible")
+    )
+    return asks_which_animals and recording_language
+
+
+def _select_recording_inventory_moments(
+    ranked_moments: list[tuple[int, dict[str, Any]]],
+    animals: list[dict[str, Any]],
+    *,
+    limit: int,
+) -> list[dict[str, Any]]:
+    """Represent named animal types and the full timeline within the context cap.
+
+    Broad inventory language gives most moments the same lexical score. Taking
+    that ranking's first records therefore over-represents the start of a long
+    video. Reserve evidence for animal terms grounded in the selected profile,
+    then fill the remaining slots evenly across the recording.
+    """
+    if limit <= 0 or not ranked_moments:
+        return []
+
+    score_by_id = {
+        moment["observation_id"]: score for score, moment in ranked_moments
+    }
+    chronological = sorted(
+        (moment for _, moment in ranked_moments),
+        key=lambda moment: (
+            float(moment.get("start_seconds") or 0),
+            float(moment.get("end_seconds") or 0),
+            moment["observation_id"],
+        ),
+    )
+    if len(chronological) <= limit:
+        return chronological
+
+    profile_terms: set[str] = set()
+    for animal in animals:
+        profile_terms.update(_tokens(f"{animal.get('name', '')} {animal.get('species', '')}"))
+    profile_terms -= _GENERIC_ANIMAL_PROFILE_TERMS
+
+    descriptive_tokens = {
+        moment["observation_id"]: _tokens(
+            " ".join(
+                str(moment.get(field) or "")
+                for field in ("activity_label", "evidence", "behavior")
+            )
+        )
+        for moment in chronological
+    }
+    term_matches = {
+        term: [
+            moment
+            for moment in chronological
+            if term in descriptive_tokens[moment["observation_id"]]
+        ]
+        for term in profile_terms
+    }
+
+    selected: dict[str, dict[str, Any]] = {}
+    for _term, matches in sorted(
+        ((term, matches) for term, matches in term_matches.items() if matches),
+        key=lambda item: (len(item[1]), item[0]),
+    ):
+        representative = max(
+            matches,
+            key=lambda moment: (
+                len(profile_terms & descriptive_tokens[moment["observation_id"]]),
+                score_by_id[moment["observation_id"]],
+                -float(moment.get("start_seconds") or 0),
+            ),
+        )
+        selected[representative["observation_id"]] = representative
+        if len(selected) >= min(limit, 6):
+            break
+
+    remaining_slots = limit - len(selected)
+    if remaining_slots > 0:
+        if remaining_slots == 1:
+            sample_indexes = [len(chronological) // 2]
+        else:
+            sample_indexes = [
+                round(index * (len(chronological) - 1) / (remaining_slots - 1))
+                for index in range(remaining_slots)
+            ]
+        for index in sample_indexes:
+            moment = chronological[index]
+            selected[moment["observation_id"]] = moment
+
+    if len(selected) < limit:
+        for moment in chronological:
+            selected[moment["observation_id"]] = moment
+            if len(selected) == limit:
+                break
+
+    return sorted(
+        selected.values(),
+        key=lambda moment: (
+            float(moment.get("start_seconds") or 0),
+            float(moment.get("end_seconds") or 0),
+            moment["observation_id"],
+        ),
+    )[:limit]
 
 
 def _natural_join(values: list[str]) -> str:

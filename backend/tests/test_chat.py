@@ -318,6 +318,77 @@ def test_retrieval_does_not_return_unrelated_tags_for_unknown_question(tmp_path:
     assert context["data_gaps"] == []
 
 
+def test_recording_inventory_keeps_late_animal_types_inside_context_cap() -> None:
+    moments: list[dict[str, Any]] = []
+    for index in range(24):
+        moments.append(
+            {
+                "observation_id": f"obs-squirrel-{index:02d}",
+                "animal_id": "animal-backyard",
+                "animal_name": "Backyard wildlife",
+                "species": "Eastern gray squirrel and backyard birds",
+                "enclosure_id": "ENC-BACKYARD",
+                "camera_id": "CAM-BY2",
+                "source_path": "uploads/backyard-squirrels-and-birds.mp4",
+                "behavior": "foraging",
+                "activity_label": "One squirrel foraging",
+                "evidence": "One squirrel is visible foraging for seeds.",
+                "evidence_kind": "provider_structured",
+                "start_seconds": float(index * 60),
+                "end_seconds": float(index * 60 + 50),
+            }
+        )
+    moments.append(
+        {
+            **moments[-1],
+            "observation_id": "obs-birds-late",
+            "activity_label": "Two birds foraging",
+            "evidence": "Two birds are visible foraging in the background.",
+            "start_seconds": 2_400.0,
+            "end_seconds": 2_480.0,
+        }
+    )
+    full_context = {
+        "scope": {
+            "enclosure_id": "ENC-BACKYARD",
+            "animal_id": "animal-backyard",
+            "camera_id": "CAM-BY2",
+            "source_path": "uploads/backyard-squirrels-and-birds.mp4",
+        },
+        "animals": [
+            {
+                "animal_id": "animal-backyard",
+                "name": "Backyard wildlife",
+                "species": "Eastern gray squirrel and backyard birds",
+                "enclosure_id": "ENC-BACKYARD",
+                "baseline_state": "shadow",
+                "baseline_day_shifts": 0,
+                "event_count": 0,
+            }
+        ],
+        "events": [],
+        "moments": moments,
+        "data_gaps": [],
+        "policy": {},
+    }
+
+    context = retrieve_context(
+        full_context,
+        [
+            ChatMessage(
+                role="user",
+                content="What animals are visible in this recording, and what are they doing?",
+            )
+        ],
+    )
+
+    selected_ids = {moment["observation_id"] for moment in context["moments"]}
+    assert context["retrieval"]["recording_inventory"] is True
+    assert len(context["moments"]) == 20
+    assert "obs-birds-late" in selected_ids
+    assert any(record_id.startswith("obs-squirrel-") for record_id in selected_ids)
+
+
 def test_unknown_question_admits_no_matching_record_instead_of_dumping_events(
     tmp_path: Path,
 ) -> None:
