@@ -362,6 +362,27 @@ class SQLiteStore:
                 ),
             )
 
+    def observations_for_chunks(self, chunk_ids: Iterable[str]) -> list[Observation]:
+        """Return normalized observations for an explicit completed-chunk set."""
+        identifiers = sorted(set(chunk_ids))
+        if not identifiers:
+            return []
+        placeholders = ",".join("?" for _ in identifiers)
+        with self.connect() as connection:
+            return [
+                Observation.model_validate(dict(row))
+                for row in connection.execute(
+                    f"""
+                    SELECT o.*, vc.enclosure_id
+                    FROM observations o
+                    JOIN video_chunks vc ON vc.chunk_id = o.chunk_id
+                    WHERE o.chunk_id IN ({placeholders})
+                    ORDER BY o.start_ts, o.end_ts, o.observation_id
+                    """,
+                    identifiers,
+                )
+            ]
+
     def save_ingest_job(self, job: dict) -> None:
         with self.connect() as connection:
             connection.execute(
@@ -405,6 +426,21 @@ class SQLiteStore:
                     (bounded,),
                 )
             ]
+
+    def latest_ingest_jobs_by_source(self) -> dict[str, dict]:
+        """Return the newest persisted job for each uploaded source name."""
+        latest: dict[str, dict] = {}
+        with self.connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT source_name, payload_json
+                FROM ingest_jobs
+                ORDER BY created_at DESC, updated_at DESC
+                """
+            )
+            for row in rows:
+                latest.setdefault(row["source_name"], json.loads(row["payload_json"]))
+        return latest
 
     def save_detections(self, detections: Iterable[Detection]) -> int:
         rows = self._detection_rows(detections)
@@ -879,6 +915,32 @@ class SQLiteStore:
                            min(vc.enclosure_id) AS enclosure_id,
                            min(vc.camera_id) AS camera_id,
                            count(DISTINCT vc.chunk_id) AS chunk_count,
+                           count(DISTINCT CASE
+                               WHEN vc.status = 'analyzed' THEN vc.chunk_id
+                           END) AS analyzed_chunk_count,
+                           count(DISTINCT CASE
+                               WHEN vc.status = 'coverage_gap' THEN vc.chunk_id
+                           END) AS gap_chunk_count,
+                           count(DISTINCT CASE
+                               WHEN vc.status = 'analyzing' THEN vc.chunk_id
+                           END) AS analyzing_chunk_count,
+                           (
+                               SELECT coalesce(sum(
+                                   (julianday(analyzed.end_ts)
+                                    - julianday(analyzed.start_ts)) * 86400.0
+                               ), 0)
+                               FROM video_chunks analyzed
+                               WHERE analyzed.source_path = vc.source_path
+                                 AND analyzed.status = 'analyzed'
+                           ) AS stored_analyzed_duration_seconds,
+                           (
+                               SELECT coalesce(sum(
+                                   (julianday(covered.end_ts)
+                                    - julianday(covered.start_ts)) * 86400.0
+                               ), 0)
+                               FROM video_chunks covered
+                               WHERE covered.source_path = vc.source_path
+                           ) AS stored_source_duration_seconds,
                            min(vc.start_ts) AS first_start_ts,
                            max(vc.end_ts) AS last_end_ts,
                            count(DISTINCT d.detection_id) AS detection_count,
@@ -926,6 +988,7 @@ class SQLiteStore:
                 return {"source_path": source_path, "chunks": [], "detections": [], "events": []}
             offsets = {chunk["chunk_id"]: chunk["source_offset_seconds"] for chunk in chunks}
             starts = {chunk["chunk_id"]: chunk["start_ts"] for chunk in chunks}
+            source_anchor = chunks[0]
             placeholders = ",".join("?" for _ in chunks)
             chunk_ids = [chunk["chunk_id"] for chunk in chunks]
 
@@ -967,21 +1030,25 @@ class SQLiteStore:
             events = []
             for row in connection.execute(
                 f"""
-                SELECT DISTINCT e.*, a.name AS animal_name, o.chunk_id AS anchor_chunk_id,
-                       al.ack_state
+                SELECT DISTINCT e.*, a.name AS animal_name, al.ack_state
                 FROM events e
                 JOIN animals a ON a.animal_id = e.animal_id
-                JOIN event_sources es ON es.event_id = e.event_id
-                JOIN observations o ON o.observation_id = es.observation_id
                 LEFT JOIN alerts al ON al.event_id = e.event_id
-                WHERE o.chunk_id IN ({placeholders}) AND e.severity != 'NONE'
+                WHERE e.severity != 'NONE'
+                  AND EXISTS (
+                      SELECT 1
+                      FROM event_sources es
+                      JOIN observations o ON o.observation_id = es.observation_id
+                      WHERE es.event_id = e.event_id
+                        AND o.chunk_id IN ({placeholders})
+                  )
                 ORDER BY e.start_ts
                 """,
                 chunk_ids,
             ):
-                anchor = row["anchor_chunk_id"]
-                base = _seconds_between(starts[anchor], row["start_ts"])
-                end = _seconds_between(starts[anchor], row["end_ts"])
+                base = _seconds_between(source_anchor["start_ts"], row["start_ts"])
+                end = _seconds_between(source_anchor["start_ts"], row["end_ts"])
+                source_offset = float(source_anchor["source_offset_seconds"])
                 events.append(
                     {
                         "event_id": row["event_id"],
@@ -998,8 +1065,8 @@ class SQLiteStore:
                         "ack_state": row["ack_state"],
                         "start_ts": row["start_ts"],
                         "end_ts": row["end_ts"],
-                        "start_seconds": round(max(0.0, offsets[anchor] + base), 3),
-                        "end_seconds": round(max(0.0, offsets[anchor] + end), 3),
+                        "start_seconds": round(max(0.0, source_offset + base), 3),
+                        "end_seconds": round(max(0.0, source_offset + end), 3),
                     }
                 )
 

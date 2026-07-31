@@ -6,10 +6,11 @@ from pathlib import Path
 import cv2
 import numpy as np
 import pytest
-from zoovision.detection import DetectorConfig
+from zoovision.detection import DetectorConfig, VideoProbe
 from zoovision.domain import (
     Behavior,
     BoundingBox,
+    DataGap,
     Detection,
     DetectionSource,
     EvidenceKind,
@@ -114,6 +115,116 @@ def _stub_detections(path, *, chunk_id, duration_seconds, config):  # noqa: ANN0
             model="yolov8n.pt",
         )
     ]
+
+
+class _PacingProvider:
+    def safe_analyze_file(self, path, chunk):  # noqa: ANN001
+        del path
+        return ProviderAnalysis(
+            observations=[
+                Observation(
+                    observation_id=f"obs-{chunk.chunk_id}",
+                    animal_id=chunk.animal_id,
+                    enclosure_id=chunk.enclosure_id,
+                    chunk_id=chunk.chunk_id,
+                    behavior=Behavior.PACING,
+                    start_ts=chunk.start_ts,
+                    end_ts=chunk.end_ts - timedelta(seconds=1),
+                    confidence=0.88,
+                    evidence="A repeated route continued through this interval.",
+                    provider="twelvelabs",
+                    provider_model="pegasus1.5",
+                    evidence_kind=EvidenceKind.PROVIDER_STRUCTURED,
+                    activity_label="Repeated route",
+                )
+            ]
+        )
+
+    safe_analyze_url = _StubProvider.safe_analyze_url
+
+
+class _FightingProvider:
+    def safe_analyze_file(self, path, chunk):  # noqa: ANN001
+        del path
+        return ProviderAnalysis(
+            observations=[
+                Observation(
+                    observation_id=f"obs-{chunk.chunk_id}",
+                    animal_id=chunk.animal_id,
+                    enclosure_id=chunk.enclosure_id,
+                    chunk_id=chunk.chunk_id,
+                    behavior=Behavior.FIGHTING,
+                    start_ts=chunk.start_ts,
+                    end_ts=chunk.end_ts - timedelta(seconds=1),
+                    confidence=0.9,
+                    evidence="A fight was visibly supported in this interval.",
+                    provider="twelvelabs",
+                    provider_model="pegasus1.5",
+                    evidence_kind=EvidenceKind.PROVIDER_STRUCTURED,
+                    activity_label="Fight observed",
+                )
+            ]
+        )
+
+    safe_analyze_url = _StubProvider.safe_analyze_url
+
+
+class _RetryingProvider:
+    def __init__(self, *, recover: bool):
+        self.recover = recover
+        self.calls = 0
+
+    def safe_analyze_file(self, path, chunk):  # noqa: ANN001
+        del path
+        self.calls += 1
+        if self.calls == 1 or not self.recover:
+            return ProviderAnalysis(
+                observations=[],
+                data_gap=DataGap(
+                    gap_id=f"gap-{chunk.chunk_id}",
+                    enclosure_id=chunk.enclosure_id,
+                    chunk_id=chunk.chunk_id,
+                    start_ts=chunk.start_ts,
+                    end_ts=chunk.end_ts,
+                    reason="provider_reported_incomplete_coverage",
+                ),
+            )
+        return _StubProvider._analysis(chunk)
+
+    safe_analyze_url = _StubProvider.safe_analyze_url
+
+
+def _stub_segmented_source(
+    tmp_path: Path,
+    monkeypatch,
+    *,
+    durations: list[float],
+) -> tuple[Path, list[tuple[int, float, float, Path]]]:
+    raw_root = tmp_path / "raw"
+    (raw_root / "uploads").mkdir(parents=True)
+    source = raw_root / "uploads" / "source.mp4"
+    source.write_bytes(b"source")
+    pieces = []
+    offset = 0.0
+    for index, duration in enumerate(durations):
+        piece = tmp_path / f"segment-{index}.mp4"
+        piece.write_bytes(f"segment-{index}".encode())
+        pieces.append((index, offset, duration, piece))
+        offset += duration
+    monkeypatch.setattr(
+        "zoovision.ingest.probe_video",
+        lambda path: VideoProbe(
+            duration_seconds=sum(durations),
+            width=640,
+            height=360,
+            frame_rate=30,
+        ),
+    )
+    monkeypatch.setattr(
+        "zoovision.ingest.segment_video",
+        lambda *args, **kwargs: pieces,
+    )
+    return raw_root, pieces
 
 
 def test_segment_video_splits_a_real_file(tmp_path: Path) -> None:
@@ -293,3 +404,185 @@ def test_ingest_request_rejects_a_path_in_the_source_name() -> None:
             camera_id="CAM-01",
             start_ts=START,
         )
+
+
+def test_full_source_finalization_fires_duration_rule_across_chunks(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    raw_root, _ = _stub_segmented_source(
+        tmp_path,
+        monkeypatch,
+        durations=[300, 300, 300],
+    )
+    store = SQLiteStore(tmp_path / "source-events.db")
+    store.initialize()
+    service = VideoIngestService(
+        store=store,
+        raw_root=raw_root,
+        analyzer_factory=_PacingProvider,
+        detector=_stub_detections,
+        now=lambda: START,
+    )
+
+    request = IngestRequest(
+        source_name="source.mp4",
+        animal_id="animal-1",
+        animal_name="Test Subject",
+        species="Unknown",
+        enclosure_id="ENC-01",
+        camera_id="CAM-01",
+        start_ts=START,
+        shift_mode=ShiftMode.NIGHT,
+        segment_seconds=300,
+    )
+    job = service.run(request)
+
+    assert job.status == "complete", job.error
+    assert len(job.source_event_ids) == 1
+    events = store.dump_table("events")
+    assert len(events) == 1
+    assert events[0]["rule_fired"] == "R005_PACING_10M"
+    assert len(store.dump_table("event_sources")) == 3
+    track = store.video_track("uploads/source.mp4")
+    assert [event["event_id"] for event in track["events"]] == job.source_event_ids
+    assert track["events"][0]["end_seconds"] == pytest.approx(899)
+
+    repeated = service.run(request)
+    assert repeated.source_event_ids == job.source_event_ids
+    assert len(store.dump_table("events")) == 1
+    assert len(store.dump_table("event_sources")) == 3
+
+
+def test_full_source_finalization_never_triages_day_footage(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    raw_root, _ = _stub_segmented_source(
+        tmp_path,
+        monkeypatch,
+        durations=[300, 300, 300],
+    )
+    store = SQLiteStore(tmp_path / "day-source.db")
+    store.initialize()
+    service = VideoIngestService(
+        store=store,
+        raw_root=raw_root,
+        analyzer_factory=_PacingProvider,
+        detector=_stub_detections,
+        now=lambda: START,
+    )
+
+    job = service.run(
+        IngestRequest(
+            source_name="source.mp4",
+            animal_id="animal-1",
+            animal_name="Test Subject",
+            species="Unknown",
+            enclosure_id="ENC-01",
+            camera_id="CAM-01",
+            start_ts=START,
+            shift_mode=ShiftMode.DAY,
+            segment_seconds=300,
+        )
+    )
+
+    assert job.status == "complete", job.error
+    assert job.source_event_ids == []
+    assert store.dump_table("events") == []
+    assert store.dump_table("alerts") == []
+
+
+def test_full_source_finalization_does_not_duplicate_instantaneous_events(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    raw_root, _ = _stub_segmented_source(
+        tmp_path,
+        monkeypatch,
+        durations=[300, 300, 300],
+    )
+    store = SQLiteStore(tmp_path / "instant-events.db")
+    store.initialize()
+    service = VideoIngestService(
+        store=store,
+        raw_root=raw_root,
+        analyzer_factory=_FightingProvider,
+        detector=_stub_detections,
+        now=lambda: START,
+    )
+
+    job = service.run(
+        IngestRequest(
+            source_name="source.mp4",
+            animal_id="animal-1",
+            animal_name="Test Subject",
+            species="Unknown",
+            enclosure_id="ENC-01",
+            camera_id="CAM-01",
+            start_ts=START,
+            shift_mode=ShiftMode.NIGHT,
+            segment_seconds=300,
+        )
+    )
+
+    assert job.status == "complete", job.error
+    assert job.source_event_ids == []
+    assert len(store.dump_table("events")) == 3
+    assert {event["rule_fired"] for event in store.dump_table("events")} == {"R001_FIGHTING"}
+
+
+@pytest.mark.parametrize(
+    ("recover", "expected_gap_count", "expected_observation_count"),
+    [(True, 0, 1), (False, 1, 0)],
+)
+def test_provider_gap_retry_is_bounded_and_does_not_repeat_detection(
+    tmp_path: Path,
+    monkeypatch,
+    recover: bool,
+    expected_gap_count: int,
+    expected_observation_count: int,
+) -> None:
+    raw_root, _ = _stub_segmented_source(tmp_path, monkeypatch, durations=[30])
+    store = SQLiteStore(tmp_path / f"retry-{recover}.db")
+    store.initialize()
+    provider = _RetryingProvider(recover=recover)
+    detector_calls = 0
+
+    def detector(path, *, chunk_id, duration_seconds, config):  # noqa: ANN001
+        nonlocal detector_calls
+        detector_calls += 1
+        return _stub_detections(
+            path,
+            chunk_id=chunk_id,
+            duration_seconds=duration_seconds,
+            config=config,
+        )
+
+    service = VideoIngestService(
+        store=store,
+        raw_root=raw_root,
+        analyzer_factory=lambda: provider,
+        detector=detector,
+        now=lambda: START,
+    )
+    job = service.run(
+        IngestRequest(
+            source_name="source.mp4",
+            animal_id="animal-1",
+            animal_name="Test Subject",
+            species="Unknown",
+            enclosure_id="ENC-01",
+            camera_id="CAM-01",
+            start_ts=START,
+            segment_seconds=30,
+        )
+    )
+
+    assert job.status == "complete", job.error
+    assert provider.calls == 2
+    assert detector_calls == 1
+    assert job.segments[0].provider_attempts == 2
+    assert len(job.data_gap_ids) == expected_gap_count
+    assert len(store.dump_table("observations")) == expected_observation_count
+    assert len(store.dump_table("data_gaps")) == expected_gap_count

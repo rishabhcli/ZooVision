@@ -158,6 +158,25 @@ def test_context_scopes_to_the_exact_selected_video(tmp_path: Path) -> None:
             activity_label="Walking beside the fence",
         )
     )
+    store.save_event(
+        EventRecord(
+            event_id="evt-cross-camera",
+            animal_id="animal-nox",
+            enclosure_id="ENC-07",
+            behavior=Behavior.WALKING,
+            start_ts=START,
+            end_ts=START + timedelta(minutes=3),
+            severity=Severity.MODERATE,
+            rule_fired="R_TEST_CROSS_CAMERA",
+            action=None,
+            confidence=0.88,
+            source_observation_ids=["obs-1", "obs-2"],
+            explanation_facts=["The event spans two camera records."],
+            rule_version="test.v1",
+            shift_mode=ShiftMode.NIGHT,
+            created_at=START,
+        )
+    )
 
     context = build_context(
         store,
@@ -170,7 +189,8 @@ def test_context_scopes_to_the_exact_selected_video(tmp_path: Path) -> None:
     assert context["scope"]["camera_id"] == "CAM-07B"
     assert context["scope"]["source_path"] == "fixtures/badger-secondary.mp4"
     assert [moment["observation_id"] for moment in context["moments"]] == ["obs-2"]
-    assert context["events"] == []
+    assert [event["event_id"] for event in context["events"]] == ["evt-cross-camera"]
+    assert [source["observation_id"] for source in context["events"][0]["sources"]] == ["obs-2"]
     assert context["data_gaps"] == []
 
 
@@ -440,7 +460,7 @@ def test_model_failure_still_answers_from_the_record(tmp_path: Path) -> None:
     assert any("unavailable" in item for item in reply.uncertainty)
 
 
-def test_production_chat_does_not_fall_back_locally(tmp_path: Path) -> None:
+def test_strict_chat_does_not_fall_back_locally(tmp_path: Path) -> None:
     chat = GroundedChat(
         _seeded_store(tmp_path),
         client=_StubClient(RuntimeError("provider offline")),
@@ -450,6 +470,75 @@ def test_production_chat_does_not_fall_back_locally(tmp_path: Path) -> None:
 
     with pytest.raises(RuntimeError, match="live OpenAI chat is unavailable"):
         chat.reply(ChatRequest(messages=[ChatMessage(role="user", content="What happened?")]))
+
+
+def test_model_failure_fallback_keeps_exact_video_scope(tmp_path: Path) -> None:
+    store = _seeded_store(tmp_path)
+    store.upsert_animal(
+        animal_id="animal-nox",
+        name="Backyard squirrels",
+        species="Eastern gray squirrel",
+        enclosure_id="ENC-07",
+        baseline_state="shadow",
+    )
+    store.upsert_video_chunk(
+        chunk_id="chunk-2",
+        enclosure_id="ENC-07",
+        camera_id="CAM-07B",
+        start_ts=START.isoformat(),
+        end_ts=(START + timedelta(minutes=15)).isoformat(),
+        source_path="fixtures/badger-secondary.mp4",
+        source_offset_seconds=0,
+        content_sha256="sha-secondary",
+        status="ready",
+    )
+    store.save_observation(
+        Observation(
+            observation_id="obs-2",
+            animal_id="animal-nox",
+            enclosure_id="ENC-07",
+            chunk_id="chunk-2",
+            behavior=Behavior.WALKING,
+            start_ts=START + timedelta(minutes=2),
+            end_ts=START + timedelta(minutes=3),
+            confidence=0.88,
+            evidence="The squirrels walked beside the secondary camera.",
+            provider="twelvelabs",
+            provider_model="test",
+            evidence_kind=EvidenceKind.PROVIDER_STRUCTURED,
+            activity_label="Walking beside the fence",
+        )
+    )
+    chat = GroundedChat(
+        store,
+        client=_StubClient(RuntimeError("provider offline")),
+        model="gpt-test",
+    )
+
+    reply = chat.reply(
+        ChatRequest(
+            messages=[
+                ChatMessage(
+                    role="user",
+                    content="What did the squirrels do during the first ten minutes?",
+                )
+            ],
+            enclosure_id="ENC-07",
+            animal_id="animal-nox",
+            camera_id="CAM-07B",
+            source_path="fixtures/badger-secondary.mp4",
+        )
+    )
+
+    assert reply.mode == "deterministic_fallback"
+    assert reply.cited_ids == ["obs-2"]
+    assert [citation.label for citation in reply.citations] == [
+        "Backyard squirrels: Walking beside the fence at 2:00"
+    ]
+    assert [moment.source_path for moment in reply.moments] == ["fixtures/badger-secondary.mp4"]
+    assert "obs-2" not in reply.answer
+    assert "CAM-07A" not in reply.answer
+    assert any("unavailable" in item for item in reply.uncertainty)
 
 
 def test_instructions_forbid_severity_and_treatment() -> None:

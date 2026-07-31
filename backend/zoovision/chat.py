@@ -227,6 +227,10 @@ def build_context(
             if observation is None:
                 continue
             chunk = chunks.get(observation["chunk_id"], {})
+            if source_path and chunk.get("source_path") != source_path:
+                continue
+            if camera_id and not source_path and chunk.get("camera_id") != camera_id:
+                continue
             detail_sources.append(
                 {
                     "observation_id": source_id,

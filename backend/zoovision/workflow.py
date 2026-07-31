@@ -22,8 +22,11 @@ from .domain import (
     BaselineState,
     DataGap,
     EventRecord,
+    Observation,
     Severity,
     ShiftMode,
+    StitchedObservation,
+    TriageDecision,
     TriageInput,
 )
 from .enrichment import EvidenceMergeRequest, EvidenceSource
@@ -33,6 +36,19 @@ from .providers import ProviderAnalysis, VideoChunkContext
 from .stitching import stitch_observations
 from .store import SQLiteStore
 from .triage import classify
+
+RETRYABLE_PROVIDER_GAP_REASONS = frozenset(
+    {
+        "provider_analysis_failed",
+        "provider_reported_incomplete_coverage",
+    }
+)
+SOURCE_DURATION_RULES = frozenset(
+    {
+        "R004_PACING_20M_NO_WATER_6H",
+        "R005_PACING_10M",
+    }
+)
 
 
 class Analyzer(Protocol):
@@ -99,6 +115,7 @@ class SegmentWorkflowResult(BaseModel):
     scheduled_alert_ids: list[str] = Field(default_factory=list)
     embedding_status: str = "not_configured"
     embedding_data_gap_id: str | None = None
+    provider_attempts: int = Field(default=1, ge=1)
     audit: list[WorkflowAuditEntry]
 
 
@@ -175,6 +192,7 @@ class SegmentWorkflow:
         evidence_enricher: Any | None = None,
         escalation_scheduler: Any | None = None,
         alert_ack_minutes: int = 20,
+        provider_max_attempts: int = 2,
         now: Callable[[], datetime] | None = None,
     ):
         self.analyzer = analyzer
@@ -185,6 +203,7 @@ class SegmentWorkflow:
         self.evidence_enricher = evidence_enricher
         self.escalation_scheduler = escalation_scheduler
         self.alert_ack_minutes = alert_ack_minutes
+        self.provider_max_attempts = max(1, provider_max_attempts)
         self.now = now or (lambda: datetime.now(UTC))
 
     def run(self, request: SegmentWorkflowInput) -> SegmentWorkflowResult:
@@ -217,8 +236,43 @@ class SegmentWorkflow:
             scheduled_alert_ids=state["scheduled_alert_ids"],
             embedding_status=state["embedding_status"],
             embedding_data_gap_id=state.get("embedding_data_gap_id"),
+            provider_attempts=state["provider_attempts"],
             audit=state["audit"],
         )
+
+    def finalize_source_duration_events(
+        self,
+        request: SegmentWorkflowInput,
+        observations: list[Observation],
+    ) -> list[EventRecord]:
+        """Evaluate continuous, cross-chunk duration rules once source ingest ends.
+
+        Immediate rules remain owned by the per-segment workflow. Restricting
+        this pass to observations that span multiple chunks and duration-only
+        rules prevents duplicate fighting/vomiting/etc. events while allowing a
+        continuous pacing bout to cross segment boundaries.
+        """
+        if request.shift_mode is not ShiftMode.NIGHT:
+            return []
+
+        sources_by_id = {item.observation_id: item for item in observations}
+        events: list[EventRecord] = []
+        state: dict[str, Any] = {
+            "enriched_event_ids": [],
+            "scheduled_alert_ids": [],
+        }
+        for stitched in stitch_observations(observations):
+            if len(set(stitched.source_chunk_ids)) < 2:
+                continue
+            decision = self._classify_stitched(request, stitched)
+            if decision.rule_fired not in SOURCE_DURATION_RULES:
+                continue
+            record = self._event_record(request, stitched, decision)
+            self._persist_event(request, record, sources_by_id, state)
+            events.append(record)
+
+        self._write_graph_events(request, events, observations)
+        return events
 
     def _build_graph(self):
         builder = GraphBuilder()
@@ -271,11 +325,9 @@ class SegmentWorkflow:
                     "enclosure-id": chunk.enclosure_id,
                 },
             )
-        if request.video_url:
-            analysis = self.analyzer.safe_analyze_url(request.video_url, chunk)
-        else:
-            analysis = self.analyzer.safe_analyze_file(request.local_video_path, chunk)
+        analysis, provider_attempts = self._analyze_with_retry(request)
         state["analysis"] = analysis
+        state["provider_attempts"] = provider_attempts
         if analysis.data_gap is None:
             self.store.replace_chunk_analysis(chunk.chunk_id)
         if self.archive is not None:
@@ -340,7 +392,31 @@ class SegmentWorkflow:
         return {
             "observation_count": len(analysis.observations),
             "has_data_gap": analysis.data_gap is not None,
+            "provider_attempts": provider_attempts,
         }
+
+    def _analyze_with_retry(
+        self,
+        request: SegmentWorkflowInput,
+    ) -> tuple[ProviderAnalysis, int]:
+        """Retry only explicit provider gaps, never spatial detection work."""
+        analysis: ProviderAnalysis | None = None
+        for attempt in range(1, self.provider_max_attempts + 1):
+            if request.video_url:
+                analysis = self.analyzer.safe_analyze_url(request.video_url, request.chunk)
+            else:
+                analysis = self.analyzer.safe_analyze_file(
+                    request.local_video_path,
+                    request.chunk,
+                )
+            if (
+                analysis.data_gap is None
+                or analysis.data_gap.reason not in RETRYABLE_PROVIDER_GAP_REASONS
+            ):
+                return analysis, attempt
+        if analysis is None:  # pragma: no cover - provider_max_attempts is clamped to one
+            raise RuntimeError("provider analysis did not run")
+        return analysis, self.provider_max_attempts
 
     def _record_gap(self, state: dict[str, Any]) -> dict[str, Any]:
         analysis: ProviderAnalysis = state["analysis"]
@@ -362,106 +438,13 @@ class SegmentWorkflow:
         request: SegmentWorkflowInput = state["request"]
         analysis: ProviderAnalysis = state["analysis"]
         events: list[EventRecord] = []
+        sources_by_id = {source.observation_id: source for source in analysis.observations}
         for stitched in stitch_observations(analysis.observations):
-            decision = classify(
-                TriageInput(
-                    animal_id=stitched.animal_id,
-                    behavior=stitched.behavior,
-                    continuous_duration_minutes=stitched.duration_minutes,
-                    hours_since_water_contact=request.hours_since_water_contact,
-                    inactivity_z=request.inactivity_z,
-                    baseline_delta_z=request.baseline_delta_z,
-                    source_observation_ids=stitched.source_observation_ids,
-                )
-            )
+            decision = self._classify_stitched(request, stitched)
             if decision.severity is Severity.NONE:
                 continue
-            record = EventRecord(
-                event_id=event_id(
-                    stitched.animal_id,
-                    stitched.behavior,
-                    stitched.source_observation_ids,
-                    decision.rule_version,
-                ),
-                animal_id=stitched.animal_id,
-                enclosure_id=stitched.enclosure_id,
-                behavior=stitched.behavior,
-                start_ts=stitched.start_ts,
-                end_ts=stitched.end_ts,
-                severity=decision.severity,
-                rule_fired=decision.rule_fired,
-                action=decision.action,
-                confidence=stitched.confidence,
-                baseline_delta_z=request.baseline_delta_z,
-                source_observation_ids=stitched.source_observation_ids,
-                explanation_facts=decision.explanation_facts,
-                rule_version=decision.rule_version,
-                shift_mode=ShiftMode.NIGHT,
-                created_at=self.now(),
-            )
-            self.store.save_event(record)
-            if self.evidence_enricher is not None:
-                sources_by_id = {source.observation_id: source for source in analysis.observations}
-                try:
-                    narrative = self.evidence_enricher.merge(
-                        EvidenceMergeRequest(
-                            event_id=record.event_id,
-                            animal_name=request.animal_name,
-                            behavior_label=record.behavior.value,
-                            sources=[
-                                EvidenceSource(
-                                    source_id=source_id,
-                                    fact=sources_by_id[source_id].evidence,
-                                )
-                                for source_id in record.source_observation_ids
-                            ],
-                        )
-                    )
-                    self.store.save_event_narrative(
-                        event_id=record.event_id,
-                        headline=narrative.headline,
-                        factual_summary=narrative.factual_summary,
-                        uncertainty=narrative.uncertainty,
-                        cited_source_ids=narrative.cited_source_ids,
-                        model=self.evidence_enricher.model,
-                        created_at=self.now().isoformat(),
-                    )
-                    state["enriched_event_ids"].append(record.event_id)
-                except Exception:  # noqa: BLE001 - deterministic event remains authoritative
-                    pass
-            gate = delivery_gate(
-                record,
-                AlertDeliveryContext(
-                    fixture_mode=request.fixture_mode,
-                    delivery_enabled=request.delivery_enabled,
-                    webhook_configured=request.webhook_configured,
-                    scheduler_configured=self.escalation_scheduler is not None,
-                    baseline_state=request.baseline_state,
-                ),
-            )
-            alert_id = stable_id("alt", record.event_id, "keeper-console")
-            schedule = None
-            delivery_status = "shadowed"
-            if gate.allowed and self.escalation_scheduler is not None:
-                try:
-                    schedule = self.escalation_scheduler.schedule_alert(
-                        alert_id=alert_id,
-                        event_id=record.event_id,
-                        run_at=self.now() + timedelta(minutes=self.alert_ack_minutes),
-                    )
-                    delivery_status = "scheduled"
-                    state["scheduled_alert_ids"].append(alert_id)
-                except Exception:  # noqa: BLE001 - persist a visible delivery failure
-                    delivery_status = "schedule_failed"
-            self.store.save_alert(
-                alert_id=alert_id,
-                event_id=record.event_id,
-                channel="keeper_console",
-                delivery_status=delivery_status,
-                ack_state=AckState.PENDING.value,
-                scheduler_schedule_name=schedule.name if schedule else None,
-                scheduler_schedule_arn=schedule.arn if schedule else None,
-            )
+            record = self._event_record(request, stitched, decision)
+            self._persist_event(request, record, sources_by_id, state)
             events.append(record)
         state["events"] = events
         state["event_ids"] = [event.event_id for event in events]
@@ -474,13 +457,141 @@ class SegmentWorkflow:
             "rules_fired": state["rules_fired"],
         }
 
+    @staticmethod
+    def _classify_stitched(
+        request: SegmentWorkflowInput,
+        stitched: StitchedObservation,
+    ) -> TriageDecision:
+        return classify(
+            TriageInput(
+                animal_id=stitched.animal_id,
+                behavior=stitched.behavior,
+                continuous_duration_minutes=stitched.duration_minutes,
+                hours_since_water_contact=request.hours_since_water_contact,
+                inactivity_z=request.inactivity_z,
+                baseline_delta_z=request.baseline_delta_z,
+                source_observation_ids=stitched.source_observation_ids,
+            )
+        )
+
+    def _event_record(
+        self,
+        request: SegmentWorkflowInput,
+        stitched: StitchedObservation,
+        decision: TriageDecision,
+    ) -> EventRecord:
+        return EventRecord(
+            event_id=event_id(
+                stitched.animal_id,
+                stitched.behavior,
+                stitched.source_observation_ids,
+                decision.rule_version,
+            ),
+            animal_id=stitched.animal_id,
+            enclosure_id=stitched.enclosure_id,
+            behavior=stitched.behavior,
+            start_ts=stitched.start_ts,
+            end_ts=stitched.end_ts,
+            severity=decision.severity,
+            rule_fired=decision.rule_fired,
+            action=decision.action,
+            confidence=stitched.confidence,
+            baseline_delta_z=request.baseline_delta_z,
+            source_observation_ids=stitched.source_observation_ids,
+            explanation_facts=decision.explanation_facts,
+            rule_version=decision.rule_version,
+            shift_mode=ShiftMode.NIGHT,
+            created_at=self.now(),
+        )
+
+    def _persist_event(
+        self,
+        request: SegmentWorkflowInput,
+        record: EventRecord,
+        sources_by_id: dict[str, Observation],
+        state: dict[str, Any],
+    ) -> None:
+        self.store.save_event(record)
+        if self.evidence_enricher is not None:
+            try:
+                narrative = self.evidence_enricher.merge(
+                    EvidenceMergeRequest(
+                        event_id=record.event_id,
+                        animal_name=request.animal_name,
+                        behavior_label=record.behavior.value,
+                        sources=[
+                            EvidenceSource(
+                                source_id=source_id,
+                                fact=sources_by_id[source_id].evidence,
+                            )
+                            for source_id in record.source_observation_ids
+                        ],
+                    )
+                )
+                self.store.save_event_narrative(
+                    event_id=record.event_id,
+                    headline=narrative.headline,
+                    factual_summary=narrative.factual_summary,
+                    uncertainty=narrative.uncertainty,
+                    cited_source_ids=narrative.cited_source_ids,
+                    model=self.evidence_enricher.model,
+                    created_at=self.now().isoformat(),
+                )
+                state["enriched_event_ids"].append(record.event_id)
+            except Exception:  # noqa: BLE001 - deterministic event remains authoritative
+                pass
+        gate = delivery_gate(
+            record,
+            AlertDeliveryContext(
+                fixture_mode=request.fixture_mode,
+                delivery_enabled=request.delivery_enabled,
+                webhook_configured=request.webhook_configured,
+                scheduler_configured=self.escalation_scheduler is not None,
+                baseline_state=request.baseline_state,
+            ),
+        )
+        alert_id = stable_id("alt", record.event_id, "keeper-console")
+        schedule = None
+        delivery_status = "shadowed"
+        if gate.allowed and self.escalation_scheduler is not None:
+            try:
+                schedule = self.escalation_scheduler.schedule_alert(
+                    alert_id=alert_id,
+                    event_id=record.event_id,
+                    run_at=self.now() + timedelta(minutes=self.alert_ack_minutes),
+                )
+                delivery_status = "scheduled"
+                state["scheduled_alert_ids"].append(alert_id)
+            except Exception:  # noqa: BLE001 - persist a visible delivery failure
+                delivery_status = "schedule_failed"
+        self.store.save_alert(
+            alert_id=alert_id,
+            event_id=record.event_id,
+            channel="keeper_console",
+            delivery_status=delivery_status,
+            ack_state=AckState.PENDING.value,
+            scheduler_schedule_name=schedule.name if schedule else None,
+            scheduler_schedule_arn=schedule.arn if schedule else None,
+        )
+
     def _index_night(self, state: dict[str, Any]) -> dict[str, Any]:
         if self.graph_writer is None:
             return {"graph_write": "not_configured"}
         request: SegmentWorkflowInput = state["request"]
         analysis: ProviderAnalysis = state["analysis"]
-        sources = {item.observation_id: item for item in analysis.observations}
-        for event in state["events"]:
+        self._write_graph_events(request, state["events"], analysis.observations)
+        return {"graph_write": "complete", "events": len(state["events"])}
+
+    def _write_graph_events(
+        self,
+        request: SegmentWorkflowInput,
+        events: list[EventRecord],
+        observations: list[Observation],
+    ) -> None:
+        if self.graph_writer is None:
+            return
+        sources = {item.observation_id: item for item in observations}
+        for event in events:
             self.graph_writer.write_event(
                 GraphEventBundle(
                     animal_name=request.animal_name,
@@ -491,7 +602,6 @@ class SegmentWorkflow:
                     sources=[sources[source_id] for source_id in event.source_observation_ids],
                 )
             )
-        return {"graph_write": "complete", "events": len(state["events"])}
 
 
 def _has_data_gap(

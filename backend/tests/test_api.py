@@ -1,3 +1,6 @@
+from datetime import UTC, datetime
+from pathlib import Path
+
 import pytest
 from fastapi.testclient import TestClient
 from zoovision.api import IngestStartRequest, create_app
@@ -254,6 +257,105 @@ def test_videos_endpoint_lists_analyzed_sources(client):
     assert isinstance(source["animal_ids"], list)
     assert isinstance(source["animal_names"], list)
     assert isinstance(source["animal_species"], list)
+    assert source["analysis_status"] in {"complete", "incomplete"}
+    assert source["is_fully_analyzed"] is (source["analysis_status"] == "complete")
+    assert 0 <= source["coverage_percent"] <= 100
+
+
+def test_videos_endpoint_exposes_running_and_complete_source_coverage(tmp_path):
+    settings = Settings(
+        ZOOVISION_STORAGE_ROOT=tmp_path,
+        ZOOVISION_FIXTURE_MODE=True,
+        _env_file=None,
+    )
+    store = SQLiteStore(tmp_path / "zoovision.db")
+    test_client = TestClient(create_app(settings, store, graph_reader=FakeGraphReader()))
+    test_client.post("/api/demo/reset")
+    source = test_client.get("/api/videos").json()["videos"][0]
+    source_name = Path(source["source_path"]).name
+    timestamp = datetime(2026, 7, 30, 2, tzinfo=UTC).isoformat()
+    segment = {
+        "index": 0,
+        "chunk_id": "chunk-progress-1",
+        "start_ts": timestamp,
+        "duration_seconds": 60,
+        "route": "night_triage",
+        "observation_count": 2,
+        "detection_count": 4,
+        "event_ids": [],
+        "rules_fired": [],
+        "data_gap_id": None,
+        "provider_attempts": 1,
+    }
+    job = {
+        "job_id": "job-progress",
+        "status": "running",
+        "source_name": source_name,
+        "animal_id": source["animal_ids"][0],
+        "enclosure_id": source["enclosure_id"],
+        "created_at": timestamp,
+        "updated_at": timestamp,
+        "analyzer": "twelvelabs+yolo",
+        "total_segments": 3,
+        "completed_segments": 1,
+        "detection_count": 4,
+        "event_ids": [],
+        "source_event_ids": [],
+        "rules_fired": [],
+        "data_gap_ids": [],
+        "segments": [segment],
+        "probe": {
+            "duration_seconds": 180,
+            "width": 640,
+            "height": 360,
+            "frame_rate": 30,
+        },
+        "error": None,
+    }
+    store.save_ingest_job(job)
+
+    running = next(
+        item
+        for item in test_client.get("/api/videos").json()["videos"]
+        if item["source_path"] == source["source_path"]
+    )
+    assert running["analysis_status"] == "analyzing"
+    assert running["is_fully_analyzed"] is False
+    assert running["completed_segments"] == 1
+    assert running["analyzed_duration_seconds"] == 60
+    assert running["probe_duration_seconds"] == 180
+    assert running["coverage_percent"] == pytest.approx(33.3)
+
+    job.update(
+        status="complete",
+        completed_segments=3,
+        segments=[
+            {**segment, "index": index, "chunk_id": f"chunk-progress-{index + 1}"}
+            for index in range(3)
+        ],
+    )
+    store.save_ingest_job(job)
+    complete = next(
+        item
+        for item in test_client.get("/api/videos").json()["videos"]
+        if item["source_path"] == source["source_path"]
+    )
+    assert complete["analysis_status"] == "complete"
+    assert complete["is_fully_analyzed"] is True
+    assert complete["coverage_percent"] == 100
+
+    job["data_gap_ids"] = ["gap-progress"]
+    job["segments"][1]["data_gap_id"] = "gap-progress"
+    store.save_ingest_job(job)
+    incomplete = next(
+        item
+        for item in test_client.get("/api/videos").json()["videos"]
+        if item["source_path"] == source["source_path"]
+    )
+    assert incomplete["analysis_status"] == "incomplete"
+    assert incomplete["is_fully_analyzed"] is False
+    assert incomplete["data_gap_count"] == 1
+    assert incomplete["coverage_percent"] == pytest.approx(66.7)
 
 
 def test_video_track_places_events_on_the_media_timeline(client):

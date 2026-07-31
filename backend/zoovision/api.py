@@ -46,6 +46,76 @@ UPLOAD_CHUNK_COUNT_FORM = Form(..., ge=1, le=MAX_UPLOAD_CHUNKS)
 UPLOAD_TOTAL_BYTES_FORM = Form(..., ge=1, le=MAX_UPLOAD_BYTES)
 
 
+def _source_analysis_metadata(source: dict, job: dict | None) -> dict:
+    """Describe whether a visible source is still partial or fully analyzed."""
+    if job is not None:
+        segments = job.get("segments") or []
+        analyzed_duration = sum(
+            float(segment.get("duration_seconds") or 0)
+            for segment in segments
+            if not segment.get("data_gap_id")
+        )
+        probe = job.get("probe") or {}
+        probe_duration = float(probe.get("duration_seconds") or 0)
+        coverage_percent = (
+            min(100.0, analyzed_duration / probe_duration * 100) if probe_duration > 0 else 0.0
+        )
+        completed_segments = int(job.get("completed_segments") or 0)
+        total_segments = int(job.get("total_segments") or 0)
+        data_gap_count = len(job.get("data_gap_ids") or [])
+        job_status = str(job.get("status") or "queued")
+        if job_status in {"queued", "running"}:
+            analysis_status = "analyzing"
+        elif (
+            job_status == "complete"
+            and total_segments > 0
+            and completed_segments == total_segments
+            and data_gap_count == 0
+            and coverage_percent >= 99
+        ):
+            analysis_status = "complete"
+        else:
+            analysis_status = "incomplete"
+        return {
+            "analysis_status": analysis_status,
+            "is_fully_analyzed": analysis_status == "complete",
+            "latest_job_status": job_status,
+            "completed_segments": completed_segments,
+            "total_segments": total_segments,
+            "data_gap_count": data_gap_count,
+            "analyzed_duration_seconds": round(analyzed_duration, 3),
+            "probe_duration_seconds": round(probe_duration, 3),
+            "coverage_percent": round(coverage_percent, 1),
+        }
+
+    chunk_count = int(source.get("chunk_count") or 0)
+    analyzed_chunks = int(source.get("analyzed_chunk_count") or 0)
+    gap_chunks = int(source.get("gap_chunk_count") or 0)
+    analyzing_chunks = int(source.get("analyzing_chunk_count") or 0)
+    if analyzing_chunks:
+        analysis_status = "analyzing"
+    elif chunk_count > 0 and analyzed_chunks == chunk_count and gap_chunks == 0:
+        analysis_status = "complete"
+    else:
+        analysis_status = "incomplete"
+    analyzed_duration = max(0.0, float(source.get("stored_analyzed_duration_seconds") or 0))
+    source_duration = max(0.0, float(source.get("stored_source_duration_seconds") or 0))
+    coverage_percent = (
+        min(100.0, analyzed_duration / source_duration * 100) if source_duration > 0 else 0.0
+    )
+    return {
+        "analysis_status": analysis_status,
+        "is_fully_analyzed": analysis_status == "complete",
+        "latest_job_status": None,
+        "completed_segments": analyzed_chunks + gap_chunks,
+        "total_segments": chunk_count,
+        "data_gap_count": gap_chunks,
+        "analyzed_duration_seconds": round(analyzed_duration, 3),
+        "probe_duration_seconds": round(source_duration, 3),
+        "coverage_percent": round(coverage_percent, 1),
+    }
+
+
 class AckRequest(BaseModel):
     keeper: str = Field(min_length=1, max_length=80)
 
@@ -106,7 +176,7 @@ def build_chat_service(settings: Settings, store: SQLiteStore) -> GroundedChat:
             store,
             client=OpenAI(api_key=settings.openai_api_key),
             model=settings.openai_merge_model,
-            allow_fallback=not settings.production_mode,
+            allow_fallback=True,
         )
     except Exception:  # noqa: BLE001 - a missing client must not break startup
         if settings.production_mode:
@@ -420,10 +490,17 @@ def create_app(
     @app.get("/api/videos")
     def videos() -> dict:
         sources = store.video_sources()
+        latest_jobs = store.latest_ingest_jobs_by_source()
         for source in sources:
             source["media_url"] = f"/media/{source['source_path']}"
             for field in ("animal_ids", "animal_names", "animal_species"):
                 source[field] = sorted(set(filter(None, (source.get(field) or "").split(","))))
+            source.update(
+                _source_analysis_metadata(
+                    source,
+                    latest_jobs.get(Path(source["source_path"]).name),
+                )
+            )
         return {"videos": sources}
 
     @app.get("/api/videos/track")

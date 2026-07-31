@@ -34,6 +34,7 @@ from .detection import (
 from .domain import (
     BaselineState,
     Detection,
+    EventRecord,
     ShiftMode,
 )
 from .ids import stable_id
@@ -80,6 +81,7 @@ class IngestSegmentResult(BaseModel):
     event_ids: list[str] = Field(default_factory=list)
     rules_fired: list[str] = Field(default_factory=list)
     data_gap_id: str | None = None
+    provider_attempts: int = Field(default=1, ge=1)
 
 
 class IngestJob(BaseModel):
@@ -95,6 +97,7 @@ class IngestJob(BaseModel):
     completed_segments: int = 0
     detection_count: int = 0
     event_ids: list[str] = Field(default_factory=list)
+    source_event_ids: list[str] = Field(default_factory=list)
     rules_fired: list[str] = Field(default_factory=list)
     data_gap_ids: list[str] = Field(default_factory=list)
     segments: list[IngestSegmentResult] = Field(default_factory=list)
@@ -268,6 +271,7 @@ class VideoIngestService:
             raise RuntimeError("TwelveLabs is required for video ingestion")
         source = self.resolve_source(request.source_name)
         job.probe = probe_video(source)
+        content_sha256 = _file_fingerprint(source)
         job.status = "running"
         self._persist(job)
 
@@ -282,7 +286,14 @@ class VideoIngestService:
             job.total_segments = len(pieces)
             self._persist(job)
             for index, offset, duration, piece in pieces:
-                result = self._process_segment(request, index, offset, duration, piece, source)
+                result = self._process_segment(
+                    request,
+                    index,
+                    offset,
+                    duration,
+                    piece,
+                    content_sha256,
+                )
                 job.segments.append(result)
                 job.completed_segments += 1
                 job.detection_count += result.detection_count
@@ -292,6 +303,33 @@ class VideoIngestService:
                     job.data_gap_ids.append(result.data_gap_id)
                 job.updated_at = self.now()
                 self._persist(job)
+            source_events = self._finalize_source_events(
+                request,
+                source,
+                content_sha256,
+                job,
+            )
+            job.source_event_ids = [event.event_id for event in source_events]
+            job.event_ids = list(
+                dict.fromkeys(
+                    [
+                        *job.event_ids,
+                        *job.source_event_ids,
+                    ]
+                )
+            )
+            job.rules_fired = list(
+                dict.fromkeys(
+                    [
+                        *job.rules_fired,
+                        *(
+                            event.rule_fired
+                            for event in source_events
+                            if event.rule_fired is not None
+                        ),
+                    ]
+                )
+            )
             job.status = "complete"
             job.updated_at = self.now()
             self._persist(job)
@@ -306,7 +344,7 @@ class VideoIngestService:
         offset: float,
         duration: float,
         piece: Path,
-        source: Path,
+        content_sha256: str,
     ) -> IngestSegmentResult:
         chunk_id = stable_id("chk", request.source_name, request.animal_id, index)
         start_ts = request.start_ts + timedelta(seconds=offset)
@@ -342,7 +380,7 @@ class VideoIngestService:
                 species=request.species,
                 camera_id=request.camera_id,
                 source_path=f"uploads/{request.source_name}",
-                content_sha256=_file_fingerprint(source),
+                content_sha256=content_sha256,
                 source_offset_seconds=offset,
                 local_video_path=analyzable,
                 archive_video_path=piece,
@@ -367,6 +405,61 @@ class VideoIngestService:
             event_ids=outcome.event_ids,
             rules_fired=outcome.rules_fired,
             data_gap_id=outcome.data_gap_id,
+            provider_attempts=outcome.provider_attempts,
+        )
+
+    def _finalize_source_events(
+        self,
+        request: IngestRequest,
+        source: Path,
+        content_sha256: str,
+        job: IngestJob,
+    ) -> list[EventRecord]:
+        """Run duration-only triage across every successfully analyzed segment."""
+        successful_chunk_ids = [
+            segment.chunk_id for segment in job.segments if segment.data_gap_id is None
+        ]
+        observations = self.store.observations_for_chunks(successful_chunk_ids)
+        if not observations or job.probe is None:
+            return []
+
+        workflow = SegmentWorkflow(
+            analyzer=self.analyzer_factory(),
+            store=self.store,
+            graph_writer=self.graph_writer,
+            archive=self.archive,
+            embedder=self.embedder,
+            evidence_enricher=self.evidence_enricher,
+            escalation_scheduler=self.escalation_scheduler,
+            alert_ack_minutes=self.alert_ack_minutes,
+            now=self.now,
+        )
+        return workflow.finalize_source_duration_events(
+            SegmentWorkflowInput(
+                chunk=VideoChunkContext(
+                    chunk_id=stable_id(
+                        "src",
+                        request.source_name,
+                        request.animal_id,
+                    ),
+                    animal_id=request.animal_id,
+                    enclosure_id=request.enclosure_id,
+                    start_ts=request.start_ts,
+                    end_ts=request.start_ts + timedelta(seconds=job.probe.duration_seconds),
+                ),
+                animal_name=request.animal_name,
+                species=request.species,
+                camera_id=request.camera_id,
+                source_path=f"uploads/{request.source_name}",
+                content_sha256=content_sha256,
+                local_video_path=source,
+                shift_mode=request.shift_mode,
+                baseline_state=_baseline_state(self.store, request.animal_id),
+                fixture_mode=self.fixture_mode,
+                delivery_enabled=self.delivery_enabled,
+                webhook_configured=self.webhook_configured,
+            ),
+            observations,
         )
 
     def _persist(self, job: IngestJob) -> None:
