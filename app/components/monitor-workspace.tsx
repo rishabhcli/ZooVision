@@ -1625,9 +1625,11 @@ export function MonitorWorkspace() {
                         : "left"
                     }
                     data-label-position={
-                      detection.box.y < 0.12
+                      detection.box.y <
+                      0.12 + (detectionIndex % 3) * 0.08
                         ? "below"
-                        : detection.box.y + detection.box.height > 0.78
+                        : detection.box.y + detection.box.height >
+                            0.78 - (detectionIndex % 3) * 0.08
                           ? "above"
                           : detectionIndex % 2 === 1
                             ? "below"
