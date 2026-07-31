@@ -8,6 +8,7 @@ from twelvelabs.core import ApiError
 from zoovision.domain import Behavior, EvidenceKind
 from zoovision.providers import (
     OPENAI_FRAME_MAX_IMAGES,
+    OPENAI_FRAME_PROMPT,
     OpenAIFrameAnalyzer,
     ProviderBatch,
     TwelveLabsAnalyzer,
@@ -86,6 +87,13 @@ def test_provider_schema_removes_live_unsupported_numeric_constraints():
         "maxItems",
     ):
         assert keyword not in rendered
+
+
+def test_openai_frame_prompt_separates_review_coverage_from_visibility():
+    assert "whether you reviewed every supplied frame" in OPENAI_FRAME_PROMPT
+    assert "no visible animal" in OPENAI_FRAME_PROMPT
+    assert "empty observations list" in OPENAI_FRAME_PROMPT
+    assert "could not be inspected at all" in OPENAI_FRAME_PROMPT
 
 
 def test_observation_outside_chunk_is_rejected(chunk):

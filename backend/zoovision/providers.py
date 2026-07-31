@@ -66,7 +66,16 @@ within its stated duration. Copy start and end seconds exactly from the supplied
 frame timestamp labels. Every observation must span at least two supplied
 frames; omit a one-frame marker rather than inventing duration. Do not fill
 unseen time or infer continuity beyond the frames.
-Set `coverage_complete` to false if any supplied frame cannot be assessed.
+
+`coverage_complete` records whether you reviewed every supplied frame, not
+whether an animal was visible or identifiable in every frame. Set it to true
+after inspecting every supplied image, including frames with no visible animal,
+low light, occlusion, glare, or an uncertain identity. Put those visibility
+limits in `uncertainty` and omit unsupported behavior observations. It is valid
+to return `coverage_complete: true` with an empty observations list when every
+frame was reviewed but no continuous animal activity was visibly supported.
+Set `coverage_complete` to false only when a supplied image was missing,
+corrupt, unavailable to you, or otherwise could not be inspected at all.
 
 Do not assign severity, diagnose, recommend treatment, infer intent, or add
 facts that are not visible. State identity or behavior uncertainty explicitly.
