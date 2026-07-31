@@ -2368,6 +2368,10 @@
     aspect-ratio: 16 / 11;
   }
 
+  .stage-play {
+    display: none;
+  }
+
   .evidence-timeline {
     --timeline-label-width: 72px;
   }
