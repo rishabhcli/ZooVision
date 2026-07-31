@@ -301,17 +301,6 @@ class SegmentWorkflow:
             enclosure_id=chunk.enclosure_id,
             baseline_state=request.baseline_state.value,
         )
-        self.store.upsert_video_chunk(
-            chunk_id=chunk.chunk_id,
-            enclosure_id=chunk.enclosure_id,
-            camera_id=request.camera_id,
-            start_ts=chunk.start_ts.isoformat(),
-            end_ts=chunk.end_ts.isoformat(),
-            source_path=request.source_path,
-            source_offset_seconds=request.source_offset_seconds,
-            content_sha256=request.content_sha256,
-            status="analyzing",
-        )
         if self.archive is not None and request.local_video_path is not None:
             archive_source = request.archive_video_path or request.local_video_path
             state["raw_archive_uri"] = self.archive.upload_file(
@@ -329,7 +318,29 @@ class SegmentWorkflow:
         state["analysis"] = analysis
         state["provider_attempts"] = provider_attempts
         if analysis.data_gap is None:
-            self.store.replace_chunk_analysis(chunk.chunk_id)
+            self.store.replace_chunk_provider_analysis(
+                chunk_id=chunk.chunk_id,
+                enclosure_id=chunk.enclosure_id,
+                camera_id=request.camera_id,
+                start_ts=chunk.start_ts.isoformat(),
+                end_ts=chunk.end_ts.isoformat(),
+                source_path=request.source_path,
+                source_offset_seconds=request.source_offset_seconds,
+                content_sha256=request.content_sha256,
+                observations=analysis.observations,
+            )
+        else:
+            self.store.upsert_video_chunk(
+                chunk_id=chunk.chunk_id,
+                enclosure_id=chunk.enclosure_id,
+                camera_id=request.camera_id,
+                start_ts=chunk.start_ts.isoformat(),
+                end_ts=chunk.end_ts.isoformat(),
+                source_path=request.source_path,
+                source_offset_seconds=request.source_offset_seconds,
+                content_sha256=request.content_sha256,
+                status="coverage_gap",
+            )
         if self.archive is not None:
             state["analysis_archive_uri"] = self.archive.upload_json(
                 AssetKind.ANALYSIS,
@@ -376,19 +387,9 @@ class SegmentWorkflow:
                 self.store.save_data_gap(gap)
                 state["embedding_status"] = "failed"
                 state["embedding_data_gap_id"] = gap.gap_id
-        for observation in analysis.observations:
-            self.store.save_observation(observation)
-        self.store.upsert_video_chunk(
-            chunk_id=chunk.chunk_id,
-            enclosure_id=chunk.enclosure_id,
-            camera_id=request.camera_id,
-            start_ts=chunk.start_ts.isoformat(),
-            end_ts=chunk.end_ts.isoformat(),
-            source_path=request.source_path,
-            source_offset_seconds=request.source_offset_seconds,
-            content_sha256=request.content_sha256,
-            status="coverage_gap" if analysis.data_gap else "analyzed",
-        )
+        if analysis.data_gap is not None:
+            for observation in analysis.observations:
+                self.store.save_observation(observation)
         return {
             "observation_count": len(analysis.observations),
             "has_data_gap": analysis.data_gap is not None,

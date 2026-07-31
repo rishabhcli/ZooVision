@@ -40,7 +40,7 @@ from .domain import (
 from .ids import stable_id
 from .providers import VideoChunkContext
 from .store import SQLiteStore
-from .workflow import SegmentWorkflow, SegmentWorkflowInput
+from .workflow import SegmentWorkflow, SegmentWorkflowInput, SegmentWorkflowResult
 
 #: TwelveLabs rejects base64 payloads above roughly 22 MB, so segments larger
 #: than this are transcoded down before they are offered to the provider.
@@ -103,6 +103,7 @@ class IngestJob(BaseModel):
     segments: list[IngestSegmentResult] = Field(default_factory=list)
     probe: VideoProbe | None = None
     error: str | None = None
+    request: IngestRequest | None = None
 
 
 def segment_video(
@@ -204,6 +205,7 @@ class VideoIngestService:
         self.now = now or (lambda: datetime.now(UTC))
         self._lock = threading.Lock()
         self._source_locks: dict[str, threading.Lock] = {}
+        self._provider_lock = threading.Lock()
 
     def resolve_source(self, source_name: str) -> Path:
         """Resolve an upload name to a real file inside the raw root."""
@@ -224,6 +226,31 @@ class VideoIngestService:
         )
         thread.start()
         return job
+
+    def start_gap_retry(
+        self,
+        job_id: str,
+        request: IngestRequest | None = None,
+    ) -> IngestJob:
+        """Queue provider-only retries for the completed job's gapped segments."""
+        job = self._prepare_gap_retry(job_id, request)
+        thread = threading.Thread(
+            target=self._retry_gaps_guarded,
+            args=(job.job_id,),
+            name=f"ingest-gap-retry-{job.job_id[:12]}",
+            daemon=True,
+        )
+        thread.start()
+        return job
+
+    def retry_gaps(
+        self,
+        job_id: str,
+        request: IngestRequest | None = None,
+    ) -> IngestJob:
+        """Run provider-only gap retries on the calling thread."""
+        job = self._prepare_gap_retry(job_id, request)
+        return self._retry_gaps_guarded(job.job_id)
 
     def run(self, request: IngestRequest) -> IngestJob:
         """Run a job to completion on the calling thread."""
@@ -249,11 +276,89 @@ class VideoIngestService:
             created_at=moment,
             updated_at=moment,
             analyzer="twelvelabs+yolo",
+            request=request,
         )
+
+    def _prepare_gap_retry(
+        self,
+        job_id: str,
+        request: IngestRequest | None,
+    ) -> IngestJob:
+        if self.analyzer_factory is None:
+            raise RuntimeError("TwelveLabs is required for provider gap retries")
+        with self._lock:
+            job = self.status(job_id)
+            if job is None:
+                raise FileNotFoundError("ingest job not found")
+            if job.status in {"queued", "running"}:
+                raise ValueError("ingest job is already running")
+            if (
+                job.total_segments <= 0
+                or job.completed_segments != job.total_segments
+                or len(job.segments) != job.total_segments
+            ):
+                raise ValueError("only a fully segmented job can retry provider gaps")
+            if not any(segment.data_gap_id for segment in job.segments):
+                raise ValueError("ingest job has no provider gaps to retry")
+            if job.source_event_ids:
+                raise ValueError(
+                    "legacy gapped job has source-level events and requires full reingestion"
+                )
+
+            resolved = request or job.request
+            if resolved is None:
+                raise ValueError("legacy ingest job requires its exact original IngestRequest")
+            if request is not None and job.request is not None and request != job.request:
+                raise ValueError("retry request does not match the persisted ingest request")
+            self._validate_retry_request(job, resolved)
+            job.request = resolved
+            job.status = "queued"
+            job.error = None
+            job.updated_at = self.now()
+            self.store.save_ingest_job(job.model_dump(mode="json"))
+            return job
+
+    @staticmethod
+    def _validate_retry_request(job: IngestJob, request: IngestRequest) -> None:
+        if request.source_name != job.source_name:
+            raise ValueError("retry source_name does not match the ingest job")
+        if request.animal_id != job.animal_id:
+            raise ValueError("retry animal_id does not match the ingest job")
+        if request.enclosure_id != job.enclosure_id:
+            raise ValueError("retry enclosure_id does not match the ingest job")
+        completed_routes = {
+            segment.route for segment in job.segments if segment.data_gap_id is None
+        }
+        if "day_observation" in completed_routes and request.shift_mode is not ShiftMode.DAY:
+            raise ValueError("retry shift_mode does not match existing day observations")
+        if "night_triage" in completed_routes and request.shift_mode is not ShiftMode.NIGHT:
+            raise ValueError("retry shift_mode does not match existing night observations")
+        for segment in job.segments:
+            expected_chunk_id = stable_id(
+                "chk",
+                request.source_name,
+                request.animal_id,
+                segment.index,
+            )
+            if segment.chunk_id != expected_chunk_id:
+                raise ValueError("retry request does not identify the stored chunk generation")
 
     def _run_guarded(self, job_id: str, request: IngestRequest) -> IngestJob:
         try:
             return self._run(job_id, request)
+        except Exception as error:  # noqa: BLE001 - surfaced to the operator as job state
+            job = self.status(job_id)
+            if job is None:
+                raise
+            job.status = "failed"
+            job.error = f"{type(error).__name__}: {error}"
+            job.updated_at = self.now()
+            self._persist(job)
+            return job
+
+    def _retry_gaps_guarded(self, job_id: str) -> IngestJob:
+        try:
+            return self._retry_gaps(job_id)
         except Exception as error:  # noqa: BLE001 - surfaced to the operator as job state
             job = self.status(job_id)
             if job is None:
@@ -269,6 +374,152 @@ class VideoIngestService:
             source_lock = self._source_locks.setdefault(request.source_name, threading.Lock())
         with source_lock:
             return self._run_source(job_id, request)
+
+    def _retry_gaps(self, job_id: str) -> IngestJob:
+        job = self.status(job_id)
+        if job is None or job.request is None:
+            raise RuntimeError("gap retry lost its persisted ingest request")
+        with self._lock:
+            source_lock = self._source_locks.setdefault(job.source_name, threading.Lock())
+        with source_lock:
+            return self._retry_source_gaps(job_id)
+
+    def _retry_source_gaps(self, job_id: str) -> IngestJob:
+        job = self.status(job_id)
+        if job is None or job.request is None:
+            raise RuntimeError("gap retry disappeared before it started")
+        request = job.request
+        source = self.resolve_source(request.source_name)
+        content_sha256 = _file_fingerprint(source)
+        source_path = f"uploads/{request.source_name}"
+        stored_chunks = {
+            row["chunk_id"]: row
+            for row in self.store.dump_table("video_chunks")
+            if row["source_path"] == source_path
+        }
+        targets = {
+            segment.index: segment for segment in job.segments if segment.data_gap_id is not None
+        }
+        if not targets:
+            raise ValueError("ingest job has no provider gaps to retry")
+
+        for segment in targets.values():
+            chunk = stored_chunks.get(segment.chunk_id)
+            if chunk is None:
+                raise ValueError("gapped chunk is no longer in the current source generation")
+            if chunk["content_sha256"] != content_sha256:
+                raise ValueError("source bytes changed after the recorded analysis")
+            if chunk["enclosure_id"] != request.enclosure_id:
+                raise ValueError("retry enclosure_id does not match stored chunk provenance")
+            if chunk["camera_id"] != request.camera_id:
+                raise ValueError("retry camera_id does not match stored chunk provenance")
+            stored_start = datetime.fromisoformat(chunk["start_ts"])
+            stored_end = datetime.fromisoformat(chunk["end_ts"])
+            expected_offset = (segment.start_ts - request.start_ts).total_seconds()
+            if abs((stored_start - segment.start_ts).total_seconds()) > 0.25:
+                raise ValueError("gapped chunk belongs to a newer source generation")
+            if abs((stored_end - stored_start).total_seconds() - segment.duration_seconds) > 0.25:
+                raise ValueError("stored chunk duration does not match retry provenance")
+            if abs(float(chunk["source_offset_seconds"]) - expected_offset) > 0.25:
+                raise ValueError("stored chunk offset does not match retry provenance")
+
+        job.status = "running"
+        job.error = None
+        job.updated_at = self.now()
+        self._persist(job)
+
+        workspace = Path(tempfile.mkdtemp(prefix="zoovision-gap-retry-"))
+        try:
+            pieces = segment_video(
+                source,
+                workspace,
+                segment_seconds=request.segment_seconds,
+                max_segments=request.max_segments,
+            )
+            if len(pieces) != job.total_segments:
+                raise ValueError("retry segmentation does not match the recorded generation")
+            pieces_by_index = {
+                index: (offset, duration, piece) for index, offset, duration, piece in pieces
+            }
+            positions = {segment.index: position for position, segment in enumerate(job.segments)}
+
+            for index in sorted(targets):
+                previous = targets[index]
+                try:
+                    offset, duration, piece = pieces_by_index[index]
+                except KeyError as error:
+                    raise ValueError(
+                        "retry segment is missing from the regenerated source"
+                    ) from error
+                expected_start = request.start_ts + timedelta(seconds=offset)
+                if abs((previous.start_ts - expected_start).total_seconds()) > 0.25:
+                    raise ValueError("retry segment start does not match stored provenance")
+                if abs(previous.duration_seconds - duration) > 0.25:
+                    raise ValueError("retry segment duration does not match stored provenance")
+
+                replacement = self._process_provider_retry(
+                    request,
+                    index,
+                    offset,
+                    duration,
+                    piece,
+                    content_sha256,
+                )
+                replacement.provider_attempts += previous.provider_attempts
+                job.segments[positions[index]] = replacement
+                self._refresh_job_aggregates(job)
+                job.updated_at = self.now()
+                self._persist(job)
+
+            self._refresh_job_aggregates(job)
+            if not job.data_gap_ids:
+                source_events = self._finalize_source_events(
+                    request,
+                    source,
+                    content_sha256,
+                    job,
+                )
+                job.source_event_ids = [event.event_id for event in source_events]
+                self._refresh_job_aggregates(job)
+                job.rules_fired = list(
+                    dict.fromkeys(
+                        [
+                            *job.rules_fired,
+                            *(
+                                event.rule_fired
+                                for event in source_events
+                                if event.rule_fired is not None
+                            ),
+                        ]
+                    )
+                )
+            job.status = "complete"
+            job.updated_at = self.now()
+            self._persist(job)
+            return job
+        finally:
+            shutil.rmtree(workspace, ignore_errors=True)
+
+    @staticmethod
+    def _refresh_job_aggregates(job: IngestJob) -> None:
+        job.completed_segments = len(job.segments)
+        job.detection_count = sum(segment.detection_count for segment in job.segments)
+        job.data_gap_ids = list(
+            dict.fromkeys(
+                segment.data_gap_id for segment in job.segments if segment.data_gap_id is not None
+            )
+        )
+        job.event_ids = list(
+            dict.fromkeys(
+                [
+                    *(event_id for segment in job.segments for event_id in segment.event_ids),
+                    *job.source_event_ids,
+                ]
+            )
+        )
+        job.rules_fired = list(
+            dict.fromkeys(rule for segment in job.segments for rule in segment.rules_fired)
+        )
 
     def _run_source(self, job_id: str, request: IngestRequest) -> IngestJob:
         job = self.status(job_id)
@@ -314,11 +565,15 @@ class VideoIngestService:
                     job.data_gap_ids.append(result.data_gap_id)
                 job.updated_at = self.now()
                 self._persist(job)
-            source_events = self._finalize_source_events(
-                request,
-                source,
-                content_sha256,
-                job,
+            source_events = (
+                self._finalize_source_events(
+                    request,
+                    source,
+                    content_sha256,
+                    job,
+                )
+                if not job.data_gap_ids
+                else []
             )
             job.source_event_ids = [event.event_id for event in source_events]
             job.event_ids = list(
@@ -365,42 +620,13 @@ class VideoIngestService:
             duration_seconds=duration,
             config=self.detector_config,
         )
-        analyzer = self.analyzer_factory()
-        analyzable = _provider_ready(piece)
-        workflow = SegmentWorkflow(
-            analyzer=analyzer,
-            store=self.store,
-            graph_writer=self.graph_writer,
-            archive=self.archive,
-            embedder=self.embedder,
-            evidence_enricher=self.evidence_enricher,
-            escalation_scheduler=self.escalation_scheduler,
-            alert_ack_minutes=self.alert_ack_minutes,
-            now=self.now,
-        )
-        outcome = workflow.run(
-            SegmentWorkflowInput(
-                chunk=VideoChunkContext(
-                    chunk_id=chunk_id,
-                    animal_id=request.animal_id,
-                    enclosure_id=request.enclosure_id,
-                    start_ts=start_ts,
-                    end_ts=start_ts + timedelta(seconds=duration),
-                ),
-                animal_name=request.animal_name,
-                species=request.species,
-                camera_id=request.camera_id,
-                source_path=f"uploads/{request.source_name}",
-                content_sha256=content_sha256,
-                source_offset_seconds=offset,
-                local_video_path=analyzable,
-                archive_video_path=piece,
-                shift_mode=request.shift_mode,
-                baseline_state=_baseline_state(self.store, request.animal_id),
-                fixture_mode=self.fixture_mode,
-                delivery_enabled=self.delivery_enabled,
-                webhook_configured=self.webhook_configured,
-            )
+        outcome = self._run_segment_workflow(
+            request,
+            chunk_id,
+            offset,
+            duration,
+            piece,
+            content_sha256,
         )
         # The workflow creates the chunk row before spatial records are saved.
         # Replacing the set removes stale boxes if a model or threshold changes.
@@ -418,6 +644,92 @@ class VideoIngestService:
             data_gap_id=outcome.data_gap_id,
             provider_attempts=outcome.provider_attempts,
         )
+
+    def _process_provider_retry(
+        self,
+        request: IngestRequest,
+        index: int,
+        offset: float,
+        duration: float,
+        piece: Path,
+        content_sha256: str,
+    ) -> IngestSegmentResult:
+        """Retry provider semantics for one stable chunk without invoking YOLO."""
+        chunk_id = stable_id("chk", request.source_name, request.animal_id, index)
+        start_ts = request.start_ts + timedelta(seconds=offset)
+        outcome = self._run_segment_workflow(
+            request,
+            chunk_id,
+            offset,
+            duration,
+            piece,
+            content_sha256,
+        )
+        return IngestSegmentResult(
+            index=index,
+            chunk_id=chunk_id,
+            start_ts=start_ts,
+            duration_seconds=duration,
+            route=outcome.route,
+            observation_count=outcome.observation_count,
+            detection_count=len(self.store.detections_for_chunk(chunk_id)),
+            event_ids=outcome.event_ids,
+            rules_fired=outcome.rules_fired,
+            data_gap_id=outcome.data_gap_id,
+            provider_attempts=outcome.provider_attempts,
+        )
+
+    def _run_segment_workflow(
+        self,
+        request: IngestRequest,
+        chunk_id: str,
+        offset: float,
+        duration: float,
+        piece: Path,
+        content_sha256: str,
+    ) -> SegmentWorkflowResult:
+        if self.analyzer_factory is None:
+            raise RuntimeError("TwelveLabs is required for video ingestion")
+        start_ts = request.start_ts + timedelta(seconds=offset)
+        analyzer = self.analyzer_factory()
+        analyzable = _provider_ready(piece)
+        workflow = SegmentWorkflow(
+            analyzer=analyzer,
+            store=self.store,
+            graph_writer=self.graph_writer,
+            archive=self.archive,
+            embedder=self.embedder,
+            evidence_enricher=self.evidence_enricher,
+            escalation_scheduler=self.escalation_scheduler,
+            alert_ack_minutes=self.alert_ack_minutes,
+            now=self.now,
+        )
+        with self._provider_lock:
+            outcome = workflow.run(
+                SegmentWorkflowInput(
+                    chunk=VideoChunkContext(
+                        chunk_id=chunk_id,
+                        animal_id=request.animal_id,
+                        enclosure_id=request.enclosure_id,
+                        start_ts=start_ts,
+                        end_ts=start_ts + timedelta(seconds=duration),
+                    ),
+                    animal_name=request.animal_name,
+                    species=request.species,
+                    camera_id=request.camera_id,
+                    source_path=f"uploads/{request.source_name}",
+                    content_sha256=content_sha256,
+                    source_offset_seconds=offset,
+                    local_video_path=analyzable,
+                    archive_video_path=piece,
+                    shift_mode=request.shift_mode,
+                    baseline_state=_baseline_state(self.store, request.animal_id),
+                    fixture_mode=self.fixture_mode,
+                    delivery_enabled=self.delivery_enabled,
+                    webhook_configured=self.webhook_configured,
+                )
+            )
+        return outcome
 
     def _finalize_source_events(
         self,

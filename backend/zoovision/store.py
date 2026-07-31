@@ -610,6 +610,118 @@ class SQLiteStore:
             )
             return cursor.rowcount
 
+    def replace_chunk_provider_analysis(
+        self,
+        *,
+        chunk_id: str,
+        enclosure_id: str,
+        camera_id: str,
+        start_ts: str,
+        end_ts: str,
+        source_path: str,
+        source_offset_seconds: float,
+        content_sha256: str,
+        observations: Iterable[Observation],
+    ) -> int:
+        """Atomically replace provider evidence while preserving spatial tracks.
+
+        A provider-only retry must not erase the YOLO detections already saved
+        for the stable chunk. The old provider gap is removed in the same
+        transaction that writes the replacement observations and marks the
+        chunk analyzed, so readers never see a false complete state.
+        """
+        values = list(observations)
+        if any(observation.chunk_id != chunk_id for observation in values):
+            raise ValueError("every replacement observation must belong to the requested chunk")
+
+        with self.connect() as connection:
+            event_ids = [
+                row["event_id"]
+                for row in connection.execute(
+                    """
+                    SELECT DISTINCT es.event_id
+                    FROM event_sources es
+                    JOIN observations o ON o.observation_id = es.observation_id
+                    WHERE o.chunk_id = ?
+                    """,
+                    (chunk_id,),
+                )
+            ]
+            for event_id in event_ids:
+                connection.execute("DELETE FROM outcomes WHERE event_id = ?", (event_id,))
+                connection.execute("DELETE FROM alerts WHERE event_id = ?", (event_id,))
+                connection.execute("DELETE FROM event_narratives WHERE event_id = ?", (event_id,))
+                connection.execute("DELETE FROM events WHERE event_id = ?", (event_id,))
+
+            connection.execute("DELETE FROM observations WHERE chunk_id = ?", (chunk_id,))
+            connection.execute(
+                """
+                DELETE FROM data_gaps
+                WHERE chunk_id = ? AND reason LIKE 'provider_%'
+                """,
+                (chunk_id,),
+            )
+            connection.execute(
+                """
+                INSERT INTO video_chunks(
+                    chunk_id, enclosure_id, camera_id, start_ts, end_ts, source_path,
+                    source_offset_seconds, content_sha256, status
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'analyzed')
+                ON CONFLICT(chunk_id) DO UPDATE SET
+                    enclosure_id = excluded.enclosure_id,
+                    camera_id = excluded.camera_id,
+                    start_ts = excluded.start_ts,
+                    end_ts = excluded.end_ts,
+                    source_path = excluded.source_path,
+                    source_offset_seconds = excluded.source_offset_seconds,
+                    content_sha256 = excluded.content_sha256,
+                    status = excluded.status
+                """,
+                (
+                    chunk_id,
+                    enclosure_id,
+                    camera_id,
+                    start_ts,
+                    end_ts,
+                    source_path,
+                    source_offset_seconds,
+                    content_sha256,
+                ),
+            )
+            connection.executemany(
+                """
+                INSERT INTO observations(
+                    observation_id, chunk_id, animal_id, behavior, start_ts, end_ts,
+                    confidence, evidence, provider, provider_model, provider_item_id,
+                    evidence_kind, activity_label
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(observation_id) DO UPDATE SET
+                    confidence = excluded.confidence,
+                    evidence = excluded.evidence,
+                    provider_item_id = excluded.provider_item_id,
+                    activity_label = excluded.activity_label
+                """,
+                (
+                    (
+                        observation.observation_id,
+                        observation.chunk_id,
+                        observation.animal_id,
+                        observation.behavior.value,
+                        observation.start_ts.isoformat(),
+                        observation.end_ts.isoformat(),
+                        observation.confidence,
+                        observation.evidence,
+                        observation.provider,
+                        observation.provider_model,
+                        observation.provider_item_id,
+                        observation.evidence_kind.value,
+                        observation.activity_label,
+                    )
+                    for observation in values
+                ),
+            )
+            return len(values)
+
     def replace_chunk_analysis(self, chunk_id: str) -> None:
         """Remove superseded derived evidence before a successful reanalysis.
 

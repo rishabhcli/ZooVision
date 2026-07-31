@@ -4,6 +4,7 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 from zoovision.api import IngestStartRequest, create_app
+from zoovision.ingest import IngestJob, IngestRequest, VideoIngestService
 from zoovision.settings import Settings
 from zoovision.store import SQLiteStore
 
@@ -493,6 +494,72 @@ def test_chunked_upload_rejects_a_noncanonical_upload_id(client):
 def test_ingest_job_404s_when_unknown(client):
     assert client.get("/api/ingest/jobs/job_missing").status_code == 404
     assert client.get("/api/ingest/jobs").json() == {"jobs": []}
+
+
+def test_gap_retry_endpoint_accepts_exact_metadata_behind_trusted_proxy(
+    tmp_path,
+    monkeypatch,
+):
+    settings = Settings(
+        ZOOVISION_STORAGE_ROOT=tmp_path,
+        ZOOVISION_FIXTURE_MODE=True,
+        TWELVELABS_API_KEY="test-key",
+        ZOOVISION_PROXY_SHARED_SECRET="trusted-proxy-secret-at-least-32-characters",
+        _env_file=None,
+    )
+    store = SQLiteStore(tmp_path / "zoovision.db")
+    captured: dict = {}
+
+    def fake_start_gap_retry(self, job_id, request):  # noqa: ANN001
+        del self
+        captured["job_id"] = job_id
+        captured["request"] = request
+        now = datetime(2026, 7, 31, 8, tzinfo=UTC)
+        return IngestJob(
+            job_id=job_id,
+            status="queued",
+            source_name=request.source_name,
+            animal_id=request.animal_id,
+            enclosure_id=request.enclosure_id,
+            created_at=now,
+            updated_at=now,
+            analyzer="twelvelabs+yolo",
+            request=request,
+        )
+
+    monkeypatch.setattr(VideoIngestService, "start_gap_retry", fake_start_gap_retry)
+    test_client = TestClient(create_app(settings, store, graph_reader=FakeGraphReader()))
+    payload = {
+        "source_name": "enc03_mountain_gorilla_15m.mp4",
+        "animal_id": "gorilla-03",
+        "animal_name": "Mountain gorilla",
+        "species": "Mountain gorilla",
+        "enclosure_id": "ENC-03",
+        "camera_id": "CAM-03Y",
+        "start_ts": "2026-07-30T16:37:56.896829-07:00",
+        "shift_mode": "night",
+        "segment_seconds": 120,
+        "max_segments": 240,
+    }
+
+    blocked = test_client.post(
+        "/api/ingest/jobs/job-current-gorilla/retry-gaps",
+        json=payload,
+    )
+    assert blocked.status_code == 401
+
+    accepted = test_client.post(
+        "/api/ingest/jobs/job-current-gorilla/retry-gaps",
+        json=payload,
+        headers={"x-zoovision-proxy-secret": "trusted-proxy-secret-at-least-32-characters"},
+    )
+
+    assert accepted.status_code == 202
+    assert accepted.json()["status"] == "queued"
+    assert captured["job_id"] == "job-current-gorilla"
+    assert isinstance(captured["request"], IngestRequest)
+    assert captured["request"].animal_name == "Mountain gorilla"
+    assert captured["request"].camera_id == "CAM-03Y"
 
 
 def test_production_ingest_contract_has_no_motion_only_override():

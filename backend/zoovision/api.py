@@ -669,6 +669,27 @@ def create_app(
             raise HTTPException(status_code=404, detail="ingest job not found")
         return job
 
+    @app.post(
+        "/api/ingest/jobs/{job_id}/retry-gaps",
+        response_model=IngestJob,
+        status_code=202,
+    )
+    def retry_ingest_gaps(
+        job_id: str,
+        payload: IngestRequest | None = None,
+    ) -> IngestJob:
+        if not settings.twelvelabs_api_key:
+            raise HTTPException(
+                status_code=503,
+                detail="TwelveLabs is required for provider gap retries",
+            )
+        try:
+            return ingest_service.start_gap_retry(job_id, payload)
+        except FileNotFoundError as error:
+            raise HTTPException(status_code=404, detail=str(error)) from error
+        except ValueError as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
+
     @app.post("/api/alerts/{alert_id}/ack")
     def acknowledge(alert_id: str, payload: AckRequest) -> dict:
         schedule_name = store.alert_schedule_name(alert_id)
