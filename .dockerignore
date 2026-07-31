@@ -4,5 +4,7 @@
 !README.md
 !backend/
 !backend/**
+!scripts/
+!scripts/reprocess_uploads.py
 !deploy/
 !deploy/Dockerfile.api
