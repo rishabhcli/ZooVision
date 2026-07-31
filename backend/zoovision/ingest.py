@@ -38,13 +38,36 @@ from .domain import (
     ShiftMode,
 )
 from .ids import stable_id
-from .providers import VideoChunkContext
+from .providers import ProviderAnalysis, VideoChunkContext
 from .store import SQLiteStore
 from .workflow import SegmentWorkflow, SegmentWorkflowInput, SegmentWorkflowResult
 
 #: TwelveLabs rejects base64 payloads above roughly 22 MB, so segments larger
 #: than this are transcoded down before they are offered to the provider.
 PROVIDER_PAYLOAD_LIMIT_BYTES = 20 * 1024 * 1024
+
+
+class _ReplayAnalyzer:
+    """Feed already validated provider evidence through the normal workflow."""
+
+    def __init__(self, analysis: ProviderAnalysis):
+        self.analysis = analysis
+
+    def safe_analyze_file(
+        self,
+        path: str | Path,
+        chunk: VideoChunkContext,
+    ) -> ProviderAnalysis:
+        del path, chunk
+        return self.analysis
+
+    def safe_analyze_url(
+        self,
+        video_url: str,
+        chunk: VideoChunkContext,
+    ) -> ProviderAnalysis:
+        del video_url, chunk
+        return self.analysis
 
 
 class IngestRequest(BaseModel):
@@ -175,6 +198,7 @@ class VideoIngestService:
         store: SQLiteStore,
         raw_root: Path,
         analyzer_factory: Callable[[], Any] | None = None,
+        fallback_analyzer_factory: Callable[[], Any] | None = None,
         detector_config: DetectorConfig | None = None,
         detector: Callable[..., list[Detection]] | None = None,
         graph_writer: Any | None = None,
@@ -191,6 +215,7 @@ class VideoIngestService:
         self.store = store
         self.raw_root = Path(raw_root)
         self.analyzer_factory = analyzer_factory
+        self.fallback_analyzer_factory = fallback_analyzer_factory
         self.detector_config = detector_config or DetectorConfig()
         self.detector = detector or detections_for_chunk
         self.graph_writer = graph_writer
@@ -665,6 +690,32 @@ class VideoIngestService:
             piece,
             content_sha256,
         )
+        if self._should_use_capacity_fallback(outcome):
+            fallback = self.fallback_analyzer_factory()
+            chunk = VideoChunkContext(
+                chunk_id=chunk_id,
+                animal_id=request.animal_id,
+                enclosure_id=request.enclosure_id,
+                start_ts=start_ts,
+                end_ts=start_ts + timedelta(seconds=duration),
+            )
+            with self._provider_lock:
+                fallback_analysis = fallback.safe_analyze_file(piece, chunk)
+            fallback_attempts = max(1, int(getattr(fallback, "attempt_count", 1)))
+            if fallback_analysis.data_gap is None:
+                replacement = self._run_segment_workflow(
+                    request,
+                    chunk_id,
+                    offset,
+                    duration,
+                    piece,
+                    content_sha256,
+                    analyzer_override=_ReplayAnalyzer(fallback_analysis),
+                )
+                replacement.provider_attempts = outcome.provider_attempts + fallback_attempts
+                outcome = replacement
+            else:
+                outcome.provider_attempts += fallback_attempts
         return IngestSegmentResult(
             index=index,
             chunk_id=chunk_id,
@@ -679,6 +730,20 @@ class VideoIngestService:
             provider_attempts=outcome.provider_attempts,
         )
 
+    def _should_use_capacity_fallback(self, outcome: SegmentWorkflowResult) -> bool:
+        if self.fallback_analyzer_factory is None or outcome.data_gap_id is None:
+            return False
+        for row in self.store.dump_table("data_gaps"):
+            if row["gap_id"] != outcome.data_gap_id:
+                continue
+            detail = row.get("detail") or ""
+            return (
+                row["reason"] == "provider_analysis_failed"
+                and "status=422" in detail
+                and "code=usage_limit_exceeded" in detail
+            )
+        return False
+
     def _run_segment_workflow(
         self,
         request: IngestRequest,
@@ -687,11 +752,13 @@ class VideoIngestService:
         duration: float,
         piece: Path,
         content_sha256: str,
+        *,
+        analyzer_override: Any | None = None,
     ) -> SegmentWorkflowResult:
         if self.analyzer_factory is None:
             raise RuntimeError("TwelveLabs is required for video ingestion")
         start_ts = request.start_ts + timedelta(seconds=offset)
-        analyzer = self.analyzer_factory()
+        analyzer = analyzer_override or self.analyzer_factory()
         analyzable = _provider_ready(piece)
         workflow = SegmentWorkflow(
             analyzer=analyzer,

@@ -202,10 +202,19 @@ def build_ingest_service(
             model=settings.twelvelabs_model,
         )
 
+    def fallback_analyzer_factory():
+        from .providers import OpenAIFrameAnalyzer
+
+        return OpenAIFrameAnalyzer(
+            settings.openai_api_key,
+            model=settings.openai_merge_model,
+        )
+
     return VideoIngestService(
         store=store,
         raw_root=raw_root,
         analyzer_factory=analyzer_factory if settings.twelvelabs_api_key else None,
+        fallback_analyzer_factory=(fallback_analyzer_factory if settings.openai_api_key else None),
         detector_config=settings.detector_config,
         fixture_mode=settings.fixture_mode,
         delivery_enabled=settings.alert_delivery_enabled,
@@ -780,6 +789,7 @@ def create_app(
                         f"{gap['reason']} from {gap['start_ts']} to {gap['end_ts']}"
                         for gap in report["data_gaps"]
                         if gap["enclosure_id"] == animal["enclosure_id"]
+                        and gap["reason"] != "bedrock_embedding_failed"
                     ],
                     no_notable_events=not animal["events"],
                 )

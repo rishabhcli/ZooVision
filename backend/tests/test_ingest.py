@@ -222,6 +222,78 @@ class _SelectiveRetryProvider:
     safe_analyze_url = _StubProvider.safe_analyze_url
 
 
+class _CapacityLimitedProvider:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def safe_analyze_file(self, path, chunk):  # noqa: ANN001
+        del path
+        self.calls += 1
+        return ProviderAnalysis(
+            observations=[],
+            data_gap=DataGap(
+                gap_id=f"gap-{chunk.chunk_id}",
+                enclosure_id=chunk.enclosure_id,
+                chunk_id=chunk.chunk_id,
+                start_ts=chunk.start_ts,
+                end_ts=chunk.end_ts,
+                reason="provider_analysis_failed",
+                detail=(
+                    "ApiError status=422 code=usage_limit_exceeded: structured analysis unavailable"
+                ),
+            ),
+        )
+
+    safe_analyze_url = _StubProvider.safe_analyze_url
+
+
+class _FrameFallbackProvider:
+    def __init__(self) -> None:
+        self.recover = False
+        self.calls = 0
+        self.attempt_count = 0
+
+    def safe_analyze_file(self, path, chunk):  # noqa: ANN001
+        del path
+        self.calls += 1
+        if not self.recover:
+            self.attempt_count = 2
+            return ProviderAnalysis(
+                observations=[],
+                data_gap=DataGap(
+                    gap_id=f"frame-gap-{chunk.chunk_id}",
+                    enclosure_id=chunk.enclosure_id,
+                    chunk_id=chunk.chunk_id,
+                    start_ts=chunk.start_ts,
+                    end_ts=chunk.end_ts,
+                    reason="provider_frame_analysis_failed",
+                ),
+            )
+        self.attempt_count = 4
+        return ProviderAnalysis(
+            observations=[
+                Observation(
+                    observation_id=f"frame-obs-{chunk.chunk_id}-{index}",
+                    animal_id=chunk.animal_id,
+                    enclosure_id=chunk.enclosure_id,
+                    chunk_id=chunk.chunk_id,
+                    behavior=Behavior.WALKING,
+                    start_ts=chunk.start_ts + timedelta(seconds=index * 30),
+                    end_ts=chunk.start_ts + timedelta(seconds=index * 30 + 4),
+                    confidence=0.82,
+                    evidence=f"Frame-sampled review window {index + 1}.",
+                    provider="openai",
+                    provider_model="gpt-5.6-luna",
+                    evidence_kind=EvidenceKind.FRAME_SAMPLED_PROVIDER,
+                    activity_label="Squirrel moving through the visible frame",
+                )
+                for index in range(4)
+            ]
+        )
+
+    safe_analyze_url = _StubProvider.safe_analyze_url
+
+
 def _stub_segmented_source(
     tmp_path: Path,
     monkeypatch,
@@ -909,6 +981,149 @@ def test_provider_only_retry_repairs_legacy_all_gap_job_incrementally(
     assert complete_metadata["analysis_status"] == "complete"
     assert complete_metadata["data_gap_count"] == 0
     assert complete_metadata["coverage_percent"] == 100
+
+
+def test_capacity_fallback_is_all_or_gap_and_preserves_detections(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    raw_root, _ = _stub_segmented_source(tmp_path, monkeypatch, durations=[120])
+    store = SQLiteStore(tmp_path / "capacity-fallback.db")
+    store.initialize()
+    provider = _CapacityLimitedProvider()
+    fallback = _FrameFallbackProvider()
+    detector_calls = 0
+
+    def detector(path, *, chunk_id, duration_seconds, config):  # noqa: ANN001
+        nonlocal detector_calls
+        detector_calls += 1
+        return _stub_detections(
+            path,
+            chunk_id=chunk_id,
+            duration_seconds=duration_seconds,
+            config=config,
+        )
+
+    service = VideoIngestService(
+        store=store,
+        raw_root=raw_root,
+        analyzer_factory=lambda: provider,
+        fallback_analyzer_factory=lambda: fallback,
+        detector=detector,
+        now=lambda: START,
+    )
+    request = IngestRequest(
+        source_name="source.mp4",
+        animal_id="animal-squirrel",
+        animal_name="Backyard squirrel",
+        species="Eastern gray squirrel",
+        enclosure_id="ENC-BACKYARD",
+        camera_id="CAM-BY1",
+        start_ts=START,
+        shift_mode=ShiftMode.DAY,
+        segment_seconds=120,
+    )
+    initial = service.run(request)
+    detections_before = store.dump_table("detections")
+    gaps_before = store.dump_table("data_gaps")
+
+    assert initial.status == "complete"
+    assert initial.segments[0].provider_attempts == 2
+    assert len(gaps_before) == 1
+    assert detector_calls == 1
+
+    partial = service.retry_gaps(initial.job_id)
+
+    assert partial.status == "complete", partial.error
+    assert partial.segments[0].data_gap_id == initial.segments[0].data_gap_id
+    assert partial.segments[0].provider_attempts == 6
+    assert store.dump_table("data_gaps") == gaps_before
+    assert store.dump_table("observations") == []
+    assert store.dump_table("detections") == detections_before
+    assert detector_calls == 1
+
+    fallback.recover = True
+    complete = service.retry_gaps(initial.job_id)
+
+    assert complete.status == "complete", complete.error
+    assert complete.data_gap_ids == []
+    assert complete.segments[0].data_gap_id is None
+    assert complete.segments[0].provider_attempts == 12
+    assert complete.segments[0].observation_count == 4
+    assert store.dump_table("data_gaps") == []
+    assert store.dump_table("detections") == detections_before
+    assert detector_calls == 1
+    observations = store.dump_table("observations")
+    assert len(observations) == 4
+    assert {row["evidence_kind"] for row in observations} == {
+        EvidenceKind.FRAME_SAMPLED_PROVIDER.value
+    }
+    assert {datetime.fromisoformat(row["start_ts"]) for row in observations} == {
+        START + timedelta(seconds=offset) for offset in (0, 30, 60, 90)
+    }
+
+
+@pytest.mark.parametrize(
+    "detail",
+    [
+        "ApiError status=429 code=too_many_requests: structured analysis unavailable",
+        "ApiError status=503 code=service_unavailable: structured analysis unavailable",
+        "ValidationError: structured analysis unavailable",
+    ],
+)
+def test_capacity_fallback_is_not_used_for_other_provider_failures(
+    tmp_path: Path,
+    monkeypatch,
+    detail: str,
+) -> None:
+    class OtherFailureProvider:
+        def safe_analyze_file(self, path, chunk):  # noqa: ANN001
+            del path
+            return ProviderAnalysis(
+                observations=[],
+                data_gap=DataGap(
+                    gap_id=f"gap-{chunk.chunk_id}",
+                    enclosure_id=chunk.enclosure_id,
+                    chunk_id=chunk.chunk_id,
+                    start_ts=chunk.start_ts,
+                    end_ts=chunk.end_ts,
+                    reason="provider_analysis_failed",
+                    detail=detail,
+                ),
+            )
+
+        safe_analyze_url = _StubProvider.safe_analyze_url
+
+    raw_root, _ = _stub_segmented_source(tmp_path, monkeypatch, durations=[120])
+    store = SQLiteStore(tmp_path / "non-capacity-gap.db")
+    store.initialize()
+    provider = OtherFailureProvider()
+    fallback = _FrameFallbackProvider()
+    service = VideoIngestService(
+        store=store,
+        raw_root=raw_root,
+        analyzer_factory=lambda: provider,
+        fallback_analyzer_factory=lambda: fallback,
+        detector=_stub_detections,
+        now=lambda: START,
+    )
+    request = IngestRequest(
+        source_name="source.mp4",
+        animal_id="animal-squirrel",
+        animal_name="Backyard squirrel",
+        species="Eastern gray squirrel",
+        enclosure_id="ENC-BACKYARD",
+        camera_id="CAM-BY1",
+        start_ts=START,
+        segment_seconds=120,
+    )
+    initial = service.run(request)
+
+    retried = service.retry_gaps(initial.job_id)
+
+    assert retried.status == "complete"
+    assert retried.data_gap_ids
+    assert fallback.calls == 0
 
 
 def test_provider_calls_are_serialized_across_different_sources(

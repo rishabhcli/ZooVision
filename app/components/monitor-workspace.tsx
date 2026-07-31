@@ -615,6 +615,19 @@ export function MonitorWorkspace() {
   const usesTwelveLabs = Boolean(
     track?.observations.some((observation) => observation.provider === "twelvelabs"),
   );
+  const usesFrameSampledAnalysis = Boolean(
+    track?.observations.some(
+      (observation) => observation.evidence_kind === "frame_sampled_provider",
+    ),
+  );
+  const providerDisplayName =
+    usesTwelveLabs && usesFrameSampledAnalysis
+      ? "Pegasus + OpenAI"
+      : usesTwelveLabs
+        ? "Pegasus 1.5"
+        : usesFrameSampledAnalysis
+          ? "OpenAI vision"
+          : "Unavailable";
   const playheadEvent = useMemo(() => {
     if (!track) return null;
     return (
@@ -654,6 +667,8 @@ export function MonitorWorkspace() {
     }
     return playheadObservation;
   }, [playheadObservation, selectedEvidence, track]);
+  const selectedObservationIsFrameSampled =
+    selectedObservation?.evidence_kind === "frame_sampled_provider";
   useEffect(() => {
     let cancelled = false;
     let hasLoaded = false;
@@ -969,7 +984,7 @@ export function MonitorWorkspace() {
           </div>
           <div>
             <dt>Provider</dt>
-            <dd>{usesTwelveLabs ? "Pegasus 1.5" : "Unavailable"}</dd>
+            <dd>{providerDisplayName}</dd>
           </div>
           <div>
             <dt>Analysis</dt>
@@ -1156,7 +1171,9 @@ export function MonitorWorkspace() {
                   >
                     <span>
                       {detection.source === "yolov8_object"
-                        ? "Animal candidate"
+                        ? formatBehavior(
+                            `${detection.label ?? "animal"} candidate`,
+                          )
                         : "Movement"}
                       <b>{Math.round(detection.score * 100)}%</b>
                     </span>
@@ -1171,7 +1188,13 @@ export function MonitorWorkspace() {
                 </span>
                 <span className="evidence-mode-badge">
                   <Video size={12} />
-                  {usesTwelveLabs ? "TwelveLabs analyzed" : "Provider analysis unavailable"}
+                  {usesTwelveLabs && usesFrameSampledAnalysis
+                    ? "Video + frame analysis"
+                    : usesTwelveLabs
+                      ? "TwelveLabs analyzed"
+                      : usesFrameSampledAnalysis
+                        ? "Frame-sampled analysis"
+                        : "Provider analysis unavailable"}
                 </span>
               </div>
 
@@ -1200,9 +1223,11 @@ export function MonitorWorkspace() {
                 <span>
                   {isFixtureEvidence
                     ? "Evidence annotation · open the source moment to review"
-                    : usesTwelveLabs
+                    : selectedObservationIsFrameSampled
+                      ? "Frame-sampled observation · keeper verification required"
+                      : usesTwelveLabs
                       ? "Pegasus 1.5 observation · keeper verification required"
-                      : "Source footage available · structured observation pending"}
+                      : "No structured observation at this moment"}
                 </span>
               </div>
             </div>
@@ -1470,7 +1495,7 @@ export function MonitorWorkspace() {
             <header>
               <div>
                 <span>Video analysis</span>
-                <strong>TwelveLabs evidence</strong>
+                <strong>Provider evidence</strong>
               </div>
             </header>
 
@@ -1493,10 +1518,12 @@ export function MonitorWorkspace() {
               <p>
                 {selectedObservation
                   ? readableEvidenceDetail(selectedObservation.evidence)
-                  : "Pegasus did not return an observation near this point."}
+                  : "No structured observation was returned near this point."}
               </p>
               <small>
-                {usesTwelveLabs
+                {selectedObservationIsFrameSampled
+                  ? "Timestamped still-frame review, without continuous audio"
+                  : usesTwelveLabs
                   ? "Temporal video understanding, not spatial object tracking"
                   : "Provider coverage is unavailable"}
               </small>

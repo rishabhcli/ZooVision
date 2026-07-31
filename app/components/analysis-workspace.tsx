@@ -212,6 +212,9 @@ export function AnalysisWorkspace() {
     feed.find((item) => item.id === selectedItemId) ?? feed[0] ?? null;
   const totalObservations = videos.reduce((sum, video) => sum + video.observation_count, 0);
   const totalDetections = videos.reduce((sum, video) => sum + video.detection_count, 0);
+  const coverageGaps = dashboard.data_gaps.filter(
+    (gap) => gap.reason !== "bedrock_embedding_failed",
+  );
   const providerReady = Boolean(
     readiness?.providers.twelvelabs?.configured &&
       readiness?.providers.twelvelabs?.enabled,
@@ -439,7 +442,7 @@ export function AnalysisWorkspace() {
         </article>
         <article>
           <CircleAlert size={18} />
-          <div><span>Missing coverage</span><strong>{dashboard.data_gaps.length}</strong><small>Camera or analysis gaps</small></div>
+          <div><span>Missing coverage</span><strong>{coverageGaps.length}</strong><small>Camera or analysis gaps</small></div>
         </article>
       </section>
 

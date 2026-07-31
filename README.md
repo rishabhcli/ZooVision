@@ -152,6 +152,13 @@ of being written off as a gap. Poll `GET /api/ingest/jobs/{job_id}` for progress
 
 Only night segments can raise an event. Day segments refine context. A provider
 failure becomes a recorded `DataGap`, and the motion track survives it.
+When TwelveLabs explicitly returns its non-retryable `422 usage_limit_exceeded`
+capacity error, a provider-gap retry may use the configured OpenAI vision model
+over timestamped still frames. The fallback tiles the entire parent chunk with
+at most 120-second windows sampled every four seconds, labels its observations
+as `frame_sampled_provider`, and clears the original gap only if every frame
+window succeeds. It does not rerun or replace YOLO detections, use audio, assign
+severity, or treat still-frame identity as continuous-video identity.
 
 ### Precompute the stage demo
 

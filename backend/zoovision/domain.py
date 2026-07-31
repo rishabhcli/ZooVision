@@ -64,6 +64,8 @@ class AlertAction(StrEnum):
 
 class EvidenceKind(StrEnum):
     PROVIDER_STRUCTURED = "provider_structured"
+    #: Structured facts read from timestamped still frames, not continuous video/audio.
+    FRAME_SAMPLED_PROVIDER = "frame_sampled_provider"
     HUMAN_REVIEWED = "human_reviewed"
     SYNTHETIC_SCENARIO = "synthetic_scenario"
     #: Derived from measured pixel motion, not from a model's reading of a scene.
