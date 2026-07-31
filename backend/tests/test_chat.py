@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+import zoovision.chat as chat_module
 from zoovision.chat import (
     ChatAnswer,
     ChatMessage,
@@ -236,6 +237,12 @@ def _backyard_bird_timing_context() -> dict[str, Any]:
     ]
     bird_intervals = [
         (
+            "obs-bird-41m49",
+            2509.475,
+            2518.475,
+            "Two pigeons forage on scattered seed in the foreground.",
+        ),
+        (
             "obs-bird-42m43",
             2563.6,
             2644.384,
@@ -256,10 +263,64 @@ def _backyard_bird_timing_context() -> dict[str, Any]:
             "Two birds forage for seeds in the background.",
         ),
         (
+            "obs-bird-1h08m21",
+            4101.497,
+            4109.497,
+            "One sparrow enters the frame and forages nearby.",
+        ),
+        (
+            "obs-bird-1h08m29",
+            4109.497,
+            4204.281,
+            "One squirrel and one sparrow forage together.",
+        ),
+        (
+            "obs-bird-1h10m32",
+            4232.281,
+            4236.281,
+            "One bird enters from the right and forages with one squirrel.",
+        ),
+        (
+            "obs-bird-1h10m36",
+            4236.281,
+            4247.281,
+            "One squirrel and one bird forage; a second bird enters and begins foraging.",
+        ),
+        (
             "obs-bird-1h10m47",
             4247.281,
             4265.281,
             "One squirrel and two birds forage; a third bird enters and begins foraging.",
+        ),
+        (
+            "obs-bird-1h11m05",
+            4265.281,
+            4276.281,
+            "One squirrel and three birds forage; a fourth bird enters and begins foraging.",
+        ),
+        (
+            "obs-bird-1h11m16",
+            4276.281,
+            4288.281,
+            "One squirrel and four birds forage; a fifth bird enters and begins foraging.",
+        ),
+        (
+            "obs-bird-1h11m28",
+            4288.281,
+            4300.281,
+            "One squirrel and five birds forage; a sixth bird enters and begins foraging.",
+        ),
+        (
+            "obs-bird-1h11m40",
+            4300.281,
+            4312.281,
+            "One squirrel and six birds forage; a seventh bird enters and begins foraging.",
+        ),
+        (
+            "obs-bird-1h11m52",
+            4312.281,
+            4321.065,
+            "One squirrel and seven birds continue foraging.",
         ),
     ]
     moments.extend(
@@ -504,7 +565,10 @@ def test_recording_inventory_keeps_late_animal_types_inside_context_cap() -> Non
     assert "obs-birds-late" in activity_ids
 
 
-def test_direct_bird_timing_keeps_all_documented_intervals_across_recording() -> None:
+def test_direct_bird_timing_keeps_all_documented_intervals_across_recording(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     context = retrieve_context(
         _backyard_bird_timing_context(),
         [
@@ -516,17 +580,83 @@ def test_direct_bird_timing_keeps_all_documented_intervals_across_recording() ->
     )
 
     assert [moment["observation_id"] for moment in context["moments"]] == [
+        "obs-bird-41m49",
         "obs-bird-42m43",
         "obs-bird-46m23",
         "obs-bird-46m40",
         "obs-bird-1h05m52",
         "obs-bird-1h06m02",
+        "obs-bird-1h08m21",
+        "obs-bird-1h08m29",
+        "obs-bird-1h10m32",
+        "obs-bird-1h10m36",
         "obs-bird-1h10m47",
+        "obs-bird-1h11m05",
+        "obs-bird-1h11m16",
+        "obs-bird-1h11m28",
+        "obs-bird-1h11m40",
+        "obs-bird-1h11m52",
     ]
     assert context["retrieval"]["animal_timing_terms"] == ["bird"]
-    assert context["retrieval"]["animal_timing_match_count"] == 6
+    assert context["retrieval"]["animal_timing_match_count"] == 16
     assert context["retrieval"]["animal_timing_all_matches_included"] is True
     assert context["retrieval"]["no_match"] is False
+
+    client = _StubClient(RuntimeError("animal timing must not call the model"))
+    monkeypatch.setattr(
+        chat_module,
+        "build_context",
+        lambda *_args, **_kwargs: _backyard_bird_timing_context(),
+    )
+    reply = GroundedChat(
+        _seeded_store(tmp_path),
+        client=client,
+        model="gpt-test",
+    ).reply(
+        ChatRequest(
+            messages=[
+                ChatMessage(
+                    role="user",
+                    content="When do birds appear in this recording, and what are they doing?",
+                )
+            ],
+            animal_id="animal-backyard",
+            enclosure_id="ENC-BACKYARD",
+            camera_id="CAM-BY2",
+            source_path="uploads/backyard-squirrels-and-birds.mp4",
+        )
+    )
+
+    assert reply.mode == "deterministic"
+    assert client.responses.calls == []
+    assert reply.uncertainty == []
+    assert "All 16 matching structured observations are represented" in reply.answer
+    assert "1:06:02" in reply.answer
+    assert "1:10:47" in reply.answer
+    assert len(reply.answer) < 1800
+    assert not reply.answer.endswith("...")
+    assert set(reply.cited_ids) == {
+        "obs-bird-41m49",
+        "obs-bird-42m43",
+        "obs-bird-46m23",
+        "obs-bird-46m40",
+        "obs-bird-1h05m52",
+        "obs-bird-1h06m02",
+        "obs-bird-1h08m21",
+        "obs-bird-1h08m29",
+        "obs-bird-1h10m32",
+        "obs-bird-1h10m36",
+        "obs-bird-1h10m47",
+        "obs-bird-1h11m05",
+        "obs-bird-1h11m16",
+        "obs-bird-1h11m28",
+        "obs-bird-1h11m40",
+        "obs-bird-1h11m52",
+    }
+    assert {moment.observation_id for moment in reply.moments} >= {
+        "obs-bird-1h06m02",
+        "obs-bird-1h10m47",
+    }
 
 
 def test_follow_up_timestamps_resolve_against_authoritative_bird_moments() -> None:
@@ -547,12 +677,12 @@ def test_follow_up_timestamps_resolve_against_authoritative_bird_moments() -> No
     assert context["retrieval"]["referenced_media_offsets_seconds"] == [2564.0, 4247.0]
     assert {moment["observation_id"] for moment in context["moments"]} == {
         "obs-bird-42m43",
-        "obs-bird-1h10m47",
+        "obs-bird-1h10m36",
     }
     assert context["retrieval"]["no_match"] is False
     assert set(summarize(context, messages).moment_ids) == {
         "obs-bird-42m43",
-        "obs-bird-1h10m47",
+        "obs-bird-1h10m36",
     }
 
 

@@ -501,6 +501,7 @@ class GroundedChat:
             context.get("retrieval", {}).get("no_match")
             or _asks_for_prohibited_guidance(current_question)
             or _asks_for_recording_counts(current_question)
+            or bool(context.get("retrieval", {}).get("animal_timing_terms"))
         ):
             answer = summarize(context, request.messages)
             return ChatReply(
@@ -851,6 +852,135 @@ def retrieve_context(
     }
 
 
+def _merge_moments_into_windows(
+    moments: list[dict[str, Any]],
+    *,
+    tolerance_seconds: float = 0.5,
+) -> list[list[dict[str, Any]]]:
+    windows: list[list[dict[str, Any]]] = []
+    for moment in sorted(
+        moments,
+        key=lambda item: (
+            float(item.get("start_seconds") or 0),
+            float(item.get("end_seconds") or 0),
+            item["observation_id"],
+        ),
+    ):
+        if not windows:
+            windows.append([moment])
+            continue
+        previous_end = max(float(item.get("end_seconds") or 0) for item in windows[-1])
+        if float(moment.get("start_seconds") or 0) <= previous_end + tolerance_seconds:
+            windows[-1].append(moment)
+        else:
+            windows.append([moment])
+    return windows
+
+
+def _animal_timing_moment_text(moment: dict[str, Any]) -> str:
+    value = (
+        moment.get("activity_label")
+        or moment.get("evidence")
+        or str(moment.get("behavior") or "recorded activity").replace("_", " ")
+    )
+    return _human_label(value)
+
+
+def _animal_timing_window_representative(
+    window: list[dict[str, Any]],
+) -> dict[str, Any]:
+    return max(
+        window,
+        key=lambda moment: (
+            float(moment.get("end_seconds") or 0) - float(moment.get("start_seconds") or 0),
+            -float(moment.get("start_seconds") or 0),
+        ),
+    )
+
+
+def _animal_timing_window_description(window: list[dict[str, Any]]) -> str:
+    if len(window) == 1:
+        return _animal_timing_moment_text(window[0])
+
+    representative = _animal_timing_window_representative(window)
+    milestones: list[dict[str, Any]] = []
+    for moment in (window[0], representative, window[-1]):
+        if moment["observation_id"] not in {existing["observation_id"] for existing in milestones}:
+            milestones.append(moment)
+    return "; ".join(
+        f"{_display_offset(float(moment['start_seconds']))} {_animal_timing_moment_text(moment)}"
+        for moment in milestones
+    )
+
+
+def _summarize_animal_timing(context: dict[str, Any]) -> ChatAnswer:
+    moments = context.get("moments", [])
+    retrieval = context.get("retrieval", {})
+    terms = [_human_label(term) for term in retrieval.get("animal_timing_terms", [])]
+    subject = _natural_join(terms) if terms else "Requested animal"
+    if not moments:
+        return ChatAnswer(
+            answer=f"No documented {subject.lower()} moments match this recording.",
+            cited_ids=[],
+            uncertainty=["No matching record was found; this is not proof that nothing happened."],
+            moment_ids=[],
+        )
+
+    windows = _merge_moments_into_windows(moments)
+    match_count = int(retrieval.get("animal_timing_match_count") or len(moments))
+    all_matches_included = bool(retrieval.get("animal_timing_all_matches_included"))
+    if all_matches_included:
+        coverage = f"All {match_count} matching structured observations are represented."
+        uncertainty: list[str] = []
+    else:
+        coverage = (
+            f"These windows represent {len(moments)} of {match_count} matching structured "
+            "observations within the evidence limit."
+        )
+        uncertainty = [
+            "Additional matching observations exist outside the retrieved evidence limit."
+        ]
+
+    lines = [
+        f"{subject} activity is documented in {len(windows)} recording "
+        f"window{'s' if len(windows) != 1 else ''}. {coverage}"
+    ]
+    for window in windows:
+        start = float(window[0]["start_seconds"])
+        end = max(float(moment["end_seconds"]) for moment in window)
+        lines.append(
+            f"- {_display_offset(start)}-{_display_offset(end)}: "
+            f"{_animal_timing_window_description(window)}"
+        )
+
+    representatives = [
+        (
+            max(float(moment["end_seconds"]) for moment in window)
+            - float(window[0]["start_seconds"]),
+            _animal_timing_window_representative(window),
+        )
+        for window in windows
+    ]
+    if len(representatives) > 5:
+        representatives = sorted(
+            representatives,
+            key=lambda item: (
+                -item[0],
+                float(item[1]["start_seconds"]),
+            ),
+        )[:5]
+    representative_moments = sorted(
+        (moment for _, moment in representatives),
+        key=lambda moment: float(moment["start_seconds"]),
+    )
+    return ChatAnswer(
+        answer="\n".join(lines),
+        cited_ids=[moment["observation_id"] for moment in moments],
+        uncertainty=uncertainty,
+        moment_ids=[moment["observation_id"] for moment in representative_moments],
+    )
+
+
 def summarize(
     context: dict[str, Any],
     question: str | list[ChatMessage],
@@ -935,6 +1065,9 @@ def summarize(
             cited_ids=[],
             uncertainty=["The current scope contains no monitored animals."],
         )
+
+    if context.get("retrieval", {}).get("animal_timing_terms"):
+        return _summarize_animal_timing(context)
 
     lines: list[str] = []
     cited: list[str] = []
