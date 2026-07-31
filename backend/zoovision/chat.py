@@ -137,6 +137,15 @@ _RAW_VIDEO_SECONDS_PATTERN = re.compile(
     r"(?<![\w.])(?P<seconds>\d+(?:\.\d+)?)\s*s(?![\w])",
     re.IGNORECASE,
 )
+_RAW_VIDEO_SECONDS_RANGE_PATTERN = re.compile(
+    r"\bfrom\s+(?P<start>\d+(?:\.\d+)?)\s*(?:to|-)\s*"
+    r"(?P<end>\d+(?:\.\d+)?)\s*(?:seconds?|secs?)\b",
+    re.IGNORECASE,
+)
+_RAW_VIDEO_SECONDS_AT_PATTERN = re.compile(
+    r"\bat\s+(?P<seconds>\d+(?:\.\d+)?)\s*(?:seconds?|secs?)\b",
+    re.IGNORECASE,
+)
 _EMBEDDING_GAP_REASONS = {"bedrock_embedding_failed"}
 _TEMPORAL_MOMENT_WINDOW_SECONDS = 120.0
 _INTENT_TERMS = {
@@ -1091,10 +1100,19 @@ def _humanize_raw_record_ids(text: str, context: dict[str, Any]) -> str:
 def _humanize_video_second_references(text: str) -> str:
     """Convert standalone raw video-second positions to playback timestamps."""
 
+    def range_replacement(match: re.Match[str]) -> str:
+        start = _display_offset(float(match.group("start")))
+        end = _display_offset(float(match.group("end")))
+        return f"from {start} to {end}"
+
     def replacement(match: re.Match[str]) -> str:
         return _display_offset(float(match.group("seconds")))
 
-    return _RAW_VIDEO_SECONDS_PATTERN.sub(replacement, text)
+    humanized = _RAW_VIDEO_SECONDS_RANGE_PATTERN.sub(range_replacement, text)
+    humanized = _RAW_VIDEO_SECONDS_AT_PATTERN.sub(
+        lambda match: f"at {replacement(match)}", humanized
+    )
+    return _RAW_VIDEO_SECONDS_PATTERN.sub(replacement, humanized)
 
 
 def _resolve_moments(context: dict[str, Any], moment_ids: list[str]) -> list[ChatMoment]:
