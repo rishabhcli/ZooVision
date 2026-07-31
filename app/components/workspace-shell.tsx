@@ -80,6 +80,19 @@ function citationLabel(citation: string, index: number) {
   return citation;
 }
 
+function formatVideoOffset(seconds: number) {
+  const total = Math.max(0, Math.round(seconds));
+  const hours = Math.floor(total / 3600);
+  const minutes = Math.floor((total % 3600) / 60);
+  const remainder = total % 60;
+  if (hours > 0) {
+    return `${hours}:${String(minutes).padStart(2, "0")}:${String(
+      remainder,
+    ).padStart(2, "0")}`;
+  }
+  return `${minutes}:${String(remainder).padStart(2, "0")}`;
+}
+
 const routeOptions = [
   { label: "Monitor", href: "/monitor", icon: Monitor },
   { label: "Node graph", href: "/graph", icon: Network },
@@ -648,7 +661,9 @@ export function WorkspaceShell({
                               type="button"
                               key={moment.observation_id}
                               data-testid="chat-moment"
-                              title={`Open ${moment.camera_id} at ${moment.start_seconds.toFixed(1)} seconds`}
+                              title={`Open ${moment.camera_id} at ${formatVideoOffset(
+                                moment.start_seconds,
+                              )}`}
                               onClick={() => {
                                 const detail = {
                                   sourcePath: moment.source_path,
@@ -671,7 +686,9 @@ export function WorkspaceShell({
                             >
                               <Play size={12} fill="currentColor" />
                               <span>{moment.label}</span>
-                              <small>{moment.camera_id}</small>
+                              <small>
+                                {moment.camera_id} · {formatVideoOffset(moment.start_seconds)}
+                              </small>
                             </button>
                           ))}
                         </div>

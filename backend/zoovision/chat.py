@@ -65,6 +65,8 @@ Ground every statement in the supplied context JSON. Rules you must follow:
 - Describe citations in keeper-friendly language in the answer. Never expose a
   raw database id in the answer, uncertainty text, or a suggested label.
 - Distinguish absence of a recorded event from proof that nothing happened.
+- Use plain text only. Short hyphen-led lines are fine, but do not emit Markdown
+  headings, emphasis markers, tables, or code fences.
 - Be brief and factual. Keeper staff read these during a night shift.
 """.strip()
 
