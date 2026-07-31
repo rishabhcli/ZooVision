@@ -419,11 +419,36 @@ export function LandingExperience() {
           {scenarios.map((item, index) => (
             <button
               key={item.id}
+              id={`scenario-tab-${item.id}`}
               className={item.id === scenario.id ? "active" : ""}
               type="button"
               role="tab"
               aria-selected={item.id === scenario.id}
+              aria-controls="night-scenario-panel"
+              tabIndex={item.id === scenario.id ? 0 : -1}
               onClick={() => selectScenario(item)}
+              onKeyDown={(event) => {
+                let nextIndex: number | null = null;
+
+                if (event.key === "ArrowLeft") {
+                  nextIndex = (index - 1 + scenarios.length) % scenarios.length;
+                } else if (event.key === "ArrowRight") {
+                  nextIndex = (index + 1) % scenarios.length;
+                } else if (event.key === "Home") {
+                  nextIndex = 0;
+                } else if (event.key === "End") {
+                  nextIndex = scenarios.length - 1;
+                }
+
+                if (nextIndex === null) return;
+
+                event.preventDefault();
+                const nextScenario = scenarios[nextIndex];
+                selectScenario(nextScenario);
+                document
+                  .getElementById(`scenario-tab-${nextScenario.id}`)
+                  ?.focus();
+              }}
             >
               <span>0{index + 1}</span>
               <strong>{item.tab}</strong>
@@ -432,7 +457,13 @@ export function LandingExperience() {
           ))}
         </div>
 
-        <div className="simulator-layout">
+        <div
+          className="simulator-layout"
+          id="night-scenario-panel"
+          role="tabpanel"
+          aria-labelledby={`scenario-tab-${scenario.id}`}
+          tabIndex={0}
+        >
           <div className="camera-tool">
             <div className="camera-toolbar">
               <div>
@@ -440,7 +471,11 @@ export function LandingExperience() {
                 <strong>{scenario.camera}</strong>
                 <span>EVIDENCE DEMO</span>
               </div>
-              <div className="shift-control" aria-label="Shift routing">
+              <div
+                className="shift-control"
+                role="group"
+                aria-label="Shift routing"
+              >
                 <button
                   type="button"
                   className={shift === "night" ? "active" : ""}

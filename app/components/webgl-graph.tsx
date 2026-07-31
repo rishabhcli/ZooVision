@@ -8,13 +8,11 @@ import type {
 import { InteractiveNvlWrapper } from "@neo4j-nvl/react";
 import {
   Activity,
-  Bookmark,
   Camera,
   CircleUserRound,
   Database,
   Focus,
   Minus,
-  MoreVertical,
   Plus,
   ShieldCheck,
   Video,
@@ -27,6 +25,11 @@ import {
   type GraphNodeItem,
   type GraphPayload,
 } from "../lib/api";
+import {
+  DEFAULT_WORKSPACE_PREFERENCES,
+  listenForWorkspacePreferences,
+  readWorkspacePreferences,
+} from "../lib/workspace-preferences";
 
 const labelColors: Record<string, string> = {
   Animal: "#a3a9b2",
@@ -74,6 +77,10 @@ function propertyLabel(value: string): string {
   return value.replaceAll("_", " ").replace(/\b\w/g, (letter) => letter.toUpperCase());
 }
 
+function nodePickerLabel(node: GraphNodeItem): string {
+  return `${node.caption} · ${node.label} · ${node.id}`;
+}
+
 function GraphCanvas({
   payload,
   onRefresh,
@@ -86,25 +93,54 @@ function GraphCanvas({
   const [selectedRelationshipId, setSelectedRelationshipId] = useState<string | null>(
     null,
   );
+  const [nodeQuery, setNodeQuery] = useState("");
+  const [compactGraphLabels, setCompactGraphLabels] = useState(
+    DEFAULT_WORKSPACE_PREFERENCES.compactGraphLabels,
+  );
+
+  useEffect(() => {
+    const storedPreferences = readWorkspacePreferences(window.localStorage);
+    const hydrationFrame = window.requestAnimationFrame(() => {
+      setCompactGraphLabels(storedPreferences.compactGraphLabels);
+    });
+    const stopListening = listenForWorkspacePreferences(window, (preferences) => {
+      setCompactGraphLabels(preferences.compactGraphLabels);
+    });
+    return () => {
+      window.cancelAnimationFrame(hydrationFrame);
+      stopListening();
+    };
+  }, []);
 
   const selected = useMemo(
     () => payload.nodes.find((node) => node.id === selectedNodeId) ?? null,
     [payload.nodes, selectedNodeId],
   );
 
+  const nodeChoices = useMemo(
+    () =>
+      payload.nodes.map((node) => ({
+        id: node.id,
+        label: nodePickerLabel(node),
+      })),
+    [payload.nodes],
+  );
+
   const nvlNodes = useMemo<NvlNode[]>(
     () =>
       payload.nodes.map((node) => ({
         id: node.id,
-        caption: node.caption,
-        color: nodeColor(node),
-        size: node.size,
+        caption:
+          compactGraphLabels && node.id !== selectedNodeId ? "" : node.caption,
+        color: node.id === selectedNodeId ? "#c4df6c" : nodeColor(node),
+        size:
+          node.id === selectedNodeId ? Math.max(node.size * 1.35, 30) : node.size,
         selected: node.id === selectedNodeId,
         captionAlign: "bottom",
-        captionSize: 3,
+        captionSize: node.id === selectedNodeId ? 6 : 4,
         title: `${node.caption}\n${node.label}`,
       })),
-    [payload.nodes, selectedNodeId],
+    [compactGraphLabels, payload.nodes, selectedNodeId],
   );
 
   const nvlRelationships = useMemo<NvlRelationship[]>(
@@ -113,22 +149,25 @@ function GraphCanvas({
         id: relationship.id,
         from: relationship.from,
         to: relationship.to,
-        caption: relationship.caption,
+        caption:
+          compactGraphLabels && relationship.id !== selectedRelationshipId
+            ? ""
+            : relationship.caption,
         color:
-          relationship.id === selectedRelationshipId ? "#2878f0" : "#5a616a",
+          relationship.id === selectedRelationshipId ? "#c4df6c" : "#5a616a",
         selected: relationship.id === selectedRelationshipId,
         width: relationship.id === selectedRelationshipId ? 2.2 : 1.2,
       })),
-    [payload.relationships, selectedRelationshipId],
+    [compactGraphLabels, payload.relationships, selectedRelationshipId],
   );
 
   const fit = useCallback(() => {
-    if (!nvlRef.current || nvlNodes.length === 0) return;
+    if (!nvlRef.current || payload.nodes.length === 0) return;
     nvlRef.current.fit(
-      nvlNodes.map((node) => node.id),
+      payload.nodes.map((node) => node.id),
       { animated: true },
     );
-  }, [nvlNodes]);
+  }, [payload.nodes]);
 
   useEffect(() => {
     const timer = window.setTimeout(fit, 700);
@@ -159,6 +198,34 @@ function GraphCanvas({
               </option>
             ))}
           </select>
+          <input
+            className="node-picker"
+            type="search"
+            list="graph-node-options"
+            aria-label="Select a graph node to inspect"
+            placeholder="Find a node"
+            value={nodeQuery}
+            onChange={(event) => {
+              const query = event.target.value;
+              const nodeId =
+                nodeChoices.find((choice) => choice.label === query)?.id ?? null;
+              setNodeQuery(query);
+              setSelectedNodeId(nodeId);
+              setSelectedRelationshipId(null);
+              if (nodeId) {
+                window.requestAnimationFrame(() => {
+                  const graph = nvlRef.current;
+                  if (!graph) return;
+                  graph.fit([nodeId], { animated: true, maxZoom: 0.55 });
+                });
+              }
+            }}
+          />
+          <datalist id="graph-node-options">
+            {nodeChoices.map((choice) => (
+              <option key={choice.id} value={choice.label} />
+            ))}
+          </datalist>
         </div>
 
         {nvlNodes.length === 0 ? (
@@ -187,14 +254,20 @@ function GraphCanvas({
                 onNodeClick: (node: NvlNode) => {
                   setSelectedNodeId(node.id);
                   setSelectedRelationshipId(null);
+                  const payloadNode = payload.nodes.find(
+                    (candidate) => candidate.id === node.id,
+                  );
+                  setNodeQuery(payloadNode ? nodePickerLabel(payloadNode) : "");
                 },
                 onRelationshipClick: (relationship: NvlRelationship) => {
                   setSelectedRelationshipId(relationship.id);
                   setSelectedNodeId(null);
+                  setNodeQuery("");
                 },
                 onCanvasClick: () => {
                   setSelectedNodeId(null);
                   setSelectedRelationshipId(null);
+                  setNodeQuery("");
                 },
                 onZoom: true,
                 onPan: true,
@@ -248,8 +321,13 @@ function GraphCanvas({
           <strong>Node details</strong>
           <button
             type="button"
-            aria-label="Clear selected node"
-            onClick={() => setSelectedNodeId(null)}
+            aria-label="Clear graph selection"
+            disabled={!selectedNodeId && !selectedRelationshipId}
+            onClick={() => {
+              setSelectedNodeId(null);
+              setSelectedRelationshipId(null);
+              setNodeQuery("");
+            }}
           >
             <X size={15} />
           </button>
@@ -264,12 +342,6 @@ function GraphCanvas({
                 <strong>{selected.caption}</strong>
                 <small>{selected.label}</small>
               </div>
-              <button type="button" aria-label="Bookmark selected node">
-                <Bookmark size={14} />
-              </button>
-              <button type="button" aria-label="More node actions">
-                <MoreVertical size={14} />
-              </button>
             </div>
             <dl className="node-detail-list">
               {detailProperties.map(([key, value]) => (

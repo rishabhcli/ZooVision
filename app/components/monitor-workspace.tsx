@@ -541,7 +541,7 @@ function EvidenceTimeline({
         </div>
       </div>
 
-      <div className="timeline-row">
+      <div className="timeline-row interactive-timeline-row">
         <span className="timeline-label">
           <Eye size={14} />
           <span className="timeline-label-long">Observations</span>
@@ -594,7 +594,7 @@ function EvidenceTimeline({
         </div>
       </div>
 
-      <div className="timeline-row">
+      <div className="timeline-row interactive-timeline-row">
         <span className="timeline-label">
           <AlertTriangle size={14} />
           <span className="timeline-label-long">Rule events</span>
@@ -1241,10 +1241,25 @@ export function MonitorWorkspace() {
                 }}
                 aria-hidden="true"
               >
-                {visibleDetections.map((detection) => (
+                {visibleDetections.map((detection, detectionIndex) => (
                   <span
                     className="motion-box"
                     data-source={detection.source}
+                    data-label-align={
+                      detection.box.x + detection.box.width / 2 >= 0.5
+                        ? "right"
+                        : "left"
+                    }
+                    data-label-position={
+                      detection.box.y < 0.12
+                        ? "below"
+                        : detection.box.y + detection.box.height > 0.78
+                          ? "above"
+                          : detectionIndex % 2 === 1
+                            ? "below"
+                            : "above"
+                    }
+                    data-label-lane={detectionIndex % 3}
                     key={detection.detection_id}
                     style={{
                       left: `${detection.box.x * 100}%`,
@@ -1254,11 +1269,11 @@ export function MonitorWorkspace() {
                     }}
                   >
                     <span>
-                      {detection.source === "yolov8_object"
-                        ? formatBehavior(
-                            `${detection.label ?? "animal"} candidate`,
-                          )
-                        : "Movement region"}
+                      <span className="motion-box-label">
+                        {detection.source === "yolov8_object"
+                          ? "Object candidate"
+                          : "Movement region"}
+                      </span>
                       <b>{Math.round(detection.score * 100)}%</b>
                     </span>
                   </span>

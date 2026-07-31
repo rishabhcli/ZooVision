@@ -10,7 +10,7 @@
   --monitor-text: #f3f1eb;
   --monitor-text-soft: #d7d8d3;
   --monitor-muted: #969d9a;
-  --monitor-dim: #6c7471;
+  --monitor-dim: #79817e;
   --monitor-motion: #57d6bd;
   --monitor-motion-soft: #173d36;
   --monitor-movement-region: #9ba8a3;
@@ -648,6 +648,7 @@
   position: absolute;
   z-index: 5;
   overflow: visible;
+  container-type: inline-size;
   pointer-events: none;
 }
 
@@ -690,9 +691,11 @@
   bottom: calc(100% + 4px);
   left: -2px;
   display: inline-flex;
+  max-width: min(220px, 48cqw);
   min-height: 21px;
   align-items: center;
   gap: 7px;
+  overflow: hidden;
   padding: 0 6px;
   color: #08110e;
   background: var(--monitor-motion);
@@ -704,7 +707,41 @@
   white-space: nowrap;
 }
 
+.motion-box[data-label-align="right"] > span {
+  right: -2px;
+  left: auto;
+}
+
+.motion-box[data-label-position="below"] > span {
+  top: calc(100% + 4px);
+  bottom: auto;
+}
+
+.motion-box[data-label-position="below"][data-label-lane="1"] > span {
+  transform: translateY(26px);
+}
+
+.motion-box[data-label-position="below"][data-label-lane="2"] > span {
+  transform: translateY(52px);
+}
+
+.motion-box[data-label-position="above"][data-label-lane="1"] > span {
+  transform: translateY(-26px);
+}
+
+.motion-box[data-label-position="above"][data-label-lane="2"] > span {
+  transform: translateY(-52px);
+}
+
+.motion-box-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .motion-box > span b {
+  flex: 0 0 auto;
   color: #1d5045;
   font-size: 14px;
   font-weight: 760;
@@ -1813,20 +1850,36 @@
 }
 
 @media (max-width: 1080px) {
-  .app-frame.evidence-layout:has(.monitor-page),
-  .app-frame.evidence-layout:has(.monitor-page):has(
-      .chat-rail[data-collapsed="false"]
-    ) {
+  .app-frame.evidence-layout:has(.monitor-page) {
     grid-template-columns: 64px minmax(0, 1fr);
   }
 
-  .evidence-layout:has(.monitor-page) .chat-rail {
+  .app-frame.evidence-layout:has(.monitor-page):has(
+      .chat-rail[data-collapsed="false"]
+    ) {
+    grid-template-columns: 252px minmax(0, 1fr);
+  }
+
+  .evidence-layout:has(.monitor-page) .chat-rail[data-collapsed="true"] {
     width: 64px !important;
   }
 
-  .evidence-layout:has(.monitor-page) .chat-rail .chat-body,
-  .evidence-layout:has(.monitor-page) .chat-rail .chat-heading {
+  .evidence-layout:has(.monitor-page)
+    .chat-rail[data-collapsed="true"]
+    .chat-body,
+  .evidence-layout:has(.monitor-page)
+    .chat-rail[data-collapsed="true"]
+    .chat-heading {
     display: none;
+  }
+
+  .evidence-layout:has(.monitor-page)
+    .chat-rail[data-collapsed="false"]
+    .chat-body,
+  .evidence-layout:has(.monitor-page)
+    .chat-rail[data-collapsed="false"]
+    .chat-heading {
+    display: flex;
   }
 
   .monitor-layout {
@@ -2039,6 +2092,30 @@
     display: none;
   }
 
+  .interactive-timeline-row {
+    min-height: 44px;
+  }
+
+  .interactive-timeline-row .timeline-track {
+    height: 44px;
+  }
+
+  .interactive-timeline-row .timeline-span {
+    top: 12px;
+    overflow: visible;
+    touch-action: manipulation;
+  }
+
+  .interactive-timeline-row .timeline-span::after {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    width: max(100%, 44px);
+    height: 44px;
+    content: "";
+    transform: translate(-50%, -50%);
+  }
+
   .camera-card {
     grid-template-columns: minmax(120px, 0.75fr) minmax(145px, 1fr);
   }
@@ -2070,7 +2147,7 @@
     display: grid;
     min-width: 0;
     flex: 1;
-    grid-template-columns: repeat(3, minmax(0, 1fr));
+    grid-template-columns: repeat(4, minmax(0, 1fr));
   }
 
   .evidence-layout:has(.monitor-page) .route-tabs button {
@@ -2175,6 +2252,15 @@
     grid-template-columns: auto minmax(0, 1fr) auto;
   }
 
+  .video-transport button {
+    min-width: 40px;
+    height: 40px;
+  }
+
+  .video-transport .primary-play {
+    width: 40px;
+  }
+
   .transport-controls {
     grid-column: 1 / 3;
   }
@@ -2187,6 +2273,12 @@
 
   .speed-control {
     grid-column: 1;
+    height: 44px;
+  }
+
+  .video-transport .speed-control button {
+    min-width: 40px;
+    height: 38px;
   }
 
   .video-transport .next-evidence {
@@ -2197,6 +2289,7 @@
 
   .video-transport .fullscreen-button {
     grid-column: 3;
+    flex-basis: 40px;
   }
 
   .camera-grid {
@@ -2206,7 +2299,37 @@
 
 @media (max-width: 520px) {
   .monitor-metrics {
-    display: none;
+    display: grid;
+    width: 100%;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0;
+  }
+
+  .monitor-metrics .review-mode {
+    display: block;
+  }
+
+  .monitor-metrics > div {
+    min-height: 48px;
+    padding: 7px 9px;
+  }
+
+  .monitor-metrics > div:nth-child(odd) {
+    border-left: 0;
+  }
+
+  .monitor-metrics > div:nth-child(n + 3) {
+    border-top: 1px solid var(--monitor-border);
+  }
+
+  .monitor-metrics dt {
+    margin-bottom: 2px;
+  }
+
+  .monitor-metrics dd {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
 
   .monitor-statusbar {

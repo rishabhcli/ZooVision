@@ -30,6 +30,13 @@ import {
   useState,
 } from "react";
 import { api, type ChatMoment } from "../lib/api";
+import {
+  applyWorkspacePreferences,
+  DEFAULT_WORKSPACE_PREFERENCES,
+  listenForWorkspacePreferences,
+  readWorkspacePreferences,
+  type WorkspacePreferences,
+} from "../lib/workspace-preferences";
 
 type WorkspaceShellProps = {
   children: ReactNode;
@@ -62,6 +69,8 @@ const emptyAssistantContext: AssistantContext = {
   sourcePath: null,
 };
 
+const ASSISTANT_STATE_KEY = "zoovision:assistant-expanded";
+
 function citationLabel(citation: string, index: number) {
   if (
     /^(?:(animal|alert|chk|chunk|event|evt|gap|obs|observation)[_-][a-z0-9_-]+|[a-f0-9]{24,}|[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12})$/i.test(citation)
@@ -75,6 +84,7 @@ const routeOptions = [
   { label: "Monitor", href: "/monitor", icon: Monitor },
   { label: "Node graph", href: "/graph", icon: Network },
   { label: "Analysis", href: "/analysis", icon: BarChart3 },
+  { label: "Settings", href: "/settings", icon: Settings },
 ];
 
 const onboardingSteps = [
@@ -141,13 +151,14 @@ export function WorkspaceShell({
 }: WorkspaceShellProps) {
   const pathname = usePathname();
   const router = useRouter();
-  const isEvidenceLayout =
-    pathname === "/monitor" || pathname === "/graph" || pathname === "/analysis";
+  const isEvidenceLayout = ["/monitor", "/graph", "/analysis", "/settings"].includes(
+    pathname,
+  );
   const profileRef = useRef<HTMLDivElement>(null);
   const composerRef = useRef<HTMLTextAreaElement>(null);
   const tourDialogRef = useRef<HTMLElement>(null);
   const tourReturnFocusRef = useRef<HTMLElement | null>(null);
-  const [chatCollapsed, setChatCollapsed] = useState(pathname === "/monitor");
+  const [chatCollapsed, setChatCollapsed] = useState(isEvidenceLayout);
   const [profileOpen, setProfileOpen] = useState(false);
   const [tourStep, setTourStep] = useState<number | null>(null);
   const [messagesByRoute, setMessagesByRoute] = useState<
@@ -158,10 +169,49 @@ export function WorkspaceShell({
   const [assistantContext, setAssistantContext] = useState<AssistantContext>(
     emptyAssistantContext,
   );
+  const [workspacePreferences, setWorkspacePreferences] =
+    useState<WorkspacePreferences>(DEFAULT_WORKSPACE_PREFERENCES);
+
+  useEffect(() => {
+    const storedPreferences = readWorkspacePreferences(window.localStorage);
+    applyWorkspacePreferences(document.documentElement, storedPreferences);
+    const wideViewport = !window.matchMedia("(max-width: 1280px)").matches;
+    const storedAssistantState = window.sessionStorage.getItem(
+      ASSISTANT_STATE_KEY,
+    );
+    const hydrationFrame = window.requestAnimationFrame(() => {
+      setWorkspacePreferences(storedPreferences);
+      if (
+        storedPreferences.preserveOpenAssistant &&
+        wideViewport &&
+        storedAssistantState === "true"
+      ) {
+        setChatCollapsed(false);
+      }
+    });
+
+    const stopListening = listenForWorkspacePreferences(window, (nextPreferences) => {
+      applyWorkspacePreferences(document.documentElement, nextPreferences);
+      setWorkspacePreferences(nextPreferences);
+      if (!nextPreferences.preserveOpenAssistant) setChatCollapsed(true);
+    });
+    return () => {
+      window.cancelAnimationFrame(hydrationFrame);
+      stopListening();
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!workspacePreferences.preserveOpenAssistant) return;
+    window.sessionStorage.setItem(
+      ASSISTANT_STATE_KEY,
+      String(!chatCollapsed),
+    );
+  }, [chatCollapsed, workspacePreferences.preserveOpenAssistant]);
 
   useEffect(() => {
     if (!isEvidenceLayout) return;
-    const compactViewport = window.matchMedia("(max-width: 760px)");
+    const compactViewport = window.matchMedia("(max-width: 1280px)");
     const collapseForCompactViewport = () => {
       if (compactViewport.matches) setChatCollapsed(true);
     };
@@ -177,8 +227,17 @@ export function WorkspaceShell({
         setProfileOpen(false);
       }
     }
+    function closeProfileFromKeyboard(event: globalThis.KeyboardEvent) {
+      if (event.key !== "Escape") return;
+      setProfileOpen(false);
+      profileRef.current?.querySelector<HTMLButtonElement>("button")?.focus();
+    }
     document.addEventListener("mousedown", closeProfile);
-    return () => document.removeEventListener("mousedown", closeProfile);
+    document.addEventListener("keydown", closeProfileFromKeyboard);
+    return () => {
+      document.removeEventListener("mousedown", closeProfile);
+      document.removeEventListener("keydown", closeProfileFromKeyboard);
+    };
   }, []);
 
   useEffect(() => {
@@ -366,11 +425,12 @@ export function WorkspaceShell({
 
   return (
     <MotionConfig
-      reducedMotion="user"
+      reducedMotion={workspacePreferences.reduceMotion ? "always" : "user"}
       transition={{ type: "spring", visualDuration: 0.32, bounce: 0.05 }}
     >
       <main
         className={`app-frame ${isEvidenceLayout ? "evidence-layout" : ""}`}
+        data-route={pathname.replace(/^\//, "") || "home"}
       >
         <AnimatePresence>
           {currentTourStep && TourIcon && tourStep !== null && (
@@ -480,7 +540,7 @@ export function WorkspaceShell({
           data-collapsed={chatCollapsed}
           aria-label="ZooVision Assistant"
         >
-          <div className="chat-rail-header">
+          <div className="chat-rail-header" hidden={chatCollapsed}>
             <span className="assistant-mark" aria-hidden="true">
               <Sparkles size={16} />
             </span>
@@ -690,11 +750,7 @@ export function WorkspaceShell({
             </div>
 
             <nav className="route-tabs" aria-label="Workspace pages">
-              {routeOptions
-                .filter(
-                  (option) => !isEvidenceLayout || option.href !== "/settings",
-                )
-                .map((option) => {
+              {routeOptions.map((option) => {
                 const Icon = option.icon;
                 const isActive = pathname === option.href;
                 return (
@@ -706,7 +762,7 @@ export function WorkspaceShell({
                     aria-current={isActive ? "page" : undefined}
                     onClick={() => router.push(option.href)}
                   >
-                    {!isEvidenceLayout && <Icon size={15} />}
+                    <Icon className="route-tab-icon" size={15} aria-hidden="true" />
                     <span>{option.label}</span>
                     {isActive && (
                       <motion.i
@@ -725,14 +781,18 @@ export function WorkspaceShell({
                   <button
                     type="button"
                     className="evidence-header-icon"
-                    aria-label="Switch appearance"
+                    aria-label="Open appearance settings"
+                    title="Appearance settings"
+                    onClick={() => router.push("/settings#accessibility")}
                   >
                     <Moon size={17} />
                   </button>
                   <button
                     type="button"
                     className="evidence-header-icon"
-                    aria-label="Notifications"
+                    aria-label="Open review notification settings"
+                    title="Review notifications"
+                    onClick={() => router.push("/settings#notifications")}
                   >
                     <Bell size={17} />
                   </button>
@@ -753,13 +813,31 @@ export function WorkspaceShell({
               <div className="profile-menu" ref={profileRef}>
                 <button
                   type="button"
-                  className="profile-trigger"
+                  className={`profile-trigger ${
+                    pathname === "/settings" ? "active" : ""
+                  }`}
                   onClick={() => setProfileOpen((current) => !current)}
+                  onKeyDown={(event: ReactKeyboardEvent<HTMLButtonElement>) => {
+                    if (event.key !== "ArrowDown") return;
+                    event.preventDefault();
+                    setProfileOpen(true);
+                    window.requestAnimationFrame(() => {
+                      profileRef.current
+                        ?.querySelector<HTMLButtonElement>("[role='menuitem']")
+                        ?.focus();
+                    });
+                  }}
                   aria-expanded={profileOpen}
                   aria-haspopup="menu"
+                  aria-controls="profile-menu"
+                  aria-label="Open profile and settings menu"
+                  aria-current={pathname === "/settings" ? "page" : undefined}
+                  title="Profile and settings"
                 >
                   <span className="profile-avatar">
-                    {isEvidenceLayout ? (
+                    {pathname === "/settings" ? (
+                      <Settings size={17} />
+                    ) : isEvidenceLayout ? (
                       <CircleUserRound size={17} />
                     ) : (
                       "MC"
@@ -778,8 +856,35 @@ export function WorkspaceShell({
                 <AnimatePresence>
                   {profileOpen && (
                     <motion.div
+                      id="profile-menu"
                       className="dropdown-menu profile-dropdown"
                       role="menu"
+                      onKeyDown={(event: ReactKeyboardEvent<HTMLDivElement>) => {
+                        const items = Array.from(
+                          event.currentTarget.querySelectorAll<HTMLElement>(
+                            "[role='menuitem']",
+                          ),
+                        );
+                        if (items.length === 0) return;
+                        const currentIndex = items.indexOf(
+                          document.activeElement as HTMLElement,
+                        );
+                        let nextIndex = currentIndex;
+                        if (event.key === "ArrowDown") {
+                          nextIndex = (currentIndex + 1) % items.length;
+                        } else if (event.key === "ArrowUp") {
+                          nextIndex =
+                            (currentIndex - 1 + items.length) % items.length;
+                        } else if (event.key === "Home") {
+                          nextIndex = 0;
+                        } else if (event.key === "End") {
+                          nextIndex = items.length - 1;
+                        } else {
+                          return;
+                        }
+                        event.preventDefault();
+                        items[nextIndex]?.focus();
+                      }}
                       initial={{ opacity: 0, y: -6, scale: 0.98 }}
                       animate={{ opacity: 1, y: 0, scale: 1 }}
                       exit={{ opacity: 0, y: -6, scale: 0.98 }}
@@ -797,6 +902,7 @@ export function WorkspaceShell({
                       <button
                         type="button"
                         role="menuitem"
+                        aria-current={pathname === "/settings" ? "page" : undefined}
                         onClick={() => {
                           setProfileOpen(false);
                           router.push("/settings");

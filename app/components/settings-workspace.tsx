@@ -11,19 +11,38 @@ import {
   Moon,
   ShieldCheck,
 } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { api, type ReadinessPayload } from "../lib/api";
+import {
+  applyWorkspacePreferences,
+  DEFAULT_WORKSPACE_PREFERENCES,
+  dispatchWorkspacePreferences,
+  listenForWorkspacePreferences,
+  persistWorkspacePreferences,
+  readWorkspacePreferences,
+  type WorkspacePreferences,
+} from "../lib/workspace-preferences";
+
+type BooleanPreference = {
+  [Key in keyof WorkspacePreferences]: WorkspacePreferences[Key] extends boolean
+    ? Key
+    : never;
+}[keyof WorkspacePreferences];
 
 type ToggleRowProps = {
+  preference: BooleanPreference;
   title: string;
   description: string;
-  defaultChecked?: boolean;
+  checked: boolean;
+  onCheckedChange: (checked: boolean) => void;
 };
 
 function ToggleRow({
+  preference,
   title,
   description,
-  defaultChecked = false,
+  checked,
+  onCheckedChange,
 }: ToggleRowProps) {
   return (
     <label className="settings-toggle-row">
@@ -31,21 +50,123 @@ function ToggleRow({
         <strong>{title}</strong>
         <small>{description}</small>
       </span>
-      <input type="checkbox" defaultChecked={defaultChecked} />
+      <input
+        type="checkbox"
+        name={preference}
+        checked={checked}
+        onChange={(event) => onCheckedChange(event.target.checked)}
+      />
     </label>
   );
 }
 
-export function SettingsWorkspace() {
-  const [density, setDensity] = useState<"comfortable" | "compact">(
-    "comfortable",
+type ProviderVisualStatus = "healthy" | "unverified" | "unavailable";
+
+const providerLabels: Record<string, string> = {
+  agentcore: "AgentCore",
+  aws_storage: "AWS storage",
+  bedrock_marengo: "Bedrock Marengo",
+  eventbridge_scheduler: "EventBridge Scheduler",
+  neo4j: "Neo4j",
+  openai: "OpenAI",
+  slack: "Slack",
+  twelve_labs: "TwelveLabs",
+  twelvelabs: "TwelveLabs",
+  yolo: "YOLO",
+};
+
+function providerLabel(provider: string) {
+  return (
+    providerLabels[provider.toLowerCase()] ??
+    provider
+      .split("_")
+      .filter(Boolean)
+      .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+      .join(" ")
   );
-  const [saved, setSaved] = useState(false);
+}
+
+function providerStatus(status: string): {
+  dataStatus: ProviderVisualStatus;
+  label: string;
+} {
+  if (status === "healthy") {
+    return { dataStatus: "healthy", label: "Healthy" };
+  }
+  if (status === "enabled_unverified") {
+    return { dataStatus: "unverified", label: "Enabled, not yet verified" };
+  }
+  if (status === "configured_disabled") {
+    return { dataStatus: "unavailable", label: "Configured, disabled" };
+  }
+  if (status === "not_configured") {
+    return { dataStatus: "unavailable", label: "Not configured" };
+  }
+  return { dataStatus: "unavailable", label: "Unavailable" };
+}
+
+export function SettingsWorkspace() {
+  const [preferences, setPreferences] = useState<WorkspacePreferences>(
+    DEFAULT_WORKSPACE_PREFERENCES,
+  );
+  const [saveStatus, setSaveStatus] = useState<"idle" | "saved" | "error">(
+    "idle",
+  );
   const [readiness, setReadiness] = useState<ReadinessPayload | null>(null);
+  const saveStatusTimer = useRef<number | null>(null);
 
   useEffect(() => {
     api.readiness().then(setReadiness).catch(() => setReadiness(null));
   }, []);
+
+  useEffect(() => {
+    const storedPreferences = readWorkspacePreferences(window.localStorage);
+    applyWorkspacePreferences(document.documentElement, storedPreferences);
+    const hydrationFrame = window.requestAnimationFrame(() => {
+      setPreferences(storedPreferences);
+    });
+
+    const stopListening = listenForWorkspacePreferences(window, (next) => {
+      setPreferences(next);
+      applyWorkspacePreferences(document.documentElement, next);
+    });
+
+    return () => {
+      window.cancelAnimationFrame(hydrationFrame);
+      stopListening();
+      if (saveStatusTimer.current !== null) {
+        window.clearTimeout(saveStatusTimer.current);
+      }
+    };
+  }, []);
+
+  function updatePreference<Key extends keyof WorkspacePreferences>(
+    key: Key,
+    value: WorkspacePreferences[Key],
+  ) {
+    setPreferences((current) => ({ ...current, [key]: value }));
+    setSaveStatus("idle");
+  }
+
+  function savePreferences() {
+    if (saveStatusTimer.current !== null) {
+      window.clearTimeout(saveStatusTimer.current);
+    }
+
+    try {
+      persistWorkspacePreferences(window.localStorage, preferences);
+      applyWorkspacePreferences(document.documentElement, preferences);
+      dispatchWorkspacePreferences(window, preferences);
+      setSaveStatus("saved");
+    } catch {
+      setSaveStatus("error");
+    }
+
+    saveStatusTimer.current = window.setTimeout(
+      () => setSaveStatus("idle"),
+      2200,
+    );
+  }
 
   return (
     <div className="page-stack settings-page">
@@ -61,10 +182,7 @@ export function SettingsWorkspace() {
         <button
           type="button"
           className="primary-button"
-          onClick={() => {
-            setSaved(true);
-            window.setTimeout(() => setSaved(false), 2200);
-          }}
+          onClick={savePreferences}
         >
           <Check size={15} />
           Save changes
@@ -83,20 +201,27 @@ export function SettingsWorkspace() {
             </div>
           </div>
           {readiness ? (
-            Object.entries(readiness.providers).map(([provider, state]) => (
-              <div className="settings-device-row" key={provider}>
-                <span className="status-dot" data-connected={state.status === "healthy"} />
-                <span>
-                  <strong>{provider.replaceAll("_", " ")}</strong>
-                  <small>
-                    {state.status}
-                    {provider === "neo4j" && state.read_connected
-                      ? " · live read connection"
-                      : ""}
-                  </small>
-                </span>
-              </div>
-            ))
+            Object.entries(readiness.providers).map(([provider, state]) => {
+              const status = providerStatus(state.status);
+              return (
+                <div className="settings-device-row" key={provider}>
+                  <span
+                    className="status-dot"
+                    data-status={status.dataStatus}
+                    aria-hidden="true"
+                  />
+                  <span>
+                    <strong>{providerLabel(provider)}</strong>
+                    <small>
+                      {status.label}
+                      {provider.toLowerCase() === "neo4j" && state.read_connected
+                        ? " · Live read connection"
+                        : ""}
+                    </small>
+                  </span>
+                </div>
+              );
+            })
           ) : (
             <div className="settings-policy-note">
               <ShieldCheck size={16} />
@@ -124,9 +249,9 @@ export function SettingsWorkspace() {
               {(["comfortable", "compact"] as const).map((option) => (
                 <button
                   type="button"
-                  className={density === option ? "active" : undefined}
-                  aria-pressed={density === option}
-                  onClick={() => setDensity(option)}
+                  className={preferences.density === option ? "active" : undefined}
+                  aria-pressed={preferences.density === option}
+                  onClick={() => updatePreference("density", option)}
                   key={option}
                 >
                   {option}
@@ -135,14 +260,22 @@ export function SettingsWorkspace() {
             </div>
           </div>
           <ToggleRow
+            preference="compactGraphLabels"
             title="Compact graph labels"
             description="Show full graph labels only when a node is selected."
-            defaultChecked
+            checked={preferences.compactGraphLabels}
+            onCheckedChange={(checked) =>
+              updatePreference("compactGraphLabels", checked)
+            }
           />
           <ToggleRow
+            preference="preserveOpenAssistant"
             title="Preserve open assistant"
-            description="Keep the evidence assistant expanded when changing pages."
-            defaultChecked
+            description="Keep the evidence assistant expanded between pages on wide screens."
+            checked={preferences.preserveOpenAssistant}
+            onCheckedChange={(checked) =>
+              updatePreference("preserveOpenAssistant", checked)
+            }
           />
         </section>
 
@@ -157,29 +290,45 @@ export function SettingsWorkspace() {
             </div>
           </div>
           <ToggleRow
+            preference="trackOverlays"
             title="Track overlays"
             description="Display source-provided track boxes over recorded footage."
-            defaultChecked
+            checked={preferences.trackOverlays}
+            onCheckedChange={(checked) =>
+              updatePreference("trackOverlays", checked)
+            }
           />
           <ToggleRow
-            title="Timeline thumbnails"
-            description="Show source-aligned preview frames in the editor timeline."
-            defaultChecked
+            preference="timelineThumbnails"
+            title="Source previews"
+            description="Show recorded frame previews in the camera source gallery."
+            checked={preferences.timelineThumbnails}
+            onCheckedChange={(checked) =>
+              updatePreference("timelineThumbnails", checked)
+            }
           />
           <ToggleRow
+            preference="identityConfidence"
             title="Identity confidence"
             description="Show confidence values alongside selected tracks."
-            defaultChecked
+            checked={preferences.identityConfidence}
+            onCheckedChange={(checked) =>
+              updatePreference("identityConfidence", checked)
+            }
           />
         </section>
 
-        <section className="settings-section">
+        <section
+          className="settings-section"
+          id="notifications"
+          aria-labelledby="notifications-title"
+        >
           <div className="settings-section-heading">
             <span>
               <Bell size={17} />
             </span>
             <div>
-              <h2>Review notifications</h2>
+              <h2 id="notifications-title">Review notifications</h2>
               <p>Notification controls remain constrained by welfare policy.</p>
             </div>
           </div>
@@ -191,51 +340,78 @@ export function SettingsWorkspace() {
             </p>
           </div>
           <ToggleRow
-            title="Morning briefing ready"
-            description="Notify this device when the overnight briefing is prepared."
-            defaultChecked
+            preference="morningBriefingReady"
+            title="Briefing control"
+            description="Show the morning briefing control on the Analysis page."
+            checked={preferences.morningBriefingReady}
+            onCheckedChange={(checked) =>
+              updatePreference("morningBriefingReady", checked)
+            }
           />
           <ToggleRow
+            preference="dataGapReview"
             title="Data-gap review"
-            description="Surface missing camera coverage as a review item."
-            defaultChecked
+            description="Show missing camera coverage in this device’s review queue."
+            checked={preferences.dataGapReview}
+            onCheckedChange={(checked) =>
+              updatePreference("dataGapReview", checked)
+            }
           />
         </section>
 
-        <section className="settings-section">
+        <section
+          className="settings-section"
+          id="accessibility"
+          aria-labelledby="accessibility-title"
+        >
           <div className="settings-section-heading">
             <span>
               <MonitorCog size={17} />
             </span>
             <div>
-              <h2>Accessibility</h2>
+              <h2 id="accessibility-title">Accessibility</h2>
               <p>Adjust motion and contrast for this device.</p>
             </div>
           </div>
           <ToggleRow
+            preference="reduceMotion"
             title="Reduce motion"
             description="Reduce carousel, drawer, and timeline spring animations."
+            checked={preferences.reduceMotion}
+            onCheckedChange={(checked) =>
+              updatePreference("reduceMotion", checked)
+            }
           />
           <ToggleRow
+            preference="increaseContrast"
             title="Increase contrast"
             description="Strengthen borders and secondary text contrast."
+            checked={preferences.increaseContrast}
+            onCheckedChange={(checked) =>
+              updatePreference("increaseContrast", checked)
+            }
           />
           <div className="settings-device-row">
             <Contrast size={16} />
             <span>
               <strong>Theme</strong>
               <small>
-                <Moon size={12} /> Night workspace · black and blue
+                <Moon size={12} /> Night workspace · graphite, lime, and teal
               </small>
             </span>
           </div>
         </section>
       </div>
 
-      {saved && (
+      {saveStatus === "saved" && (
         <div className="settings-save-toast" role="status">
           <Check size={15} />
           Preferences saved on this device.
+        </div>
+      )}
+      {saveStatus === "error" && (
+        <div className="settings-save-toast" role="alert">
+          Preferences could not be saved on this device.
         </div>
       )}
     </div>
