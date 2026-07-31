@@ -48,6 +48,9 @@ Ground every statement in the supplied context JSON. Rules you must follow:
   the observation intervals at or nearest that position in the selected video.
   Treat those media offsets as authoritative; wall-clock timestamps are not
   positions in the video.
+- When retrieval includes referenced_media_offsets_seconds, treat those prior
+  assistant timestamps only as lookup anchors. Verify them against the supplied
+  observation intervals, and never reject an anchor that an observation covers.
 - A `bedrock_embedding_failed` data gap means semantic vector indexing failed.
   It does not mean the footage, object detections, or structured observations
   are missing. Never use it to override an available structured observation or
@@ -58,6 +61,9 @@ Ground every statement in the supplied context JSON. Rules you must follow:
 - For any recording-wide inventory or activity-pattern question, cover every
   distinct animal type explicitly documented by the supplied moments. Do not
   infer an animal from the profile alone.
+- For an animal-timing question, use every supplied matching moment to describe
+  the documented intervals. Claim completeness only when
+  animal_timing_all_matches_included is true.
 - The recording_summary contains authoritative counts for the selected source.
   For rule or event questions, use those counts and never say footage or
   observations are absent when observation_count is greater than zero.
@@ -609,12 +615,27 @@ def retrieve_context(
     """
     question = messages[-1].content
     previous_users = [message.content for message in messages[:-1] if message.role == "user"]
+    previous_assistants = [
+        message.content for message in messages[:-1] if message.role == "assistant"
+    ]
+    follow_up = _looks_like_follow_up(question)
     query = question
-    if _looks_like_follow_up(question) and previous_users:
+    if follow_up and previous_users:
         query = f"{previous_users[-1]} {question}"
 
     intents = _query_intents(query)
-    requested_offset_seconds = _requested_media_offset_seconds(query)
+    explicit_offsets_seconds = _requested_media_offsets_seconds(question)
+    requested_offset_seconds = explicit_offsets_seconds[0] if explicit_offsets_seconds else None
+    referenced_offsets_seconds: list[float] = []
+    if follow_up and not explicit_offsets_seconds:
+        for prior_text in [
+            previous_assistants[-1] if previous_assistants else "",
+            previous_users[-1] if previous_users else "",
+        ]:
+            referenced_offsets_seconds = _requested_media_offsets_seconds(prior_text)
+            if referenced_offsets_seconds:
+                break
+    temporal_offsets_seconds = explicit_offsets_seconds or referenced_offsets_seconds
     terms = _tokens(query)
     content_terms = terms - _INTENT_TERMS
     animals = context.get("animals", [])
@@ -677,6 +698,19 @@ def retrieve_context(
         or moment.get("evidence_kind") != "synthetic_scenario"
         or moment["observation_id"] in event_source_ids
     ]
+    animal_timing_terms = _requested_animal_timing_terms(question)
+    animal_timing_matches = [
+        moment
+        for moment in candidate_moments
+        if animal_timing_terms & _moment_descriptive_animal_terms(moment)
+    ]
+    animal_timing_matches.sort(
+        key=lambda moment: (
+            float(moment.get("start_seconds") or 0),
+            float(moment.get("end_seconds") or 0),
+            moment["observation_id"],
+        )
+    )
     undocumented_profile_terms = (
         set()
         if requested_offset_seconds is not None
@@ -726,6 +760,8 @@ def retrieve_context(
             animals,
             limit=20,
         )
+    if animal_timing_terms:
+        relevant_moments = animal_timing_matches[:20]
     if undocumented_profile_terms:
         relevant_moments = []
     if intents["summary"] and not content_terms and not relevant_moments:
@@ -734,10 +770,11 @@ def retrieve_context(
         relevant_moments = [moment for _, moment in ranked_moments[:8]]
     if intents["quiet"] or intents["gaps"] and not intents["moments"]:
         relevant_moments = []
-    if requested_offset_seconds is not None and not intents["quiet"]:
-        relevant_moments = _select_temporal_moments(
+    if temporal_offsets_seconds and not intents["quiet"]:
+        relevant_moments = _select_temporal_moments_for_offsets(
             ranked_moments,
-            requested_offset_seconds,
+            temporal_offsets_seconds,
+            limit=20,
         )
         temporal_moment_ids = {moment["observation_id"] for moment in relevant_moments}
         selected_events = [
@@ -750,8 +787,8 @@ def retrieve_context(
         ]
 
     gaps = context.get("data_gaps", [])
-    if requested_offset_seconds is not None:
-        gaps = _select_temporal_gaps(gaps, requested_offset_seconds)
+    if temporal_offsets_seconds:
+        gaps = _select_temporal_gaps_for_offsets(gaps, temporal_offsets_seconds)
         if relevant_moments:
             gaps = [gap for gap in gaps if not _is_embedding_only_gap(gap)]
     elif not intents["gaps"]:
@@ -789,7 +826,11 @@ def retrieve_context(
             "intents": [name for name, active in intents.items() if active],
             "matched_animal_ids": sorted(matched_animal_ids),
             "requested_media_offset_seconds": requested_offset_seconds,
+            "referenced_media_offsets_seconds": referenced_offsets_seconds,
             "recording_inventory": recording_inventory,
+            "animal_timing_terms": sorted(animal_timing_terms),
+            "animal_timing_match_count": len(animal_timing_matches),
+            "animal_timing_all_matches_included": len(animal_timing_matches) <= 20,
             "safety_boundary": _asks_for_prohibited_guidance(question),
             "undocumented_profile_terms": sorted(undocumented_profile_terms),
             "no_match": unresolved_scoped_subject
@@ -1079,6 +1120,23 @@ def _requested_media_offset_seconds(query: str) -> float | None:
     return None
 
 
+def _requested_media_offsets_seconds(query: str) -> list[float]:
+    """Return every explicit playback timestamp, preserving textual order."""
+    offsets: list[float] = []
+    for timestamp in _MEDIA_TIMESTAMP_PATTERN.finditer(query):
+        hours = int(timestamp.group("hours") or 0)
+        minutes = int(timestamp.group("minutes"))
+        seconds = int(timestamp.group("seconds"))
+        offset = float(hours * 3600 + minutes * 60 + seconds)
+        if offset not in offsets:
+            offsets.append(offset)
+    if offsets:
+        return offsets
+
+    offset = _requested_media_offset_seconds(query)
+    return [offset] if offset is not None else []
+
+
 def _select_temporal_moments(
     ranked_moments: list[tuple[int, dict[str, Any]]],
     target_seconds: float,
@@ -1109,6 +1167,26 @@ def _select_temporal_moments(
     return [item[-1] for item in sorted(nearby)[:5]]
 
 
+def _select_temporal_moments_for_offsets(
+    ranked_moments: list[tuple[int, dict[str, Any]]],
+    offsets_seconds: list[float],
+    *,
+    limit: int,
+) -> list[dict[str, Any]]:
+    selected: dict[str, dict[str, Any]] = {}
+    for offset_seconds in offsets_seconds:
+        for moment in _select_temporal_moments(ranked_moments, offset_seconds):
+            selected[moment["observation_id"]] = moment
+    return sorted(
+        selected.values(),
+        key=lambda moment: (
+            float(moment.get("start_seconds") or 0),
+            float(moment.get("end_seconds") or 0),
+            moment["observation_id"],
+        ),
+    )[:limit]
+
+
 def _select_temporal_gaps(
     gaps: list[dict[str, Any]],
     target_seconds: float,
@@ -1124,6 +1202,17 @@ def _select_temporal_gaps(
         if distance <= _TEMPORAL_MOMENT_WINDOW_SECONDS:
             relevant.append((distance, gap))
     return [gap for _, gap in sorted(relevant, key=lambda item: item[0])[:12]]
+
+
+def _select_temporal_gaps_for_offsets(
+    gaps: list[dict[str, Any]],
+    offsets_seconds: list[float],
+) -> list[dict[str, Any]]:
+    selected: dict[str, dict[str, Any]] = {}
+    for offset_seconds in offsets_seconds:
+        for gap in _select_temporal_gaps(gaps, offset_seconds):
+            selected[gap["gap_id"]] = gap
+    return list(selected.values())[:12]
 
 
 def _interval_distance(target: float, start: float, end: float) -> float:
@@ -1215,6 +1304,7 @@ def _asks_about_activity_pattern(question: str) -> bool:
             "what is this animal doing",
             "what did this animal do",
             "what are they doing",
+            "what were they doing",
             "doing in this video",
             "doing on this camera",
             "usual activity",
@@ -1323,6 +1413,23 @@ def _normalized_lexemes(text: str) -> set[str]:
         }:
             normalized.add("bird")
     return normalized
+
+
+def _requested_animal_timing_terms(question: str) -> set[str]:
+    lowered = question.lower()
+    if not any(
+        phrase in lowered for phrase in ("when", "appear", "visible", "show me", "find", "moment")
+    ):
+        return set()
+    return _normalized_lexemes(question) & _COMMON_ANIMAL_TYPE_TERMS
+
+
+def _moment_descriptive_animal_terms(moment: dict[str, Any]) -> set[str]:
+    return _normalized_lexemes(
+        " ".join(
+            str(moment.get(field) or "") for field in ("activity_label", "evidence", "behavior")
+        )
+    )
 
 
 def _asks_for_recording_inventory(question: str) -> bool:

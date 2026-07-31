@@ -212,6 +212,100 @@ def _temporal_squirrel_store(tmp_path: Path) -> SQLiteStore:
     return store
 
 
+def _backyard_bird_timing_context() -> dict[str, Any]:
+    base_moment = {
+        "animal_id": "animal-backyard",
+        "animal_name": "Backyard squirrels and birds",
+        "species": "Eastern gray squirrel and backyard birds",
+        "enclosure_id": "ENC-BACKYARD",
+        "camera_id": "CAM-BY2",
+        "source_path": "uploads/backyard-squirrels-and-birds.mp4",
+        "behavior": "foraging",
+        "evidence_kind": "provider_structured",
+    }
+    moments = [
+        {
+            **base_moment,
+            "observation_id": f"obs-squirrel-{index:02d}",
+            "activity_label": "One squirrel foraging",
+            "evidence": "One squirrel is visible foraging for seeds.",
+            "start_seconds": float(index * 100),
+            "end_seconds": float(index * 100 + 50),
+        }
+        for index in range(25)
+    ]
+    bird_intervals = [
+        (
+            "obs-bird-42m43",
+            2563.6,
+            2644.384,
+            "One squirrel foraging while two birds forage in the background.",
+        ),
+        ("obs-bird-46m23", 2783.168, 2800.168, "One bird forages briefly."),
+        ("obs-bird-46m40", 2800.168, 2809.168, "One bird forages briefly."),
+        (
+            "obs-bird-1h05m52",
+            3951.588,
+            3962.372,
+            "Two birds enter and forage while one squirrel continues foraging.",
+        ),
+        (
+            "obs-bird-1h06m02",
+            3962.372,
+            4087.472,
+            "Two birds forage for seeds in the background.",
+        ),
+        (
+            "obs-bird-1h10m47",
+            4247.281,
+            4265.281,
+            "One squirrel and two birds forage; a third bird enters and begins foraging.",
+        ),
+    ]
+    moments.extend(
+        {
+            **base_moment,
+            "observation_id": observation_id,
+            "activity_label": evidence,
+            "evidence": evidence,
+            "start_seconds": start_seconds,
+            "end_seconds": end_seconds,
+        }
+        for observation_id, start_seconds, end_seconds, evidence in bird_intervals
+    )
+    return {
+        "scope": {
+            "enclosure_id": "ENC-BACKYARD",
+            "animal_id": "animal-backyard",
+            "camera_id": "CAM-BY2",
+            "source_path": "uploads/backyard-squirrels-and-birds.mp4",
+        },
+        "animals": [
+            {
+                "animal_id": "animal-backyard",
+                "name": "Backyard squirrels and birds",
+                "species": "Eastern gray squirrel and backyard birds",
+                "enclosure_id": "ENC-BACKYARD",
+                "baseline_state": "shadow",
+                "baseline_day_shifts": 0,
+                "event_count": 0,
+            }
+        ],
+        "events": [],
+        "moments": moments,
+        "data_gaps": [],
+        "recording_summary": {
+            "source_path": "uploads/backyard-squirrels-and-birds.mp4",
+            "camera_id": "CAM-BY2",
+            "observation_count": len(moments),
+            "event_count": 0,
+            "coverage_gap_count": 0,
+            "indexing_gap_count": 0,
+        },
+        "policy": {},
+    }
+
+
 def test_context_includes_events_animals_and_gaps(tmp_path: Path) -> None:
     context = build_context(_seeded_store(tmp_path))
 
@@ -408,6 +502,58 @@ def test_recording_inventory_keeps_late_animal_types_inside_context_cap() -> Non
     activity_ids = {moment["observation_id"] for moment in activity_context["moments"]}
     assert activity_context["retrieval"]["recording_inventory"] is True
     assert "obs-birds-late" in activity_ids
+
+
+def test_direct_bird_timing_keeps_all_documented_intervals_across_recording() -> None:
+    context = retrieve_context(
+        _backyard_bird_timing_context(),
+        [
+            ChatMessage(
+                role="user",
+                content="When do birds appear in this recording, and what are they doing?",
+            )
+        ],
+    )
+
+    assert [moment["observation_id"] for moment in context["moments"]] == [
+        "obs-bird-42m43",
+        "obs-bird-46m23",
+        "obs-bird-46m40",
+        "obs-bird-1h05m52",
+        "obs-bird-1h06m02",
+        "obs-bird-1h10m47",
+    ]
+    assert context["retrieval"]["animal_timing_terms"] == ["bird"]
+    assert context["retrieval"]["animal_timing_match_count"] == 6
+    assert context["retrieval"]["animal_timing_all_matches_included"] is True
+    assert context["retrieval"]["no_match"] is False
+
+
+def test_follow_up_timestamps_resolve_against_authoritative_bird_moments() -> None:
+    messages = [
+        ChatMessage(role="user", content="When do birds appear in this recording?"),
+        ChatMessage(
+            role="assistant",
+            content="Birds appear around 42:44 and again around 1:10:47.",
+        ),
+        ChatMessage(
+            role="user",
+            content="What were they doing then, and was a squirrel with them?",
+        ),
+    ]
+    context = retrieve_context(_backyard_bird_timing_context(), messages)
+
+    assert context["retrieval"]["requested_media_offset_seconds"] is None
+    assert context["retrieval"]["referenced_media_offsets_seconds"] == [2564.0, 4247.0]
+    assert {moment["observation_id"] for moment in context["moments"]} == {
+        "obs-bird-42m43",
+        "obs-bird-1h10m47",
+    }
+    assert context["retrieval"]["no_match"] is False
+    assert set(summarize(context, messages).moment_ids) == {
+        "obs-bird-42m43",
+        "obs-bird-1h10m47",
+    }
 
 
 def test_unknown_question_admits_no_matching_record_instead_of_dumping_events(
