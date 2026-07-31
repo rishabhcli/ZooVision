@@ -42,8 +42,10 @@ import {
 
 const PLAYBACK_SPEEDS = [0.5, 1, 2] as const;
 const COVERAGE_BINS = 72;
-const DETECTION_HOLD_SECONDS = 2.25;
-const DETECTION_FUTURE_TOLERANCE_SECONDS = 0.35;
+const OBJECT_DETECTION_HOLD_SECONDS = 1;
+const OBJECT_DETECTION_FUTURE_TOLERANCE_SECONDS = 0.1;
+const MOTION_DETECTION_HOLD_SECONDS = 2.25;
+const MOTION_DETECTION_FUTURE_TOLERANCE_SECONDS = 0.35;
 const DETECTION_OVERLAP_IOU = 0.16;
 const DETECTION_OVERLAP_CONTAINMENT = 0.42;
 const MAX_VISIBLE_DETECTIONS_PER_SOURCE = 10;
@@ -325,28 +327,19 @@ function detectionsAtTime(
   currentSeconds: number,
 ) {
   function candidatesFor(source: string) {
+    const holdSeconds =
+      source === "yolov8_object"
+        ? OBJECT_DETECTION_HOLD_SECONDS
+        : MOTION_DETECTION_HOLD_SECONDS;
+    const futureToleranceSeconds =
+      source === "yolov8_object"
+        ? OBJECT_DETECTION_FUTURE_TOLERANCE_SECONDS
+        : MOTION_DETECTION_FUTURE_TOLERANCE_SECONDS;
     return detections.filter(
       (item) =>
         item.source === source &&
-        item.video_seconds <=
-          currentSeconds + DETECTION_FUTURE_TOLERANCE_SECONDS &&
-        currentSeconds - item.video_seconds <= DETECTION_HOLD_SECONDS,
-    );
-  }
-
-  function latestFrame(source: string) {
-    const candidates = candidatesFor(source);
-    if (candidates.length === 0) return [];
-    const frameSeconds = candidates.reduce(
-      (nearest, item) =>
-        Math.abs(item.video_seconds - currentSeconds) <
-        Math.abs(nearest - currentSeconds)
-          ? item.video_seconds
-          : nearest,
-      candidates[0].video_seconds,
-    );
-    return candidates.filter(
-      (item) => Math.abs(item.video_seconds - frameSeconds) < 0.001,
+        item.video_seconds <= currentSeconds + futureToleranceSeconds &&
+        currentSeconds - item.video_seconds <= holdSeconds,
     );
   }
 
@@ -375,25 +368,55 @@ function detectionsAtTime(
       }
     }
 
-    const kept: VideoDetection[] = [];
-    for (const candidate of [...byTrack.values()].sort(
-      (left, right) =>
-        right.video_seconds - left.video_seconds || right.score - left.score,
-    )) {
-      if (
-        kept.some((existing) =>
-          detectionBoxesOverlap(candidate.box, existing.box),
-        )
-      ) {
-        continue;
+    const trackDetections = [...byTrack.values()];
+    const visited = new Set<number>();
+    const representatives: VideoDetection[] = [];
+    for (let index = 0; index < trackDetections.length; index += 1) {
+      if (visited.has(index)) continue;
+      const stack = [index];
+      const component: VideoDetection[] = [];
+      visited.add(index);
+      while (stack.length > 0) {
+        const currentIndex = stack.pop();
+        if (currentIndex === undefined) break;
+        const current = trackDetections[currentIndex];
+        component.push(current);
+        for (
+          let candidateIndex = 0;
+          candidateIndex < trackDetections.length;
+          candidateIndex += 1
+        ) {
+          if (
+            visited.has(candidateIndex) ||
+            !detectionsShareAnimal(
+              current,
+              trackDetections[candidateIndex],
+            )
+          ) {
+            continue;
+          }
+          visited.add(candidateIndex);
+          stack.push(candidateIndex);
+        }
       }
-      kept.push(candidate);
-      if (kept.length >= MAX_VISIBLE_DETECTIONS_PER_SOURCE) break;
+      representatives.push(
+        component.sort(
+          (left, right) =>
+            right.box.width * right.box.height -
+              left.box.width * left.box.height ||
+            right.score - left.score,
+        )[0],
+      );
     }
-    return kept;
+    return representatives
+      .sort(
+        (left, right) =>
+          right.video_seconds - left.video_seconds || right.score - left.score,
+      )
+      .slice(0, MAX_VISIBLE_DETECTIONS_PER_SOURCE);
   }
 
-  const yolo = latestFrame("yolov8_object");
+  const yolo = latestTracks("yolov8_object");
   const motion = latestTracks("motion_region");
   const unmatchedMotion = motion.filter(
     (motionDetection) =>
@@ -413,21 +436,43 @@ function detectionBoxesOverlap(
   left: VideoDetection["box"],
   right: VideoDetection["box"],
 ) {
+  const { iou, containment } = detectionBoxOverlap(left, right);
+  return (
+    iou >= DETECTION_OVERLAP_IOU ||
+    containment >= DETECTION_OVERLAP_CONTAINMENT
+  );
+}
+
+function detectionBoxOverlap(
+  left: VideoDetection["box"],
+  right: VideoDetection["box"],
+) {
   const x0 = Math.max(left.x, right.x);
   const y0 = Math.max(left.y, right.y);
   const x1 = Math.min(left.x + left.width, right.x + right.width);
   const y1 = Math.min(left.y + left.height, right.y + right.height);
-  if (x1 <= x0 || y1 <= y0) return false;
+  if (x1 <= x0 || y1 <= y0) return { iou: 0, containment: 0 };
   const intersection = (x1 - x0) * (y1 - y0);
   const leftArea = left.width * left.height;
   const rightArea = right.width * right.height;
   const union = leftArea + rightArea - intersection;
   const iou = union > 0 ? intersection / union : 0;
   const containment = intersection / Math.max(0.000001, Math.min(leftArea, rightArea));
-  return (
-    iou >= DETECTION_OVERLAP_IOU ||
-    containment >= DETECTION_OVERLAP_CONTAINMENT
-  );
+  return { iou, containment };
+}
+
+function detectionsShareAnimal(left: VideoDetection, right: VideoDetection) {
+  if (detectionBoxesOverlap(left.box, right.box)) return true;
+  if (
+    left.source !== "yolov8_object" ||
+    right.source !== "yolov8_object" ||
+    Math.abs(left.video_seconds - right.video_seconds) >= 0.001 ||
+    !left.label ||
+    left.label.trim().toLowerCase() !== right.label?.trim().toLowerCase()
+  ) {
+    return false;
+  }
+  return detectionBoxOverlap(left.box, right.box).containment >= 0.2;
 }
 
 function detectionBoxContains(
