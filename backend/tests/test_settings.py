@@ -3,6 +3,15 @@ from pydantic import ValidationError
 from zoovision.settings import Settings
 
 
+def test_default_spatial_sampling_rate_tracks_fast_wildlife() -> None:
+    settings = Settings(_env_file=None)
+
+    assert settings.yolo_sample_fps == 5.0
+    assert settings.detector_config.sample_fps == 5.0
+    assert settings.detector_config.warmup_frames == 5
+    assert settings.detector_config.learning_rate == 0.002
+
+
 def test_aws_session_uses_explicit_local_credentials_when_configured():
     settings = Settings(
         AWS_ACCESS_KEY_ID="test-access",

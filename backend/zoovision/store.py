@@ -512,6 +512,34 @@ class SQLiteStore:
             self._upsert_detection_rows(connection, rows)
         return len(rows)
 
+    def replace_chunk_spatial_detections(
+        self,
+        chunk_id: str,
+        detections: Iterable[Detection],
+    ) -> int:
+        """Atomically replace motion and YOLO samples for one video chunk."""
+        values = list(detections)
+        if any(detection.chunk_id != chunk_id for detection in values):
+            raise ValueError("every replacement detection must belong to the requested chunk")
+        allowed = {DetectionSource.MOTION_REGION, DetectionSource.YOLOV8_OBJECT}
+        if any(detection.source not in allowed for detection in values):
+            raise ValueError("spatial replacement accepts only motion_region and yolov8_object")
+        rows = self._detection_rows(values)
+        with self.connect() as connection:
+            connection.execute(
+                """
+                DELETE FROM detections
+                WHERE chunk_id = ? AND source IN (?, ?)
+                """,
+                (
+                    chunk_id,
+                    DetectionSource.MOTION_REGION.value,
+                    DetectionSource.YOLOV8_OBJECT.value,
+                ),
+            )
+            self._upsert_detection_rows(connection, rows)
+        return len(rows)
+
     @staticmethod
     def _detection_rows(detections: Iterable[Detection]) -> list[tuple]:
         return [

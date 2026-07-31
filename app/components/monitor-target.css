@@ -2315,6 +2315,14 @@
 }
 
 @media (max-width: 520px) {
+  .video-transport .next-evidence {
+    grid-column: 1 / -1;
+    grid-row: 3;
+    width: 100%;
+    margin-left: 0;
+    justify-self: stretch;
+  }
+
   .monitor-metrics {
     display: grid;
     width: 100%;

@@ -1174,6 +1174,73 @@ def test_direct_bird_timing_keeps_all_documented_intervals_across_recording(
     }
 
 
+def test_joint_animal_timing_requires_both_types_in_each_observation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    full_context = _backyard_bird_timing_context()
+    question = "Show me when a squirrel and birds are visible together."
+    context = retrieve_context(
+        full_context,
+        [ChatMessage(role="user", content=question)],
+    )
+
+    expected_ids = [
+        "obs-bird-42m43",
+        "obs-bird-1h05m52",
+        "obs-bird-1h08m29",
+        "obs-bird-1h10m32",
+        "obs-bird-1h10m36",
+        "obs-bird-1h10m47",
+        "obs-bird-1h11m05",
+        "obs-bird-1h11m16",
+        "obs-bird-1h11m28",
+        "obs-bird-1h11m40",
+        "obs-bird-1h11m52",
+    ]
+    assert [moment["observation_id"] for moment in context["moments"]] == expected_ids
+    assert context["retrieval"]["animal_timing_terms"] == ["bird", "squirrel"]
+    assert context["retrieval"]["animal_timing_match_mode"] == "all"
+    assert context["retrieval"]["animal_timing_match_count"] == len(expected_ids)
+
+    client = _StubClient(RuntimeError("joint animal timing must not call the model"))
+    monkeypatch.setattr(chat_module, "build_context", lambda *_args, **_kwargs: full_context)
+    reply = GroundedChat(
+        _seeded_store(tmp_path),
+        client=client,
+        model="gpt-test",
+    ).reply(
+        ChatRequest(
+            messages=[ChatMessage(role="user", content=question)],
+            animal_id="animal-backyard",
+            enclosure_id="ENC-BACKYARD",
+            camera_id="CAM-BY2",
+            source_path="uploads/backyard-squirrels-and-birds.mp4",
+        )
+    )
+
+    assert reply.mode == "deterministic"
+    assert client.responses.calls == []
+    assert "Bird and Squirrel together activity" in reply.answer
+    assert reply.uncertainty == []
+    assert reply.cited_ids == expected_ids
+
+
+def test_multi_animal_timing_without_copresence_marker_retains_any_match() -> None:
+    context = retrieve_context(
+        _backyard_bird_timing_context(),
+        [ChatMessage(role="user", content="When are squirrels and birds visible?")],
+    )
+
+    assert context["retrieval"]["animal_timing_terms"] == ["bird", "squirrel"]
+    assert context["retrieval"]["animal_timing_match_mode"] == "any"
+    assert context["retrieval"]["animal_timing_match_count"] == 41
+    assert any(
+        moment["observation_id"].startswith("obs-squirrel-")
+        for moment in context["moments"]
+    )
+
+
 def test_follow_up_timestamps_resolve_against_authoritative_bird_moments() -> None:
     messages = [
         ChatMessage(role="user", content="When do birds appear in this recording?"),

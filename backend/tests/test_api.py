@@ -125,7 +125,19 @@ def test_readiness_does_not_claim_external_providers_are_healthy(client):
         "not_configured",
         "configured_disabled",
     }
+    assert body["spatial_review"] == {
+        "configured_sample_fps": 5.0,
+        "frame_max_edge": 960,
+        "model": "yolo11m.pt",
+    }
     assert all("healthy" not in provider for provider in body["providers"].values())
+
+
+def test_large_api_payloads_are_compressed(client):
+    response = client.get("/api/dashboard", headers={"accept-encoding": "gzip"})
+
+    assert response.status_code == 200
+    assert response.headers["content-encoding"] == "gzip"
 
 
 def test_configured_proxy_secret_blocks_direct_api_and_media_access(tmp_path):

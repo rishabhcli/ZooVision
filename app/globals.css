@@ -4263,9 +4263,19 @@ textarea {
     padding: 10px;
   }
 
+  .analysis-commandbar > div:first-child {
+    flex-wrap: wrap;
+    row-gap: 2px;
+  }
+
+  .analysis-commandbar > div:first-child small {
+    flex: 0 0 100%;
+    padding-left: 14px;
+  }
+
   .analysis-source-select {
-    width: calc(100% - 43px);
-    flex: 0 0 calc(100% - 43px);
+    width: calc(100% - 53px);
+    flex: 0 0 calc(100% - 53px);
     grid-template-columns: 18px minmax(0, 1fr);
   }
 
@@ -9077,7 +9087,26 @@ html[data-density="compact"] .settings-device-row {
   }
 
   .node-evidence-bar {
-    min-height: 50px;
+    min-height: 62px;
+    flex: 0 0 auto;
+    gap: 8px;
+    padding: 8px 10px;
+  }
+
+  .node-evidence-bar span {
+    min-width: 0;
+    flex: 1;
+    flex-wrap: wrap;
+    row-gap: 2px;
+    line-height: 1.25;
+  }
+
+  .node-evidence-bar strong {
+    flex: 0 0 100%;
+  }
+
+  .node-evidence-bar i {
+    display: none;
   }
 
   .node-evidence-bar button,

@@ -14,6 +14,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
+from starlette.middleware.gzip import GZipMiddleware
 
 from .aws_storage import S3Archive, S3BucketSet
 from .bedrock import BedrockMarengoEmbedder
@@ -350,6 +351,7 @@ def create_app(
         redoc_url=None if settings.production_mode else "/redoc",
         openapi_url=None if settings.production_mode else "/openapi.json",
     )
+    app.add_middleware(GZipMiddleware, minimum_size=1024)
     app.add_middleware(
         CORSMiddleware,
         allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
@@ -399,7 +401,7 @@ def create_app(
     if graph_writer is not None:
         app.router.add_event_handler("shutdown", graph_writer.close)
 
-    @lru_cache(maxsize=32)
+    @lru_cache(maxsize=4)
     def cached_video_track(
         source_path: str,
         revision: tuple[int, int, int, int],
@@ -461,6 +463,11 @@ def create_app(
                 and provider_states["slack"]["status"] == "enabled_unverified"
             ),
             "providers": provider_states,
+            "spatial_review": {
+                "configured_sample_fps": settings.yolo_sample_fps,
+                "frame_max_edge": settings.detection_frame_max_edge,
+                "model": Path(settings.yolo_model).name,
+            },
             "retention_days": {
                 "raw": settings.raw_retention_days,
                 "analysis": settings.analysis_retention_days,

@@ -702,10 +702,18 @@ def retrieve_context(
         or moment["observation_id"] in event_source_ids
     ]
     animal_timing_terms = _requested_animal_timing_terms(question)
+    animal_timing_requires_joint_presence = _requires_joint_animal_presence(
+        question,
+        animal_timing_terms,
+    )
     animal_timing_matches = [
         moment
         for moment in candidate_moments
-        if animal_timing_terms & _moment_present_animal_terms(moment)
+        if (
+            animal_timing_terms <= _moment_present_animal_terms(moment)
+            if animal_timing_requires_joint_presence
+            else bool(animal_timing_terms & _moment_present_animal_terms(moment))
+        )
     ]
     animal_timing_matches.sort(
         key=lambda moment: (
@@ -831,6 +839,9 @@ def retrieve_context(
             "referenced_media_offsets_seconds": referenced_offsets_seconds,
             "recording_inventory": recording_inventory,
             "animal_timing_terms": sorted(animal_timing_terms),
+            "animal_timing_match_mode": (
+                "all" if animal_timing_requires_joint_presence else "any"
+            ),
             "animal_timing_match_count": len(animal_timing_matches),
             "animal_timing_all_matches_included": len(animal_timing_matches) <= 20,
             "safety_boundary": _asks_for_prohibited_guidance(question),
@@ -919,6 +930,8 @@ def _summarize_animal_timing(context: dict[str, Any]) -> ChatAnswer:
     retrieval = context.get("retrieval", {})
     terms = [_human_label(term) for term in retrieval.get("animal_timing_terms", [])]
     subject = _natural_join(terms) if terms else "Requested animal"
+    if retrieval.get("animal_timing_match_mode") == "all":
+        subject = f"{subject} together"
     if not moments:
         return ChatAnswer(
             answer=f"No documented {subject.lower()} moments match this recording.",
@@ -1697,6 +1710,27 @@ def _requested_animal_timing_terms(question: str) -> set[str]:
     ):
         return set()
     return _normalized_lexemes(question) & _COMMON_ANIMAL_TYPE_TERMS
+
+
+def _requires_joint_animal_presence(question: str, terms: set[str]) -> bool:
+    """Recognize explicit requests for multiple animal types in one observation."""
+    if len(terms) < 2:
+        return False
+    lowered = question.lower()
+    return any(
+        phrase in lowered
+        for phrase in (
+            "at once",
+            "at the same time",
+            "alongside",
+            "both",
+            "co-occur",
+            "cooccur",
+            "side by side",
+            "simultaneously",
+            "together",
+        )
+    )
 
 
 def _animal_mention_is_negated(tokens: list[str], index: int) -> bool:

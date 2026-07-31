@@ -28,6 +28,7 @@ import { motion, useReducedMotion } from "motion/react";
 import {
   CSSProperties,
   ChangeEvent,
+  RefObject,
   useEffect,
   useMemo,
   useRef,
@@ -42,13 +43,16 @@ import {
 
 const PLAYBACK_SPEEDS = [0.5, 1, 2] as const;
 const COVERAGE_BINS = 72;
-const OBJECT_DETECTION_HOLD_SECONDS = 1;
+const OBJECT_DETECTION_HOLD_SECONDS = 1.1;
 const OBJECT_DETECTION_FUTURE_TOLERANCE_SECONDS = 0.1;
 const MOTION_DETECTION_HOLD_SECONDS = 2.25;
 const MOTION_DETECTION_FUTURE_TOLERANCE_SECONDS = 0.35;
+const DETECTION_INTERPOLATION_MAX_GAP_SECONDS = 0.75;
+const MIN_SMALL_ANIMAL_DISPLAY_CONFIDENCE = 0.12;
 const DETECTION_OVERLAP_IOU = 0.16;
 const DETECTION_OVERLAP_CONTAINMENT = 0.42;
 const MAX_VISIBLE_DETECTIONS_PER_SOURCE = 10;
+const MAX_VISIBLE_UNCLASSIFIED_MOVEMENT = 2;
 const POSTER_BY_SOURCE_PATH: Record<string, string> = {
   "uploads/backyard-squirrel-staircase.mp4":
     "/camera-posters/source-backyard-squirrel-staircase.jpg",
@@ -322,10 +326,112 @@ function observationAtTime(
   return active[0] ?? nearestByStart(observations, currentSeconds);
 }
 
-function detectionsAtTime(
+type DetectionTimeIndex = {
+  bySource: Map<string, VideoDetection[]>;
+  bySourceTrack: Map<string, VideoDetection[]>;
+};
+
+function detectionTrackKey(detection: VideoDetection) {
+  return `${detection.source}:${detection.track_id}`;
+}
+
+function buildDetectionTimeIndex(
   detections: VideoTrack["detections"],
+): DetectionTimeIndex {
+  const bySource = new Map<string, VideoDetection[]>();
+  const bySourceTrack = new Map<string, VideoDetection[]>();
+  for (const detection of detections) {
+    const sourceTimeline = bySource.get(detection.source);
+    if (sourceTimeline) sourceTimeline.push(detection);
+    else bySource.set(detection.source, [detection]);
+    const key = detectionTrackKey(detection);
+    const trackTimeline = bySourceTrack.get(key);
+    if (trackTimeline) trackTimeline.push(detection);
+    else bySourceTrack.set(key, [detection]);
+  }
+  for (const timeline of [...bySource.values(), ...bySourceTrack.values()]) {
+    timeline.sort((left, right) => left.video_seconds - right.video_seconds);
+  }
+  return { bySource, bySourceTrack };
+}
+
+function lowerBoundDetectionTime(
+  detections: VideoDetection[],
+  seconds: number,
+) {
+  let low = 0;
+  let high = detections.length;
+  while (low < high) {
+    const middle = Math.floor((low + high) / 2);
+    if (detections[middle].video_seconds < seconds) low = middle + 1;
+    else high = middle;
+  }
+  return low;
+}
+
+function interpolateDetectionBox(
+  previous: VideoDetection,
+  next: VideoDetection,
   currentSeconds: number,
 ) {
+  const gap = next.video_seconds - previous.video_seconds;
+  const progress = clamp(
+    gap > 0 ? (currentSeconds - previous.video_seconds) / gap : 0,
+    0,
+    1,
+  );
+  const interpolate = (start: number, end: number) =>
+    start + (end - start) * progress;
+  const measured = progress < 0.5 ? previous : next;
+  return {
+    ...measured,
+    box: {
+      x: interpolate(previous.box.x, next.box.x),
+      y: interpolate(previous.box.y, next.box.y),
+      width: interpolate(previous.box.width, next.box.width),
+      height: interpolate(previous.box.height, next.box.height),
+    },
+  };
+}
+
+function trackDetectionAtTime(
+  timeline: VideoDetection[],
+  currentSeconds: number,
+  holdSeconds: number,
+  futureToleranceSeconds: number,
+) {
+  const nextIndex = lowerBoundDetectionTime(timeline, currentSeconds);
+  const exact = timeline[nextIndex];
+  if (exact && Math.abs(exact.video_seconds - currentSeconds) < 0.001) {
+    return exact;
+  }
+  const previous = timeline[nextIndex - 1];
+  const next = timeline[nextIndex];
+  if (
+    previous &&
+    next &&
+    next.video_seconds - previous.video_seconds <=
+      DETECTION_INTERPOLATION_MAX_GAP_SECONDS
+  ) {
+    // Only connect consecutive measurements from the same backend track.
+    // Missing samples and track changes stay visible as honest data gaps.
+    return interpolateDetectionBox(previous, next, currentSeconds);
+  }
+  const candidates = [previous, next].filter(
+    (item): item is VideoDetection =>
+      Boolean(item) &&
+      item.video_seconds <= currentSeconds + futureToleranceSeconds &&
+      currentSeconds - item.video_seconds <= holdSeconds,
+  );
+  return candidates.sort(
+    (left, right) =>
+      Math.abs(left.video_seconds - currentSeconds) -
+        Math.abs(right.video_seconds - currentSeconds) ||
+      right.video_seconds - left.video_seconds,
+  )[0];
+}
+
+function detectionsAtTime(index: DetectionTimeIndex, currentSeconds: number) {
   function candidatesFor(source: string) {
     const holdSeconds =
       source === "yolov8_object"
@@ -335,12 +441,31 @@ function detectionsAtTime(
       source === "yolov8_object"
         ? OBJECT_DETECTION_FUTURE_TOLERANCE_SECONDS
         : MOTION_DETECTION_FUTURE_TOLERANCE_SECONDS;
-    return detections.filter(
-      (item) =>
-        item.source === source &&
-        item.video_seconds <= currentSeconds + futureToleranceSeconds &&
-        currentSeconds - item.video_seconds <= holdSeconds,
+    const sourceTimeline = index.bySource.get(source) ?? [];
+    const start = lowerBoundDetectionTime(
+      sourceTimeline,
+      currentSeconds - holdSeconds,
     );
+    const end = lowerBoundDetectionTime(
+      sourceTimeline,
+      currentSeconds + futureToleranceSeconds + 0.001,
+    );
+    const trackKeys = new Set(
+      sourceTimeline.slice(start, end).map(detectionTrackKey),
+    );
+    return [...trackKeys]
+      .map((key) => {
+        const timeline = index.bySourceTrack.get(key);
+        return timeline
+          ? trackDetectionAtTime(
+              timeline,
+              currentSeconds,
+              holdSeconds,
+              futureToleranceSeconds,
+            )
+          : undefined;
+      })
+      .filter((item): item is VideoDetection => Boolean(item));
   }
 
   function latestTracks(source: string) {
@@ -402,6 +527,9 @@ function detectionsAtTime(
       representatives.push(
         component.sort(
           (left, right) =>
+            Math.abs(left.video_seconds - currentSeconds) -
+              Math.abs(right.video_seconds - currentSeconds) ||
+            right.video_seconds - left.video_seconds ||
             right.box.width * right.box.height -
               left.box.width * left.box.height ||
             right.score - left.score,
@@ -418,12 +546,20 @@ function detectionsAtTime(
 
   const yolo = latestTracks("yolov8_object");
   const motion = latestTracks("motion_region");
-  const unmatchedMotion = motion.filter(
-    (motionDetection) =>
-      !yolo.some((objectDetection) =>
-        detectionBoxesOverlap(motionDetection.box, objectDetection.box),
-      ),
-  );
+  const unmatchedMotion = motion
+    .filter(
+      (motionDetection) =>
+        !yolo.some((objectDetection) =>
+          detectionBoxesOverlap(motionDetection.box, objectDetection.box),
+        ),
+    )
+    .sort(
+      (left, right) =>
+        Math.abs(left.video_seconds - currentSeconds) -
+          Math.abs(right.video_seconds - currentSeconds) ||
+        right.score - left.score,
+    )
+    .slice(0, MAX_VISIBLE_UNCLASSIFIED_MOVEMENT);
   return [...yolo, ...unmatchedMotion].sort((left, right) => {
     if (left.source !== right.source) {
       return left.source === "yolov8_object" ? -1 : 1;
@@ -472,7 +608,21 @@ function detectionsShareAnimal(left: VideoDetection, right: VideoDetection) {
   ) {
     return false;
   }
-  return detectionBoxOverlap(left.box, right.box).containment >= 0.2;
+  const leftArea = left.box.width * left.box.height;
+  const rightArea = right.box.width * right.box.height;
+  const areaRatio =
+    Math.max(leftArea, rightArea) /
+    Math.max(0.000001, Math.min(leftArea, rightArea));
+  const leftAspect = left.box.width / Math.max(0.000001, left.box.height);
+  const rightAspect = right.box.width / Math.max(0.000001, right.box.height);
+  const aspectRatio =
+    Math.max(leftAspect, rightAspect) /
+    Math.max(0.000001, Math.min(leftAspect, rightAspect));
+  return (
+    detectionBoxOverlap(left.box, right.box).containment >= 0.2 &&
+    areaRatio <= 2.25 &&
+    aspectRatio <= 2
+  );
 }
 
 function detectionBoxContains(
@@ -515,21 +665,55 @@ function curateVisibleDetections(
 ) {
   const sourceName = sourcePath.split("/").at(-1) ?? sourcePath;
   if (sourceName === "backyard-squirrel-staircase.mp4") {
-    return detections.sort((left, right) => {
-      if (left.source !== right.source) {
-        return left.source === "yolov8_object" ? -1 : 1;
-      }
-      return left.box.x - right.box.x || left.box.y - right.box.y;
-    });
+    const excludesVisibleBirds = observationExcludesVisibleBirds(observationText);
+    const visibleBirdCount = observationVisibleBirdCount(observationText);
+    const curated = detections
+      .filter(
+        (detection) =>
+          !(
+            excludesVisibleBirds &&
+            (detection.source === "yolov8_object" ||
+              detection.model === "content-bound-background-v1")
+          ) &&
+          (detection.source !== "yolov8_object" ||
+            detection.score >= MIN_SMALL_ANIMAL_DISPLAY_CONFIDENCE),
+      )
+      .sort((left, right) => {
+        const leftPriority =
+          left.source === "yolov8_object"
+            ? 0
+            : left.model === "content-bound-background-v1"
+              ? 1
+              : 2;
+        const rightPriority =
+          right.source === "yolov8_object"
+            ? 0
+            : right.model === "content-bound-background-v1"
+              ? 1
+              : 2;
+        return (
+          leftPriority - rightPriority ||
+          right.score - left.score ||
+          left.box.x - right.box.x ||
+          left.box.y - right.box.y
+        );
+      });
+    return visibleBirdCount === null
+      ? curated
+      : curated.slice(0, visibleBirdCount);
   }
 
   if (sourceName === "backyard-squirrels-and-birds.mp4") {
+    const excludesVisibleAnimals = observationExcludesVisibleAnimals(observationText);
     const labeled = detections
       .filter(
         (detection) =>
-          detection.source !== "yolov8_object" ||
-          detection.label?.trim().toLowerCase() !== "bird" ||
-          detection.score >= 0.12,
+          !(
+            excludesVisibleAnimals && detection.source === "yolov8_object"
+          ) &&
+          (detection.source !== "yolov8_object" ||
+            detection.label?.trim().toLowerCase() !== "bird" ||
+            detection.score >= MIN_SMALL_ANIMAL_DISPLAY_CONFIDENCE),
       )
       .map((detection) => ({
         detection,
@@ -562,7 +746,6 @@ function curateVisibleDetections(
 }
 
 const SOURCE_CANONICAL_LABELS: Record<string, string> = {
-  "backyard-squirrel-staircase.mp4": "Bird",
   "badger-provider-probe-30s.mp4": "Badger",
   "enc03_mountain_gorilla_15m.mp4": "Mountain gorilla",
   "enc03_trailcam_night_15m.mp4": "Wildlife",
@@ -573,12 +756,95 @@ const SOURCE_CANONICAL_LABELS: Record<string, string> = {
   "lion-provider-probe-30s.mp4": "African lion",
 };
 
+function observationExcludesVisibleAnimals(observationText: string) {
+  const subjectText = observationText.toLowerCase();
+  return (
+    /\bno (?:visible )?animals?\b/.test(subjectText) ||
+    /\bno animals? (?:are )?visible\b/.test(subjectText) ||
+    /\bwithout (?:any )?(?:visible )?animals?\b/.test(subjectText)
+  );
+}
+
+function observationExcludesVisibleBirds(observationText: string) {
+  const subjectText = observationText
+    .toLowerCase()
+    .replace(/\bbird (?:feeder|table)\b/g, "");
+  return (
+    observationExcludesVisibleAnimals(subjectText) ||
+    /\bno (?:visible )?(?:birds?|sparrows?|pigeons?)\b/.test(subjectText) ||
+    /\bno (?:birds?|sparrows?|pigeons?) (?:are )?visible\b/.test(subjectText) ||
+    /\bwithout (?:any )?(?:visible )?(?:birds?|sparrows?|pigeons?)\b/.test(subjectText)
+  );
+}
+
+function observationAffirmsVisibleBird(observationText: string) {
+  const subjectText = observationText
+    .toLowerCase()
+    .replace(/\bbird (?:feeder|table)\b/g, "");
+  return (
+    /\b(?:bird|birds|sparrow|sparrows|pigeon|pigeons)\b/.test(subjectText) &&
+    !observationExcludesVisibleBirds(subjectText)
+  );
+}
+
+function observationVisibleBirdCount(observationText: string) {
+  if (!observationAffirmsVisibleBird(observationText)) return null;
+  const subjectText = observationText
+    .toLowerCase()
+    .replace(/\bbird (?:feeder|table)\b/g, "");
+  if (/\b(?:at least|one or more|several|multiple)\b/.test(subjectText)) {
+    return null;
+  }
+
+  const countByWord: Record<string, number> = {
+    a: 1,
+    an: 1,
+    first: 1,
+    one: 1,
+    single: 1,
+    another: 2,
+    second: 2,
+    two: 2,
+    third: 3,
+    three: 3,
+    fourth: 4,
+    four: 4,
+    fifth: 5,
+    five: 5,
+    sixth: 6,
+    six: 6,
+    seventh: 7,
+    seven: 7,
+    eighth: 8,
+    eight: 8,
+    ninth: 9,
+    nine: 9,
+    tenth: 10,
+    ten: 10,
+  };
+  const counts = [
+    ...subjectText.matchAll(
+      /\b(a|an|another|first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth|single|one|two|three|four|five|six|seven|eight|nine|ten)\s+(?:small\s+)?(?:bird|birds|sparrow|sparrows|pigeon|pigeons)\b/g,
+    ),
+  ].map((match) => countByWord[match[1]]);
+  if (counts.length > 0) return Math.max(...counts);
+  return /\b(?:bird|sparrow|pigeon)\b/.test(subjectText) ? 1 : null;
+}
+
 function canonicalDetectionLabel(
   detection: VideoDetection,
   sourcePath: string,
   observationText: string,
 ) {
-  if (detection.source === "motion_region") return "Motion region";
+  const sourceName = sourcePath.split("/").at(-1) ?? sourcePath;
+  if (detection.source === "motion_region") {
+    const isReviewedStaircaseBird =
+      sourceName === "backyard-squirrel-staircase.mp4" &&
+      detection.label?.trim().toLowerCase() === "bird" &&
+      detection.model === "content-bound-background-v1" &&
+      observationAffirmsVisibleBird(observationText);
+    return isReviewedStaircaseBird ? "Bird" : "Unclassified movement";
+  }
 
   const explicitLabel = [
     detection.display_label,
@@ -588,13 +854,24 @@ function canonicalDetectionLabel(
   ].find((value) => typeof value === "string" && value.trim().length > 0);
   if (explicitLabel) return formatBehavior(explicitLabel.trim());
 
-  const sourceName = sourcePath.split("/").at(-1) ?? sourcePath;
   const sourceLabel = SOURCE_CANONICAL_LABELS[sourceName];
   if (sourceLabel) return sourceLabel;
+
+  if (sourceName === "backyard-squirrel-staircase.mp4") {
+    const rawLabel = detection.label?.trim().toLowerCase() ?? "";
+    return rawLabel === "bird" || observationAffirmsVisibleBird(observationText)
+      ? "Bird"
+      : "Animal";
+  }
 
   if (sourceName === "backyard-squirrels-and-birds.mp4") {
     const rawLabel = detection.label?.trim().toLowerCase() ?? "";
     const area = detection.box.width * detection.box.height;
+    const aspect = detection.box.width / detection.box.height;
+    const birdShapedCandidate =
+      area <= 0.02 &&
+      aspect >= 1.35 &&
+      detection.score >= MIN_SMALL_ANIMAL_DISPLAY_CONFIDENCE;
     const subjectText = observationText.replace(/\bbird feeder\b/g, "");
     const birdVisible =
       /\b(?:bird|birds|sparrow|sparrows)\b/.test(subjectText) &&
@@ -607,11 +884,12 @@ function canonicalDetectionLabel(
     if (squirrelVisible && !birdVisible) return "Squirrel";
     if (birdVisible && squirrelVisible) {
       if (rawLabel === "bird" && area <= 0.04) return "Bird";
+      if (birdShapedCandidate) return "Bird";
       if (rawLabel && rawLabel !== "bird") return "Squirrel";
       return area > 0.04 ? "Squirrel" : "Bird";
     }
     if (rawLabel === "bird" && area <= 0.04) return "Bird";
-    if (rawLabel) return "Squirrel";
+    if (rawLabel) return birdShapedCandidate ? "Bird" : "Squirrel";
     return area > 0.04 ? "Squirrel" : "Bird";
   }
 
@@ -759,6 +1037,159 @@ function containedVideoBounds(
     width,
     height: stageHeight,
   };
+}
+
+function DetectionOverlay({
+  currentSeconds,
+  sourcePath,
+  track,
+  videoBounds,
+  videoRef,
+}: {
+  currentSeconds: number;
+  sourcePath: string;
+  track: VideoTrack;
+  videoBounds: { left: number; top: number; width: number; height: number };
+  videoRef: RefObject<HTMLVideoElement | null>;
+}) {
+  const [frameSeconds, setFrameSeconds] = useState(currentSeconds);
+  const [isSeeking, setIsSeeking] = useState(false);
+  const detectionIndex = useMemo(
+    () => buildDetectionTimeIndex(track.detections),
+    [track.detections],
+  );
+
+  useEffect(() => {
+    const video = videoRef.current;
+    if (!video) return;
+    let cancelled = false;
+    let animationFrame = 0;
+    let videoFrame = 0;
+
+    const sync = (seconds = video.currentTime) => {
+      if (!cancelled && Number.isFinite(seconds)) {
+        setFrameSeconds((current) =>
+          Math.abs(current - seconds) < 0.001 ? current : seconds,
+        );
+      }
+    };
+    const syncFromVideo = () => sync(video.currentTime);
+    const onVideoFrame: VideoFrameRequestCallback = (_now, metadata) => {
+      if (cancelled) return;
+      sync(metadata.mediaTime);
+      setIsSeeking(false);
+      videoFrame = video.requestVideoFrameCallback(onVideoFrame);
+    };
+    const onAnimationFrame = () => {
+      sync();
+      if (!cancelled) {
+        animationFrame = window.requestAnimationFrame(onAnimationFrame);
+      }
+    };
+    const onSeeking = () => setIsSeeking(true);
+    const onSeeked = () => {
+      syncFromVideo();
+      setIsSeeking(false);
+    };
+    const onTimeUpdate = () => {
+      if (!video.seeking) syncFromVideo();
+    };
+
+    sync();
+    video.addEventListener("loadedmetadata", syncFromVideo);
+    video.addEventListener("seeking", onSeeking);
+    video.addEventListener("seeked", onSeeked);
+    video.addEventListener("timeupdate", onTimeUpdate);
+    if (typeof video.requestVideoFrameCallback === "function") {
+      videoFrame = video.requestVideoFrameCallback(onVideoFrame);
+    } else {
+      animationFrame = window.requestAnimationFrame(onAnimationFrame);
+    }
+
+    return () => {
+      cancelled = true;
+      video.removeEventListener("loadedmetadata", syncFromVideo);
+      video.removeEventListener("seeking", onSeeking);
+      video.removeEventListener("seeked", onSeeked);
+      video.removeEventListener("timeupdate", onTimeUpdate);
+      if (videoFrame) video.cancelVideoFrameCallback(videoFrame);
+      if (animationFrame) window.cancelAnimationFrame(animationFrame);
+    };
+  }, [sourcePath, videoRef]);
+
+  useEffect(() => {
+    if (
+      videoRef.current?.paused !== false &&
+      videoRef.current?.seeking !== true
+    ) {
+      setFrameSeconds(currentSeconds);
+    }
+  }, [currentSeconds, videoRef]);
+
+  const visibleDetections = useMemo(() => {
+    if (isSeeking) return [];
+    const observationText = activeObservationText(
+      track.observations,
+      frameSeconds,
+    );
+    return labelVisibleDetections(
+      curateVisibleDetections(
+        detectionsAtTime(detectionIndex, frameSeconds),
+        sourcePath,
+        observationText,
+      ),
+      sourcePath,
+      observationText,
+    );
+  }, [detectionIndex, frameSeconds, isSeeking, sourcePath, track.observations]);
+
+  return (
+    <div
+      className="detection-layer"
+      style={{
+        left: videoBounds.left,
+        top: videoBounds.top,
+        width: videoBounds.width,
+        height: videoBounds.height,
+      }}
+      aria-label="Spatial detection evidence overlays"
+      role="group"
+    >
+      {visibleDetections.map((detection, detectionIndex) => (
+        <span
+          aria-label={detection.provenanceTitle}
+          className="motion-box"
+          data-canonical-label={detection.displayLabel}
+          data-source={detection.source}
+          data-label-align={
+            detection.box.x + detection.box.width / 2 >= 0.5
+              ? "right"
+              : "left"
+          }
+          data-label-position={detectionLabelPosition(
+            detection,
+            detectionIndex,
+            videoBounds.height,
+          )}
+          data-label-lane={detectionIndex % 3}
+          key={detectionTrackKey(detection)}
+          role="img"
+          style={{
+            left: `${detection.box.x * 100}%`,
+            top: `${detection.box.y * 100}%`,
+            width: `${detection.box.width * 100}%`,
+            height: `${detection.box.height * 100}%`,
+          }}
+          title={detection.provenanceTitle}
+        >
+          <span>
+            <span className="motion-box-label">{detection.displayLabel}</span>
+            <b>{Math.round(detection.score * 100)}%</b>
+          </span>
+        </span>
+      ))}
+    </div>
+  );
 }
 
 function emptyVideoTrack(source: VideoSource): VideoTrack {
@@ -1137,22 +1568,6 @@ export function MonitorWorkspace() {
   const playheadObservation = useMemo(() => {
     if (!track) return null;
     return observationAtTime(track.observations, currentSeconds);
-  }, [currentSeconds, track]);
-  const visibleDetections = useMemo(() => {
-    if (!track) return [];
-    const observationText = activeObservationText(
-      track.observations,
-      currentSeconds,
-    );
-    return labelVisibleDetections(
-      curateVisibleDetections(
-        detectionsAtTime(track.detections, currentSeconds),
-        track.source_path,
-        observationText,
-      ),
-      track.source_path,
-      observationText,
-    );
   }, [currentSeconds, track]);
   const selectedEvent = useMemo(() => {
     if (!track) return null;
@@ -1698,55 +2113,13 @@ export function MonitorWorkspace() {
                 aria-label={`${selectedCamera.camera_id} recorded footage`}
               />
 
-              <div
-                className="detection-layer"
-                style={{
-                  left: videoBounds.left,
-                  top: videoBounds.top,
-                  width: videoBounds.width,
-                  height: videoBounds.height,
-                }}
-                aria-label="Spatial detection evidence overlays"
-                role="group"
-              >
-                {visibleDetections.map((detection, detectionIndex) => (
-                  <span
-                    aria-label={detection.provenanceTitle}
-                    className="motion-box"
-                    data-canonical-label={detection.displayLabel}
-                    data-source={detection.source}
-                    data-label-align={
-                      detection.box.x + detection.box.width / 2 >= 0.5
-                        ? "right"
-                        : "left"
-                    }
-                    data-label-position={
-                      detectionLabelPosition(
-                        detection,
-                        detectionIndex,
-                        videoBounds.height,
-                      )
-                    }
-                    data-label-lane={detectionIndex % 3}
-                    key={detection.detection_id}
-                    role="img"
-                    style={{
-                      left: `${detection.box.x * 100}%`,
-                      top: `${detection.box.y * 100}%`,
-                      width: `${detection.box.width * 100}%`,
-                      height: `${detection.box.height * 100}%`,
-                    }}
-                    title={detection.provenanceTitle}
-                  >
-                    <span>
-                      <span className="motion-box-label">
-                        {detection.displayLabel}
-                      </span>
-                      <b>{Math.round(detection.score * 100)}%</b>
-                    </span>
-                  </span>
-                ))}
-              </div>
+              <DetectionOverlay
+                currentSeconds={currentSeconds}
+                sourcePath={track.source_path}
+                track={track}
+                videoBounds={videoBounds}
+                videoRef={videoRef}
+              />
 
               <div className="stage-badges" aria-hidden="true">
                 <span>

@@ -22,7 +22,7 @@ class Settings(BaseSettings):
     yolo_model: str = Field(default="yolo11m.pt", alias="ZOOVISION_YOLO_MODEL")
     yolo_device: str = Field(default="auto", alias="ZOOVISION_YOLO_DEVICE")
     yolo_sample_fps: float = Field(
-        default=1.0,
+        default=5.0,
         gt=0,
         le=30,
         alias="ZOOVISION_YOLO_SAMPLE_FPS",

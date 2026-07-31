@@ -134,8 +134,8 @@ def _arguments(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--sample-fps",
         type=_positive_float,
-        default=2.0,
-        help="Motion sampling rate in frames per second. Default: 2.",
+        default=5.0,
+        help="Spatial sampling rate in frames per second. Default: 5.",
     )
     parser.add_argument(
         "--max-edge",
@@ -164,10 +164,10 @@ def _arguments(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--warmup-frames",
         type=int,
-        default=3,
+        default=5,
         choices=range(0, 61),
         metavar="0-60",
-        help="Background-model warmup frames per chunk. Default: 3.",
+        help="Background-model warmup frames per chunk. Default: 5 (one second).",
     )
     parser.add_argument(
         "--staircase-background-pass",
@@ -420,6 +420,14 @@ def _box_iou(left: BoundingBox, right: BoundingBox) -> float:
     return intersection / union if union > 0 else 0.0
 
 
+def _box_center_distance(left: BoundingBox, right: BoundingBox) -> float:
+    left_x = left.x + left.width / 2
+    left_y = left.y + left.height / 2
+    right_x = right.x + right.width / 2
+    right_y = right.y + right.height / 2
+    return float(np.hypot(left_x - right_x, left_y - right_y))
+
+
 def _reference_regions(
     frame: SampledFrame,
     reference_lab: np.ndarray,
@@ -490,16 +498,33 @@ def _reference_track_id(
     relative_seconds: float,
     chunk_id: str,
     claimed: set[str],
+    config: DetectorConfig,
 ) -> str:
-    best: _ReferenceTrack | None = None
+    best_overlap: _ReferenceTrack | None = None
     best_iou = 0.12
+    nearest: _ReferenceTrack | None = None
+    nearest_distance = config.center_match_max_distance
     for track in tracks:
-        if track.track_id in claimed or relative_seconds - track.last_seen > 1.5:
+        if track.track_id in claimed:
+            continue
+        elapsed = relative_seconds - track.last_seen
+        if elapsed < 0 or elapsed > config.track_gap_tolerance_seconds:
             continue
         overlap = _box_iou(track.box, box)
         if overlap >= best_iou:
-            best = track
+            best_overlap = track
             best_iou = overlap
+            continue
+        if elapsed > config.center_match_max_gap_seconds:
+            continue
+        area_ratio = max(track.box.area, box.area) / min(track.box.area, box.area)
+        if area_ratio > config.center_match_max_area_ratio:
+            continue
+        distance = _box_center_distance(track.box, box)
+        if distance <= nearest_distance:
+            nearest = track
+            nearest_distance = distance
+    best = best_overlap or nearest
     if best is not None:
         best.box = box
         best.last_seen = relative_seconds
@@ -540,6 +565,7 @@ def _reviewed_background_detections(
                 frame.relative_seconds,
                 chunk_id,
                 claimed,
+                config,
             )
             claimed.add(track_id)
             detections.append(
@@ -655,7 +681,6 @@ def _reprocess_source(
             content_bound_detections,
             max_regions=config.max_regions_per_frame,
         )
-        store.replace_chunk_motion_detections(chunk["chunk_id"], detections)
         yolo_detections = (
             yolo_detector.detect(
                 sample_video_frames(
@@ -671,7 +696,12 @@ def _reprocess_source(
             else []
         )
         if yolo_config is not None:
-            store.replace_chunk_yolo_detections(chunk["chunk_id"], yolo_detections)
+            store.replace_chunk_spatial_detections(
+                chunk["chunk_id"],
+                [*detections, *yolo_detections],
+            )
+        else:
+            store.replace_chunk_motion_detections(chunk["chunk_id"], detections)
         print(
             json.dumps(
                 {

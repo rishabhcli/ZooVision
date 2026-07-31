@@ -14,6 +14,7 @@ from zoovision.detection import (
     YoloV8ObjectDetector,
     probe_video,
     run_media_tool,
+    sample_video_frames,
 )
 from zoovision.domain import BoundingBox, DetectionSource
 
@@ -207,6 +208,80 @@ def test_run_media_tool_passes_through_a_normal_failure(tmp_path) -> None:
     assert completed.returncode != 0
 
 
+def test_default_sampler_emits_five_spatial_frames_per_second(monkeypatch) -> None:
+    class FakeCapture:
+        def __init__(self, _path: str) -> None:
+            self.index = 0
+
+        def isOpened(self) -> bool:
+            return True
+
+        def get(self, _property: int) -> float:
+            return 30.0
+
+        def set(self, _property: int, value: float) -> bool:
+            self.index = int(value)
+            return True
+
+        def read(self) -> tuple[bool, np.ndarray | None]:
+            if self.index >= 30:
+                return False, None
+            self.index += 1
+            return True, np.zeros((180, 320, 3), dtype=np.uint8)
+
+        def release(self) -> None:
+            return None
+
+    monkeypatch.setattr("zoovision.detection.cv2.VideoCapture", FakeCapture)
+
+    frames = list(sample_video_frames("wildlife.mp4"))
+
+    assert [frame.relative_seconds for frame in frames] == [0.0, 0.2, 0.4, 0.6, 0.8]
+
+
+@pytest.mark.parametrize("native_fps", [12.0, 24.0, 29.97])
+def test_sampler_maintains_five_fps_for_fractional_native_rates(
+    monkeypatch,
+    native_fps: float,
+) -> None:
+    frame_count = int(np.ceil(native_fps))
+
+    class FakeCapture:
+        def __init__(self, _path: str) -> None:
+            self.index = 0
+
+        def isOpened(self) -> bool:
+            return True
+
+        def get(self, _property: int) -> float:
+            return native_fps
+
+        def set(self, _property: int, value: float) -> bool:
+            self.index = int(value)
+            return True
+
+        def read(self) -> tuple[bool, np.ndarray | None]:
+            if self.index >= frame_count:
+                return False, None
+            self.index += 1
+            return True, np.zeros((180, 320, 3), dtype=np.uint8)
+
+        def release(self) -> None:
+            return None
+
+    monkeypatch.setattr("zoovision.detection.cv2.VideoCapture", FakeCapture)
+
+    frames = list(sample_video_frames("wildlife.mp4"))
+
+    assert len(frames) == 5
+    for actual, expected in zip(
+        (frame.relative_seconds for frame in frames),
+        (0.0, 0.2, 0.4, 0.6, 0.8),
+        strict=True,
+    ):
+        assert actual == pytest.approx(expected, abs=1 / native_fps)
+
+
 def test_a_short_segment_still_finds_the_body() -> None:
     """Sensitivity must not depend on how many frames a segment happens to hold.
 
@@ -239,6 +314,30 @@ class _FakeYolo:
                 names={15: "cat"},
             )
             for _ in options["source"]
+        ]
+
+
+class _ScriptedYolo:
+    def __init__(
+        self,
+        frames: list[list[list[float]]],
+        classes: list[list[int]] | None = None,
+    ) -> None:
+        self.frames = frames
+        self.classes = classes or [[14] * len(frame) for frame in frames]
+
+    def predict(self, **options):
+        assert len(options["source"]) == len(self.frames)
+        return [
+            SimpleNamespace(
+                boxes=SimpleNamespace(
+                    xyxy=np.asarray(coordinates, dtype=np.float32),
+                    conf=np.full(len(coordinates), 0.9, dtype=np.float32),
+                    cls=np.asarray(classes, dtype=np.float32),
+                ),
+                names={14: "bird", 21: "bear"},
+            )
+            for coordinates, classes in zip(self.frames, self.classes, strict=True)
         ]
 
 
@@ -280,6 +379,83 @@ def test_yolo_streams_every_sample_in_bounded_batches() -> None:
     assert detections[-1].relative_seconds == 500.0
     assert len(model.calls) == 16
     assert max(len(call["source"]) for call in model.calls) == 64
+
+
+def test_fast_non_overlapping_animals_keep_separate_tracks() -> None:
+    model = _ScriptedYolo(
+        [
+            [[32, 60, 48, 76], [240, 60, 256, 76]],
+            [[56, 60, 72, 76], [216, 60, 232, 76]],
+        ]
+    )
+    frames = [
+        SampledFrame(relative_seconds=0.0, image=np.zeros((180, 320, 3), dtype=np.uint8)),
+        SampledFrame(relative_seconds=0.2, image=np.zeros((180, 320, 3), dtype=np.uint8)),
+    ]
+
+    detections = YoloV8ObjectDetector(model=model).detect(frames, chunk_id="fast-birds")
+
+    tracks = {detection.track_id for detection in detections}
+    assert len(tracks) == 2
+    assert {detection.track_id for detection in detections[:2]} == tracks
+    assert {detection.track_id for detection in detections[2:]} == tracks
+
+
+def test_center_fallback_rejects_large_size_changes() -> None:
+    model = _ScriptedYolo(
+        [
+            [[32, 60, 48, 76]],
+            [[54, 50, 90, 86]],
+        ]
+    )
+    frames = [
+        SampledFrame(relative_seconds=0.0, image=np.zeros((180, 320, 3), dtype=np.uint8)),
+        SampledFrame(relative_seconds=0.2, image=np.zeros((180, 320, 3), dtype=np.uint8)),
+    ]
+
+    detections = YoloV8ObjectDetector(model=model).detect(frames, chunk_id="size-change")
+
+    assert len({detection.track_id for detection in detections}) == 2
+
+
+def test_center_fallback_does_not_bridge_a_missing_temporal_window() -> None:
+    model = _ScriptedYolo(
+        [
+            [[32, 60, 48, 76]],
+            [[56, 60, 72, 76]],
+        ]
+    )
+    frames = [
+        SampledFrame(relative_seconds=0.0, image=np.zeros((180, 320, 3), dtype=np.uint8)),
+        SampledFrame(relative_seconds=0.6, image=np.zeros((180, 320, 3), dtype=np.uint8)),
+    ]
+
+    detections = YoloV8ObjectDetector(model=model).detect(frames, chunk_id="missing-window")
+
+    assert len({detection.track_id for detection in detections}) == 2
+
+
+def test_object_tracks_do_not_cross_species_when_detector_order_changes() -> None:
+    model = _ScriptedYolo(
+        [
+            [[80, 60, 112, 92], [128, 60, 160, 92]],
+            [[104, 60, 136, 92], [96, 60, 128, 92]],
+        ],
+        classes=[[14, 21], [21, 14]],
+    )
+    frames = [
+        SampledFrame(relative_seconds=0.0, image=np.zeros((180, 320, 3), dtype=np.uint8)),
+        SampledFrame(relative_seconds=0.2, image=np.zeros((180, 320, 3), dtype=np.uint8)),
+    ]
+
+    detections = YoloV8ObjectDetector(model=model).detect(frames, chunk_id="mixed-animals")
+
+    tracks_by_class = {
+        class_id: {item.track_id for item in detections if item.class_id == class_id}
+        for class_id in (14, 21)
+    }
+    assert all(len(track_ids) == 1 for track_ids in tracks_by_class.values())
+    assert tracks_by_class[14].isdisjoint(tracks_by_class[21])
 
 
 def test_yolo_rejects_an_incomplete_result_batch() -> None:

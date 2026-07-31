@@ -244,3 +244,60 @@ def test_yolo_replacement_preserves_motion_rows(tmp_path):
     preserved_motion = next(row for row in rows if row["detection_id"] == "det-motion")
     assert preserved_motion["model"] == "content-bound-background-v1"
     assert preserved_motion["label"] == "bird"
+
+
+def test_spatial_replacement_commits_motion_and_yolo_together(tmp_path):
+    store = SQLiteStore(tmp_path / "zoovision.db")
+    store.initialize()
+    store.upsert_video_chunk(
+        chunk_id="chunk-1",
+        enclosure_id="ENC-01",
+        camera_id="CAM-01",
+        start_ts="2026-07-30T02:00:00+00:00",
+        end_ts="2026-07-30T02:02:00+00:00",
+        source_path="uploads/birds.mp4",
+        source_offset_seconds=0,
+        content_sha256="sha",
+        status="analyzed",
+    )
+    stale_motion = Detection(
+        detection_id="det-motion-old",
+        chunk_id="chunk-1",
+        track_id="track-motion-old",
+        relative_seconds=4.0,
+        box=BoundingBox(x=0.5, y=0.4, width=0.08, height=0.09),
+        score=0.4,
+        source=DetectionSource.MOTION_REGION,
+    )
+    stale_yolo = Detection(
+        detection_id="det-yolo-old",
+        chunk_id="chunk-1",
+        track_id="track-yolo-old",
+        relative_seconds=4.0,
+        box=BoundingBox(x=0.1, y=0.2, width=0.2, height=0.3),
+        score=0.3,
+        source=DetectionSource.YOLOV8_OBJECT,
+        label="bird",
+        class_id=14,
+        model="yolo11m.pt",
+    )
+    replacement_motion = stale_motion.model_copy(
+        update={"detection_id": "det-motion-new", "track_id": "track-motion-new"}
+    )
+    replacement_yolo = stale_yolo.model_copy(
+        update={"detection_id": "det-yolo-new", "track_id": "track-yolo-new"}
+    )
+    store.save_detections([stale_motion, stale_yolo])
+
+    assert (
+        store.replace_chunk_spatial_detections(
+            "chunk-1",
+            [replacement_motion, replacement_yolo],
+        )
+        == 2
+    )
+
+    assert {row["detection_id"] for row in store.detections_for_chunk("chunk-1")} == {
+        "det-motion-new",
+        "det-yolo-new",
+    }

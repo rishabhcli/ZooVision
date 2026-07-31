@@ -123,6 +123,15 @@ support different claims:
 | TwelveLabs Pegasus | timestamped behavior observations | *what a model read in the scene* | severity, diagnosis |
 | Triage rules | severity, `rule_fired`, action | *what policy says about the evidence* | anything not in the evidence |
 
+Spatial review boxes are sampled at 5 FPS for responsive bird and squirrel
+tracking. Object association stays within one detector class and uses bounded
+time, center-distance, and size changes for fast movement. The monitor paints
+boxes on decoded video-frame callbacks and only interpolates between adjacent
+measurements from the same backend track when they are at most 0.75 seconds
+apart. That interpolation improves display continuity; it is not a continuous
+localization claim or behavior ground truth. TwelveLabs observations remain a
+separate temporal evidence source.
+
 Pegasus 1.5 is required for uploaded-video analysis. ZooVision does not claim
 that Pegasus returns spatial object tracks or bounding boxes: the console shows
 its temporal observations on the recording timeline and requires keeper

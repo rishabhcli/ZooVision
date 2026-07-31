@@ -21,6 +21,7 @@ REVIEWED_BACKGROUND_MODEL = SCRIPT.REVIEWED_BACKGROUND_MODEL
 _arguments = SCRIPT._arguments
 _combine_motion_detections = SCRIPT._combine_motion_detections
 _reference_regions = SCRIPT._reference_regions
+_reference_track_id = SCRIPT._reference_track_id
 _select_sources = SCRIPT._select_sources
 
 
@@ -47,11 +48,12 @@ def _motion_detection(
 def test_arguments_use_requested_small_animal_defaults() -> None:
     arguments = _arguments(["--source", "birds.mp4"])
 
-    assert arguments.sample_fps == 2.0
+    assert arguments.sample_fps == 5.0
     assert arguments.max_edge == 960
     assert arguments.min_area_ratio == 0.0002
     assert arguments.min_fill_ratio == 0.12
     assert arguments.max_regions == 8
+    assert arguments.warmup_frames == 5
     assert arguments.staircase_background_pass is False
     assert arguments.rebuild_yolo is False
     assert arguments.yolo_image_size == 1280
@@ -119,3 +121,44 @@ def test_content_bound_box_wins_overlap_and_frame_cap_is_respected() -> None:
     assert next(item for item in combined if item.detection_id == "reviewed").model == (
         "content-bound-background-v1"
     )
+
+
+def test_content_bound_fast_birds_keep_distinct_tracks() -> None:
+    config = SCRIPT.DetectorConfig()
+    tracks = []
+    first = _reference_track_id(
+        tracks,
+        BoundingBox(x=0.1, y=0.2, width=0.04, height=0.05),
+        0.0,
+        "chunk-1",
+        set(),
+        config,
+    )
+    second = _reference_track_id(
+        tracks,
+        BoundingBox(x=0.7, y=0.2, width=0.04, height=0.05),
+        0.0,
+        "chunk-1",
+        {first},
+        config,
+    )
+
+    next_first = _reference_track_id(
+        tracks,
+        BoundingBox(x=0.17, y=0.2, width=0.04, height=0.05),
+        0.2,
+        "chunk-1",
+        set(),
+        config,
+    )
+    next_second = _reference_track_id(
+        tracks,
+        BoundingBox(x=0.63, y=0.2, width=0.04, height=0.05),
+        0.2,
+        "chunk-1",
+        {next_first},
+        config,
+    )
+
+    assert next_first == first
+    assert next_second == second

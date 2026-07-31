@@ -75,7 +75,9 @@ class VideoProbe(BaseModel):
 class DetectorConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    sample_fps: float = Field(default=1.0, gt=0, le=30)
+    # Five samples per second keeps fast wildlife boxes responsive without
+    # pretending that the spatial review aid is a full-frame-rate tracker.
+    sample_fps: float = Field(default=5.0, gt=0, le=30)
     yolo_enabled: bool = True
     yolo_model: str = Field(default="yolo11m.pt", min_length=1, max_length=200)
     yolo_device: str = Field(default="auto", min_length=1, max_length=40)
@@ -96,7 +98,7 @@ class DetectorConfig(BaseModel):
     motion_box_padding_ratio: float = Field(default=0.5, ge=0, le=4)
     motion_min_box_width: float = Field(default=0.025, ge=0, le=0.5)
     motion_min_box_height: float = Field(default=0.04, ge=0, le=0.5)
-    warmup_frames: int = Field(default=2, ge=0)
+    warmup_frames: int = Field(default=5, ge=0)
     history: int = Field(default=90, ge=1)
     var_threshold: float = Field(default=32.0, gt=0)
     #: Explicit MOG2 adaptation rate. OpenCV's automatic rate is derived from
@@ -104,8 +106,11 @@ class DetectorConfig(BaseModel):
     #: and absorbs the body it is supposed to find: a 10-second segment
     #: surfaced 1 of 21 frames where a fixed rate surfaced all 20. Pinning it
     #: makes sensitivity a property of the configuration, not of segment length.
-    learning_rate: float = Field(default=0.005, gt=0, le=1)
+    learning_rate: float = Field(default=0.002, gt=0, le=1)
     iou_match_threshold: float = Field(default=0.15, ge=0, le=1)
+    center_match_max_distance: float = Field(default=0.12, ge=0, le=1)
+    center_match_max_area_ratio: float = Field(default=2.25, ge=1, le=100)
+    center_match_max_gap_seconds: float = Field(default=0.45, gt=0, le=2)
     track_gap_tolerance_seconds: float = Field(default=2.0, ge=0)
 
 
@@ -216,19 +221,13 @@ class MotionRegionDetector:
         chunk_id: str,
         claimed: set[str],
     ) -> str:
-        config = self.config
-        best: _Track | None = None
-        best_iou = config.iou_match_threshold
-        for track in tracks:
-            # A track is one moving body, so it can hold at most one box per frame.
-            if track.track_id in claimed:
-                continue
-            if relative_seconds - track.last_seen > config.track_gap_tolerance_seconds:
-                continue
-            overlap = _iou(track.last_box, box)
-            if overlap >= best_iou:
-                best = track
-                best_iou = overlap
+        best = _matching_track(
+            tracks,
+            box,
+            relative_seconds,
+            claimed,
+            self.config,
+        )
         if best is not None:
             best.last_box = box
             best.last_seen = relative_seconds
@@ -310,6 +309,7 @@ class YoloV8ObjectDetector:
                     frame.relative_seconds,
                     chunk_id,
                     claimed,
+                    int(class_id),
                 )
                 claimed.add(track_id)
                 detections.append(
@@ -349,18 +349,16 @@ class YoloV8ObjectDetector:
         relative_seconds: float,
         chunk_id: str,
         claimed: set[str],
+        class_id: int,
     ) -> str:
-        best: _ObjectTrack | None = None
-        best_iou = self.config.iou_match_threshold
-        for track in tracks:
-            if track.track_id in claimed:
-                continue
-            if relative_seconds - track.last_seen > self.config.track_gap_tolerance_seconds:
-                continue
-            overlap = _iou(track.last_box, box)
-            if overlap >= best_iou:
-                best = track
-                best_iou = overlap
+        best = _matching_track(
+            tracks,
+            box,
+            relative_seconds,
+            claimed,
+            self.config,
+            expected_class_id=class_id,
+        )
         if best is not None:
             best.last_box = box
             best.last_seen = relative_seconds
@@ -371,6 +369,7 @@ class YoloV8ObjectDetector:
                 track_id=track_id,
                 last_box=box,
                 last_seen=relative_seconds,
+                class_id=class_id,
             )
         )
         return track_id
@@ -388,6 +387,54 @@ class _ObjectTrack:
     track_id: str
     last_box: BoundingBox
     last_seen: float
+    class_id: int
+
+
+def _matching_track(
+    tracks: Iterable[_Track | _ObjectTrack],
+    box: BoundingBox,
+    relative_seconds: float,
+    claimed: set[str],
+    config: DetectorConfig,
+    *,
+    expected_class_id: int | None = None,
+) -> _Track | _ObjectTrack | None:
+    """Link a fast body without merging distinct same-frame animals.
+
+    IoU remains authoritative. The center-and-size fallback only covers bodies
+    that move beyond their previous box between samples. Bounded distance and
+    area-ratio gates prevent a nearby small bird from joining a much larger
+    animal, while ``claimed`` preserves one detection per track and frame.
+    """
+    best_overlap: _Track | _ObjectTrack | None = None
+    best_iou = config.iou_match_threshold
+    nearest: _Track | _ObjectTrack | None = None
+    nearest_distance = config.center_match_max_distance
+    for track in tracks:
+        if track.track_id in claimed:
+            continue
+        if expected_class_id is not None and (
+            not isinstance(track, _ObjectTrack) or track.class_id != expected_class_id
+        ):
+            continue
+        elapsed = relative_seconds - track.last_seen
+        if elapsed < 0 or elapsed > config.track_gap_tolerance_seconds:
+            continue
+        overlap = _iou(track.last_box, box)
+        if overlap >= best_iou:
+            best_overlap = track
+            best_iou = overlap
+            continue
+        if elapsed > config.center_match_max_gap_seconds:
+            continue
+        area_ratio = max(track.last_box.area, box.area) / min(track.last_box.area, box.area)
+        if area_ratio > config.center_match_max_area_ratio:
+            continue
+        distance = _center_distance(track.last_box, box)
+        if distance <= nearest_distance:
+            nearest = track
+            nearest_distance = distance
+    return best_overlap or nearest
 
 
 @lru_cache(maxsize=4)
@@ -474,7 +521,7 @@ def probe_video(path: str | Path) -> VideoProbe:
 def sample_video_frames(
     path: str | Path,
     *,
-    sample_fps: float = 2.0,
+    sample_fps: float = 5.0,
     start_seconds: float = 0.0,
     duration_seconds: float | None = None,
     max_frames: int | None = None,
@@ -494,7 +541,7 @@ def sample_video_frames(
         native_fps = capture.get(cv2.CAP_PROP_FPS)
         if not native_fps or native_fps <= 0 or native_fps > 240:
             native_fps = 25.0
-        step = max(1, int(round(native_fps / sample_fps)))
+        sample_interval = 1.0 / min(sample_fps, native_fps)
         first_index = max(0, int(round(start_seconds * native_fps)))
         last_index_exclusive = (
             None
@@ -505,18 +552,23 @@ def sample_video_frames(
             capture.set(cv2.CAP_PROP_POS_FRAMES, first_index)
         index = first_index
         emitted = 0
+        next_sample_seconds = 0.0
         while max_frames is None or emitted < max_frames:
             ok, frame = capture.read()
             if not ok:
                 break
             if last_index_exclusive is not None and index >= last_index_exclusive:
                 break
-            if (index - first_index) % step == 0:
+            relative_seconds = (index - first_index) / native_fps
+            if relative_seconds + 1e-9 >= next_sample_seconds:
                 yield SampledFrame(
-                    relative_seconds=(index - first_index) / native_fps,
+                    relative_seconds=relative_seconds,
                     image=_downscale(frame, max_edge),
                 )
                 emitted += 1
+                next_sample_seconds += sample_interval
+                while next_sample_seconds <= relative_seconds + 1e-9:
+                    next_sample_seconds += sample_interval
             index += 1
     finally:
         capture.release()
@@ -681,3 +733,11 @@ def _iou(left: BoundingBox, right: BoundingBox) -> float:
     overlap = (x1 - x0) * (y1 - y0)
     union = left.area + right.area - overlap
     return overlap / union if union > 0 else 0.0
+
+
+def _center_distance(left: BoundingBox, right: BoundingBox) -> float:
+    left_x = left.x + left.width / 2
+    left_y = left.y + left.height / 2
+    right_x = right.x + right.width / 2
+    right_y = right.y + right.height / 2
+    return float(np.hypot(left_x - right_x, left_y - right_y))
