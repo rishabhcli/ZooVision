@@ -39,6 +39,8 @@ Ground every statement in the supplied context JSON. Rules you must follow:
 - Cite the ids of the context records you used in cited_ids.
 - When the question asks where or when something happened, select up to five
   relevant observation ids in moment_ids. Only select ids present in moments.
+- Write video positions as M:SS or H:MM:SS, including ranges such as
+  "4:02-7:13". Never expose raw total-second positions in the prose answer.
 - When retrieval includes a requested_media_offset_seconds value, answer from
   the observation intervals at or nearest that position in the selected video.
   Treat those media offsets as authoritative; wall-clock timestamps are not
