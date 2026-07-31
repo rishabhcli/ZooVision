@@ -382,7 +382,7 @@ function detectionsAtTime(
     )) {
       if (
         kept.some((existing) =>
-          detectionBoxesShareRegion(candidate.box, existing.box),
+          detectionBoxesOverlap(candidate.box, existing.box),
         )
       ) {
         continue;
@@ -398,7 +398,7 @@ function detectionsAtTime(
   const unmatchedMotion = motion.filter(
     (motionDetection) =>
       !yolo.some((objectDetection) =>
-        detectionBoxesShareRegion(motionDetection.box, objectDetection.box),
+        detectionBoxesOverlap(motionDetection.box, objectDetection.box),
       ),
   );
   return [...yolo, ...unmatchedMotion].sort((left, right) => {
@@ -430,23 +430,6 @@ function detectionBoxesOverlap(
   );
 }
 
-function detectionBoxesShareRegion(
-  left: VideoDetection["box"],
-  right: VideoDetection["box"],
-) {
-  if (detectionBoxesOverlap(left, right)) return true;
-  const leftCenterX = left.x + left.width / 2;
-  const leftCenterY = left.y + left.height / 2;
-  const rightCenterX = right.x + right.width / 2;
-  const rightCenterY = right.y + right.height / 2;
-  return (
-    Math.abs(leftCenterX - rightCenterX) <=
-      Math.max(left.width, right.width) * 0.9 &&
-    Math.abs(leftCenterY - rightCenterY) <=
-      Math.max(left.height, right.height) * 1.8
-  );
-}
-
 function activeObservationText(
   observations: VideoTrack["observations"],
   currentSeconds: number,
@@ -471,32 +454,12 @@ function curateVisibleDetections(
 ) {
   const sourceName = sourcePath.split("/").at(-1) ?? sourcePath;
   if (sourceName === "backyard-squirrel-staircase.mp4") {
-    const plausible = detections.filter((detection) => {
-      if (
-        detection.source === "yolov8_object" &&
-        detection.label?.toLowerCase() !== "bird"
-      ) {
-        return false;
+    return detections.sort((left, right) => {
+      if (left.source !== right.source) {
+        return left.source === "yolov8_object" ? -1 : 1;
       }
-      const centerX = detection.box.x + detection.box.width / 2;
-      const centerY = detection.box.y + detection.box.height / 2;
-      return (
-        detection.box.width * detection.box.height <= 0.05 &&
-        centerX >= 0.08 &&
-        centerX <= 0.94 &&
-        centerY >= 0.08 &&
-        centerY <= 0.9
-      );
+      return left.box.x - right.box.x || left.box.y - right.box.y;
     });
-    const objectDetections = plausible.filter(
-      (detection) => detection.source === "yolov8_object",
-    );
-    if (objectDetections.length > 0) {
-      return objectDetections.sort((left, right) =>
-        left.box.x - right.box.x || left.box.y - right.box.y,
-      );
-    }
-    return plausible.sort((left, right) => right.score - left.score);
   }
 
   if (sourceName === "enc05_condor_nest_15m.mp4") {
@@ -554,13 +517,13 @@ function canonicalDetectionLabel(
     if (birdVisible && !squirrelVisible) return "Bird";
     if (squirrelVisible && !birdVisible) return "Squirrel";
     if (birdVisible && squirrelVisible) {
-      if (rawLabel === "bird") return "Bird";
+      if (rawLabel === "bird" && area <= 0.04) return "Bird";
       if (rawLabel && rawLabel !== "bird") return "Squirrel";
-      return area >= 0.018 ? "Squirrel" : "Bird";
+      return area > 0.04 ? "Squirrel" : "Bird";
     }
-    if (rawLabel === "bird") return "Bird";
+    if (rawLabel === "bird" && area <= 0.04) return "Bird";
     if (rawLabel) return "Squirrel";
-    return area >= 0.018 ? "Squirrel" : "Bird";
+    return area > 0.04 ? "Squirrel" : "Bird";
   }
 
   return "Animal";
