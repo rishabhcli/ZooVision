@@ -1587,13 +1587,18 @@ def _asks_about_activity_pattern(question: str) -> bool:
 
 def _asks_for_prohibited_guidance(question: str) -> bool:
     lowered = question.lower()
-    return any(
+    prohibited = any(
         phrase in lowered
         for phrase in (
+            "assign severity",
+            "change severity",
+            "declare critical",
             "diagnos",
+            "medicat",
             "medicine",
             "medication",
             "prescribe",
+            "set severity",
             "treatment",
             "what drug",
             "administer",
@@ -1602,6 +1607,12 @@ def _asks_for_prohibited_guidance(question: str) -> bool:
             "act on the enclosure",
         )
     )
+    terms = _tokens(lowered)
+    severity_override = bool(
+        terms & {"assign", "change", "declare", "override", "set"}
+        and terms & {"critical", "high", "low", "moderate", "severity"}
+    )
+    return prohibited or severity_override
 
 
 def _asks_for_recording_counts(question: str) -> bool:
