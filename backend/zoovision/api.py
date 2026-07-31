@@ -76,6 +76,7 @@ def _source_analysis_metadata(source: dict, job: dict | None) -> dict:
             analysis_status = "complete"
         else:
             analysis_status = "incomplete"
+        reported_coverage = 100.0 if analysis_status == "complete" else coverage_percent
         return {
             "analysis_status": analysis_status,
             "is_fully_analyzed": analysis_status == "complete",
@@ -85,7 +86,7 @@ def _source_analysis_metadata(source: dict, job: dict | None) -> dict:
             "data_gap_count": data_gap_count,
             "analyzed_duration_seconds": round(analyzed_duration, 3),
             "probe_duration_seconds": round(probe_duration, 3),
-            "coverage_percent": round(coverage_percent, 1),
+            "coverage_percent": round(reported_coverage, 1),
         }
 
     chunk_count = int(source.get("chunk_count") or 0)
@@ -103,6 +104,7 @@ def _source_analysis_metadata(source: dict, job: dict | None) -> dict:
     coverage_percent = (
         min(100.0, analyzed_duration / source_duration * 100) if source_duration > 0 else 0.0
     )
+    reported_coverage = 100.0 if analysis_status == "complete" else coverage_percent
     return {
         "analysis_status": analysis_status,
         "is_fully_analyzed": analysis_status == "complete",
@@ -112,7 +114,7 @@ def _source_analysis_metadata(source: dict, job: dict | None) -> dict:
         "data_gap_count": gap_chunks,
         "analyzed_duration_seconds": round(analyzed_duration, 3),
         "probe_duration_seconds": round(source_duration, 3),
-        "coverage_percent": round(coverage_percent, 1),
+        "coverage_percent": round(reported_coverage, 1),
     }
 
 

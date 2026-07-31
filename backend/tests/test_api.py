@@ -331,7 +331,12 @@ def test_videos_endpoint_exposes_running_and_complete_source_coverage(tmp_path):
         status="complete",
         completed_segments=3,
         segments=[
-            {**segment, "index": index, "chunk_id": f"chunk-progress-{index + 1}"}
+            {
+                **segment,
+                "index": index,
+                "chunk_id": f"chunk-progress-{index + 1}",
+                "duration_seconds": 59.5 if index == 2 else 60,
+            }
             for index in range(3)
         ],
     )
@@ -343,9 +348,11 @@ def test_videos_endpoint_exposes_running_and_complete_source_coverage(tmp_path):
     )
     assert complete["analysis_status"] == "complete"
     assert complete["is_fully_analyzed"] is True
+    assert complete["analyzed_duration_seconds"] == 179.5
     assert complete["coverage_percent"] == 100
 
     job["data_gap_ids"] = ["gap-progress"]
+    job["segments"] = [{**segment, "duration_seconds": 60} for segment in job["segments"]]
     job["segments"][1]["data_gap_id"] = "gap-progress"
     store.save_ingest_job(job)
     incomplete = next(
