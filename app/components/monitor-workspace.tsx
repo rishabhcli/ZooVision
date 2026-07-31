@@ -569,6 +569,37 @@ type LabeledDetection = VideoDetection & {
   provenanceTitle: string;
 };
 
+function detectionLabelPosition(
+  detection: VideoDetection,
+  detectionIndex: number,
+  videoHeight: number,
+) {
+  const lane = detectionIndex % 3;
+  const clearance = 29 + lane * 26;
+  const prefersBelow = detectionIndex % 2 === 1;
+
+  if (videoHeight > 0) {
+    const spaceAbove = detection.box.y * videoHeight;
+    const spaceBelow =
+      (1 - detection.box.y - detection.box.height) * videoHeight;
+    if (prefersBelow && spaceBelow >= clearance) return "below";
+    if (!prefersBelow && spaceAbove >= clearance) return "above";
+    if (spaceAbove >= clearance) return "above";
+    if (spaceBelow >= clearance) return "below";
+    return spaceAbove >= spaceBelow ? "above" : "below";
+  }
+
+  const normalizedClearance = 0.14 + lane * 0.12;
+  if (detection.box.y < normalizedClearance) return "below";
+  if (
+    detection.box.y + detection.box.height >
+    1 - normalizedClearance
+  ) {
+    return "above";
+  }
+  return prefersBelow ? "below" : "above";
+}
+
 function labelVisibleDetections(
   detections: VideoDetection[],
   sourcePath: string,
@@ -1625,15 +1656,11 @@ export function MonitorWorkspace() {
                         : "left"
                     }
                     data-label-position={
-                      detection.box.y <
-                      0.12 + (detectionIndex % 3) * 0.08
-                        ? "below"
-                        : detection.box.y + detection.box.height >
-                            0.78 - (detectionIndex % 3) * 0.08
-                          ? "above"
-                          : detectionIndex % 2 === 1
-                            ? "below"
-                            : "above"
+                      detectionLabelPosition(
+                        detection,
+                        detectionIndex,
+                        videoBounds.height,
+                      )
                     }
                     data-label-lane={detectionIndex % 3}
                     key={detection.detection_id}
