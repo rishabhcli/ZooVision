@@ -430,6 +430,21 @@ function detectionBoxesOverlap(
   );
 }
 
+function detectionBoxContains(
+  outer: VideoDetection["box"],
+  inner: VideoDetection["box"],
+) {
+  const x0 = Math.max(outer.x, inner.x);
+  const y0 = Math.max(outer.y, inner.y);
+  const x1 = Math.min(outer.x + outer.width, inner.x + inner.width);
+  const y1 = Math.min(outer.y + outer.height, inner.y + inner.height);
+  if (x1 <= x0 || y1 <= y0) return false;
+  const intersection = (x1 - x0) * (y1 - y0);
+  const outerArea = outer.width * outer.height;
+  const innerArea = inner.width * inner.height;
+  return intersection / innerArea >= 0.78 && outerArea >= innerArea * 1.5;
+}
+
 function activeObservationText(
   observations: VideoTrack["observations"],
   currentSeconds: number,
@@ -451,6 +466,7 @@ function activeObservationText(
 function curateVisibleDetections(
   detections: VideoDetection[],
   sourcePath: string,
+  observationText: string,
 ) {
   const sourceName = sourcePath.split("/").at(-1) ?? sourcePath;
   if (sourceName === "backyard-squirrel-staircase.mp4") {
@@ -460,6 +476,25 @@ function curateVisibleDetections(
       }
       return left.box.x - right.box.x || left.box.y - right.box.y;
     });
+  }
+
+  if (sourceName === "backyard-squirrels-and-birds.mp4") {
+    const labeled = detections.map((detection) => ({
+      detection,
+      label: canonicalDetectionLabel(detection, sourcePath, observationText),
+    }));
+    const squirrelDetections = labeled.filter(
+      ({ label }) => label === "Squirrel",
+    );
+    return labeled
+      .filter(
+        ({ detection, label }) =>
+          label !== "Bird" ||
+          !squirrelDetections.some(({ detection: squirrel }) =>
+            detectionBoxContains(squirrel.box, detection.box),
+          ),
+      )
+      .map(({ detection }) => detection);
   }
 
   if (sourceName === "enc05_condor_nest_15m.mp4") {
@@ -1028,6 +1063,7 @@ export function MonitorWorkspace() {
       curateVisibleDetections(
         detectionsAtTime(track.detections, currentSeconds),
         track.source_path,
+        observationText,
       ),
       track.source_path,
       observationText,
