@@ -574,10 +574,13 @@ function canonicalDetectionLabel(
     if (birdVisible && !squirrelVisible) return "Bird";
     if (squirrelVisible && !birdVisible) return "Squirrel";
     if (birdVisible && squirrelVisible) {
-      if (rawLabel === "bird" && area <= 0.04) return "Bird";
-      if (rawLabel && rawLabel !== "bird" && area >= 0.018) return "Squirrel";
+      if (rawLabel === "bird") return "Bird";
+      if (rawLabel && rawLabel !== "bird") return "Squirrel";
+      return area >= 0.018 ? "Squirrel" : "Bird";
     }
-    if (rawLabel === "bird" && area <= 0.02) return "Bird";
+    if (rawLabel === "bird") return "Bird";
+    if (rawLabel) return "Squirrel";
+    return area >= 0.018 ? "Squirrel" : "Bird";
   }
 
   return "Animal";
