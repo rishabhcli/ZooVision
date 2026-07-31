@@ -95,9 +95,32 @@ export type VideoDetection = {
   score: number;
   source: string;
   label: string | null;
+  canonical_label?: string | null;
+  display_label?: string | null;
+  animal_label?: string | null;
+  animal_name?: string | null;
+  instance_id?: string | null;
+  annotation_source?: string | null;
+  review_state?: string | null;
   class_id: number | null;
   model: string | null;
   box: { x: number; y: number; width: number; height: number };
+};
+
+export type VideoRuleCheck = {
+  observation_id: string;
+  animal_id: string;
+  animal_name: string;
+  animal_species: string;
+  behavior: string;
+  start_seconds: number;
+  end_seconds: number;
+  event_id: string | null;
+  severity: string;
+  rule_fired: string;
+  rule_version: string | null;
+  action: string | null;
+  review_state: string | null;
 };
 
 export type VideoTrack = {
@@ -125,6 +148,9 @@ export type VideoTrack = {
   }>;
   observations: Array<{
     observation_id: string;
+    animal_id?: string;
+    animal_name?: string;
+    animal_species?: string;
     behavior: string;
     evidence: string;
     provider: string;
@@ -133,6 +159,7 @@ export type VideoTrack = {
     start_seconds: number;
     end_seconds: number;
   }>;
+  rule_checks?: VideoRuleCheck[];
 };
 
 export type ReadinessPayload = {

@@ -376,6 +376,13 @@ def test_video_track_places_events_on_the_media_timeline(client):
     assert body["chunks"]
     assert body["observations"]
     assert all("activity_label" in observation for observation in body["observations"])
+    assert all(observation["animal_id"] for observation in body["observations"])
+    assert all(observation["animal_name"] for observation in body["observations"])
+    assert all(observation["animal_species"] for observation in body["observations"])
+    assert len(body["rule_checks"]) == len(body["observations"])
+    assert {check["observation_id"] for check in body["rule_checks"]} == {
+        observation["observation_id"] for observation in body["observations"]
+    }
     for event in body["events"]:
         assert event["start_seconds"] >= 0
         assert event["end_seconds"] >= event["start_seconds"]
@@ -387,6 +394,48 @@ def test_video_track_places_events_on_the_media_timeline(client):
         assert 0 <= detection["box"]["x"] <= 1
         assert 0 <= detection["box"]["y"] <= 1
         assert detection["source"] == "motion_region"
+
+
+def test_video_track_rule_checks_only_link_persisted_non_none_events(client):
+    client.post("/api/demo/reset")
+    videos = client.get("/api/videos").json()["videos"]
+
+    source_with_event = next(video for video in videos if video["event_count"] > 0)
+    track_with_event = client.get(
+        "/api/videos/track",
+        params={"source_path": source_with_event["source_path"]},
+    ).json()
+    linked_checks = [check for check in track_with_event["rule_checks"] if check["event_id"]]
+    events_by_id = {event["event_id"]: event for event in track_with_event["events"]}
+
+    assert linked_checks
+    assert all(check["event_id"] in events_by_id for check in linked_checks)
+    for check in linked_checks:
+        event = events_by_id[check["event_id"]]
+        assert check["severity"] == event["severity"]
+        assert check["rule_fired"] == event["rule_fired"]
+        assert check["rule_version"] == event["rule_version"]
+        assert check["action"] == event["action"]
+        assert check["review_state"] == event["review_state"]
+
+    source_without_event = next(
+        video
+        for video in videos
+        if video["event_count"] == 0 and video["observation_count"] > 0
+    )
+    track_without_event = client.get(
+        "/api/videos/track",
+        params={"source_path": source_without_event["source_path"]},
+    ).json()
+
+    assert len(track_without_event["rule_checks"]) == len(track_without_event["observations"])
+    for check in track_without_event["rule_checks"]:
+        assert check["event_id"] is None
+        assert check["severity"] == "NONE"
+        assert check["rule_fired"] == "NO_RULE_FIRED"
+        assert check["rule_version"] is None
+        assert check["action"] is None
+        assert check["review_state"] is None
 
 
 def test_video_track_404s_for_an_unknown_source(client):

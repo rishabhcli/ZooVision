@@ -1010,16 +1010,16 @@
   border-radius: 2px;
 }
 
-.legend-swatch.candidate {
-  background: var(--monitor-motion);
-}
-
-.legend-swatch.movement {
+.legend-swatch.animal-box {
   background: var(--monitor-movement-region);
 }
 
 .legend-swatch.observation {
   background: var(--monitor-yellow);
+}
+
+.legend-swatch.check {
+  background: #8faedb;
 }
 
 .legend-swatch.event {
@@ -1125,12 +1125,8 @@
   min-width: 1px;
 }
 
-.candidate-heatmap i {
+.animal-box-heatmap i {
   background: var(--monitor-motion);
-}
-
-.movement-heatmap i {
-  background: var(--monitor-movement-region);
 }
 
 .timeline-track-count {
@@ -1175,6 +1171,22 @@
   color: #1c1809;
   background: var(--monitor-yellow);
   border: 1px solid #ffe39a;
+}
+
+.rule-check-span {
+  color: #eef5ff;
+  background: #345274;
+  border: 1px solid #8faedb;
+}
+
+.rule-check-span[data-fired="true"] {
+  color: #2a1007;
+  background: var(--monitor-orange);
+  border-color: #ffb291;
+}
+
+.rule-check-span[data-selected="true"] {
+  box-shadow: 0 0 0 2px #f7f5ee;
 }
 
 .event-span {

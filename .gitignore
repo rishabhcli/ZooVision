@@ -29,7 +29,7 @@ __pycache__/
 .mypy_cache/
 .coverage
 *.py[cod]
-/yolov8*.pt
+/yolo*.pt
 
 # Environment files
 .env

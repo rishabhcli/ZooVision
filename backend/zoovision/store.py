@@ -7,7 +7,14 @@ from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 
-from .domain import BaselineProfile, DataGap, Detection, EventRecord, Observation
+from .domain import (
+    BaselineProfile,
+    DataGap,
+    Detection,
+    DetectionSource,
+    EventRecord,
+    Observation,
+)
 
 SCHEMA = """
 PRAGMA foreign_keys = ON;
@@ -462,6 +469,46 @@ class SQLiteStore:
         rows = self._detection_rows(values)
         with self.connect() as connection:
             connection.execute("DELETE FROM detections WHERE chunk_id = ?", (chunk_id,))
+            self._upsert_detection_rows(connection, rows)
+        return len(rows)
+
+    def replace_chunk_motion_detections(
+        self,
+        chunk_id: str,
+        detections: Iterable[Detection],
+    ) -> int:
+        """Atomically replace only motion samples, preserving every other source."""
+        values = list(detections)
+        if any(detection.chunk_id != chunk_id for detection in values):
+            raise ValueError("every replacement detection must belong to the requested chunk")
+        if any(detection.source is not DetectionSource.MOTION_REGION for detection in values):
+            raise ValueError("motion replacement accepts only motion_region detections")
+        rows = self._detection_rows(values)
+        with self.connect() as connection:
+            connection.execute(
+                "DELETE FROM detections WHERE chunk_id = ? AND source = ?",
+                (chunk_id, DetectionSource.MOTION_REGION.value),
+            )
+            self._upsert_detection_rows(connection, rows)
+        return len(rows)
+
+    def replace_chunk_yolo_detections(
+        self,
+        chunk_id: str,
+        detections: Iterable[Detection],
+    ) -> int:
+        """Atomically replace YOLO samples while preserving motion and other sources."""
+        values = list(detections)
+        if any(detection.chunk_id != chunk_id for detection in values):
+            raise ValueError("every replacement detection must belong to the requested chunk")
+        if any(detection.source is not DetectionSource.YOLOV8_OBJECT for detection in values):
+            raise ValueError("YOLO replacement accepts only yolov8_object detections")
+        rows = self._detection_rows(values)
+        with self.connect() as connection:
+            connection.execute(
+                "DELETE FROM detections WHERE chunk_id = ? AND source = ?",
+                (chunk_id, DetectionSource.YOLOV8_OBJECT.value),
+            )
             self._upsert_detection_rows(connection, rows)
         return len(rows)
 
@@ -1225,7 +1272,14 @@ class SQLiteStore:
                 )
             ]
             if not chunks:
-                return {"source_path": source_path, "chunks": [], "detections": [], "events": []}
+                return {
+                    "source_path": source_path,
+                    "chunks": [],
+                    "detections": [],
+                    "events": [],
+                    "observations": [],
+                    "rule_checks": [],
+                }
             offsets = {chunk["chunk_id"]: chunk["source_offset_seconds"] for chunk in chunks}
             starts = {chunk["chunk_id"]: chunk["start_ts"] for chunk in chunks}
             source_anchor = chunks[0]
@@ -1310,40 +1364,92 @@ class SQLiteStore:
                     }
                 )
 
-            observations = [
-                {
-                    "observation_id": row["observation_id"],
-                    "behavior": row["behavior"],
-                    "evidence": row["evidence"],
-                    "provider": row["provider"],
-                    "evidence_kind": row["evidence_kind"],
-                    "activity_label": row["activity_label"],
-                    "start_seconds": round(
-                        max(
-                            0.0,
-                            offsets[row["chunk_id"]]
-                            + _seconds_between(starts[row["chunk_id"]], row["start_ts"]),
-                        ),
-                        3,
+            linked_rule_events: dict[str, dict] = {}
+            for row in connection.execute(
+                f"""
+                SELECT es.observation_id,
+                       e.event_id,
+                       e.severity,
+                       e.rule_fired,
+                       e.rule_version,
+                       e.action,
+                       e.review_state
+                FROM event_sources es
+                JOIN events e ON e.event_id = es.event_id
+                JOIN observations o ON o.observation_id = es.observation_id
+                WHERE o.chunk_id IN ({placeholders})
+                  AND e.severity != 'NONE'
+                ORDER BY e.start_ts, e.event_id
+                """,
+                chunk_ids,
+            ):
+                linked_rule_events.setdefault(row["observation_id"], dict(row))
+
+            observation_rows = connection.execute(
+                f"""
+                SELECT o.*, a.name AS animal_name, a.species AS animal_species
+                FROM observations o
+                JOIN animals a ON a.animal_id = o.animal_id
+                WHERE o.chunk_id IN ({placeholders})
+                ORDER BY o.start_ts, o.observation_id
+                """,
+                chunk_ids,
+            )
+            observations = []
+            rule_checks = []
+            for row in observation_rows:
+                start_seconds = round(
+                    max(
+                        0.0,
+                        offsets[row["chunk_id"]]
+                        + _seconds_between(starts[row["chunk_id"]], row["start_ts"]),
                     ),
-                    "end_seconds": round(
-                        max(
-                            0.0,
-                            offsets[row["chunk_id"]]
-                            + _seconds_between(starts[row["chunk_id"]], row["end_ts"]),
-                        ),
-                        3,
-                    ),
-                }
-                for row in connection.execute(
-                    f"""
-                    SELECT * FROM observations
-                    WHERE chunk_id IN ({placeholders})
-                    ORDER BY start_ts
-                    """,
-                    chunk_ids,
+                    3,
                 )
-            ]
+                end_seconds = round(
+                    max(
+                        0.0,
+                        offsets[row["chunk_id"]]
+                        + _seconds_between(starts[row["chunk_id"]], row["end_ts"]),
+                    ),
+                    3,
+                )
+                observations.append(
+                    {
+                        "observation_id": row["observation_id"],
+                        "animal_id": row["animal_id"],
+                        "animal_name": row["animal_name"],
+                        "animal_species": row["animal_species"],
+                        "behavior": row["behavior"],
+                        "evidence": row["evidence"],
+                        "provider": row["provider"],
+                        "evidence_kind": row["evidence_kind"],
+                        "activity_label": row["activity_label"],
+                        "start_seconds": start_seconds,
+                        "end_seconds": end_seconds,
+                    }
+                )
+
+                linked_event = linked_rule_events.get(row["observation_id"])
+                rule_checks.append(
+                    {
+                        "observation_id": row["observation_id"],
+                        "animal_id": row["animal_id"],
+                        "animal_name": row["animal_name"],
+                        "animal_species": row["animal_species"],
+                        "behavior": row["behavior"],
+                        "start_seconds": start_seconds,
+                        "end_seconds": end_seconds,
+                        "event_id": linked_event["event_id"] if linked_event else None,
+                        "severity": linked_event["severity"] if linked_event else "NONE",
+                        "rule_fired": (
+                            linked_event["rule_fired"] if linked_event else "NO_RULE_FIRED"
+                        ),
+                        "rule_version": linked_event["rule_version"] if linked_event else None,
+                        "action": linked_event["action"] if linked_event else None,
+                        "review_state": linked_event["review_state"] if linked_event else None,
+                    }
+                )
 
             return {
                 "source_path": source_path,
@@ -1351,6 +1457,7 @@ class SQLiteStore:
                 "detections": detections,
                 "events": events,
                 "observations": observations,
+                "rule_checks": rule_checks,
             }
 
     def searchable_moments(

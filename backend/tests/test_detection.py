@@ -58,10 +58,11 @@ def test_detector_localizes_a_moving_body() -> None:
     assert detections, "a body crossing a static scene must produce motion regions"
     assert all(d.source is DetectionSource.MOTION_REGION for d in detections)
     assert all(d.chunk_id == "chunk-1" for d in detections)
-    # The body is 40px tall at y=70 in a 180px frame, so every box must sit in
-    # that horizontal band rather than drifting across the whole frame.
+    # The body is 40px tall at y=70 in a 180px frame. Context padding can extend
+    # beyond that band, but the box must remain centered on the body rather than
+    # drifting across the whole frame.
     for detection in detections:
-        assert 0.3 <= detection.box.y <= 0.55
+        assert 0.25 <= detection.box.y <= 0.55
         assert detection.box.height <= 0.45
 
 
@@ -107,6 +108,27 @@ def test_area_bounds_reject_regions_outside_the_configured_window() -> None:
     )
 
     assert detections == []
+
+
+def test_motion_context_padding_covers_a_small_body_without_leaving_frame() -> None:
+    config = DetectorConfig(
+        min_area_ratio=0.0001,
+        min_fill_ratio=0.0,
+        motion_box_padding_ratio=1.0,
+        motion_min_box_width=0.08,
+        motion_min_box_height=0.12,
+    )
+
+    detections = MotionRegionDetector(config).detect(
+        _frames_with_moving_body(box_size=12),
+        chunk_id="small-bird",
+    )
+
+    assert detections
+    assert all(item.box.width >= 0.08 for item in detections)
+    assert all(item.box.height >= 0.12 for item in detections)
+    assert all(item.box.x + item.box.width <= 1 for item in detections)
+    assert all(item.box.y + item.box.height <= 1 for item in detections)
 
 
 def test_fill_ratio_threshold_drops_ragged_motion_but_keeps_a_body() -> None:
@@ -237,7 +259,7 @@ def test_yolo_preserves_label_model_and_track_provenance() -> None:
     assert {item.source for item in detections} == {DetectionSource.YOLOV8_OBJECT}
     assert {item.label for item in detections} == {"cat"}
     assert {item.class_id for item in detections} == {15}
-    assert {item.model for item in detections} == {"yolov8n.pt"}
+    assert {item.model for item in detections} == {"yolo11m.pt"}
     assert len({item.track_id for item in detections}) == 1
     assert model.calls[0]["classes"] == list(range(14, 24))
     assert model.calls[0]["stream"] is True

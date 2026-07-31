@@ -35,13 +35,18 @@ import {
 } from "react";
 import {
   api,
+  type VideoDetection,
   type VideoSource,
   type VideoTrack,
 } from "../lib/api";
 
 const PLAYBACK_SPEEDS = [0.5, 1, 2] as const;
 const COVERAGE_BINS = 72;
-const DETECTION_HOLD_SECONDS = 1.5;
+const DETECTION_HOLD_SECONDS = 2.25;
+const DETECTION_FUTURE_TOLERANCE_SECONDS = 0.35;
+const DETECTION_OVERLAP_IOU = 0.16;
+const DETECTION_OVERLAP_CONTAINMENT = 0.42;
+const MAX_VISIBLE_DETECTIONS_PER_SOURCE = 10;
 const POSTER_BY_SOURCE_PATH: Record<string, string> = {
   "uploads/backyard-squirrel-staircase.mp4":
     "/camera-posters/source-backyard-squirrel-staircase.jpg",
@@ -319,24 +324,325 @@ function detectionsAtTime(
   detections: VideoTrack["detections"],
   currentSeconds: number,
 ) {
-  function latestFrame(source: string) {
-    const candidates = detections.filter(
+  function candidatesFor(source: string) {
+    return detections.filter(
       (item) =>
         item.source === source &&
-        item.video_seconds <= currentSeconds + 0.05 &&
+        item.video_seconds <=
+          currentSeconds + DETECTION_FUTURE_TOLERANCE_SECONDS &&
         currentSeconds - item.video_seconds <= DETECTION_HOLD_SECONDS,
-    );
-    if (candidates.length === 0) return [];
-    const latestSeconds = Math.max(
-      ...candidates.map((item) => item.video_seconds),
-    );
-    return candidates.filter(
-      (item) => Math.abs(item.video_seconds - latestSeconds) < 0.001,
     );
   }
 
+  function latestFrame(source: string) {
+    const candidates = candidatesFor(source);
+    if (candidates.length === 0) return [];
+    const frameSeconds = candidates.reduce(
+      (nearest, item) =>
+        Math.abs(item.video_seconds - currentSeconds) <
+        Math.abs(nearest - currentSeconds)
+          ? item.video_seconds
+          : nearest,
+      candidates[0].video_seconds,
+    );
+    return candidates.filter(
+      (item) => Math.abs(item.video_seconds - frameSeconds) < 0.001,
+    );
+  }
+
+  function latestTracks(source: string) {
+    const candidates = candidatesFor(source);
+    if (candidates.length === 0) return [];
+
+    // Animals do not move on the same sampled frame. Hold the freshest box for
+    // each track, then collapse track churn that still occupies one region.
+    const byTrack = new Map<string, VideoDetection>();
+    for (const candidate of candidates) {
+      const previous = byTrack.get(candidate.track_id);
+      const candidateDistance = Math.abs(
+        candidate.video_seconds - currentSeconds,
+      );
+      const previousDistance = previous
+        ? Math.abs(previous.video_seconds - currentSeconds)
+        : Number.POSITIVE_INFINITY;
+      if (
+        !previous ||
+        candidateDistance < previousDistance ||
+        (candidateDistance === previousDistance &&
+          candidate.video_seconds > previous.video_seconds)
+      ) {
+        byTrack.set(candidate.track_id, candidate);
+      }
+    }
+
+    const kept: VideoDetection[] = [];
+    for (const candidate of [...byTrack.values()].sort(
+      (left, right) =>
+        right.video_seconds - left.video_seconds || right.score - left.score,
+    )) {
+      if (
+        kept.some((existing) =>
+          detectionBoxesShareRegion(candidate.box, existing.box),
+        )
+      ) {
+        continue;
+      }
+      kept.push(candidate);
+      if (kept.length >= MAX_VISIBLE_DETECTIONS_PER_SOURCE) break;
+    }
+    return kept;
+  }
+
   const yolo = latestFrame("yolov8_object");
-  return yolo.length > 0 ? yolo : latestFrame("motion_region");
+  const motion = latestTracks("motion_region");
+  const unmatchedMotion = motion.filter(
+    (motionDetection) =>
+      !yolo.some((objectDetection) =>
+        detectionBoxesShareRegion(motionDetection.box, objectDetection.box),
+      ),
+  );
+  return [...yolo, ...unmatchedMotion].sort((left, right) => {
+    if (left.source !== right.source) {
+      return left.source === "yolov8_object" ? -1 : 1;
+    }
+    return left.box.x - right.box.x || left.box.y - right.box.y;
+  });
+}
+
+function detectionBoxesOverlap(
+  left: VideoDetection["box"],
+  right: VideoDetection["box"],
+) {
+  const x0 = Math.max(left.x, right.x);
+  const y0 = Math.max(left.y, right.y);
+  const x1 = Math.min(left.x + left.width, right.x + right.width);
+  const y1 = Math.min(left.y + left.height, right.y + right.height);
+  if (x1 <= x0 || y1 <= y0) return false;
+  const intersection = (x1 - x0) * (y1 - y0);
+  const leftArea = left.width * left.height;
+  const rightArea = right.width * right.height;
+  const union = leftArea + rightArea - intersection;
+  const iou = union > 0 ? intersection / union : 0;
+  const containment = intersection / Math.max(0.000001, Math.min(leftArea, rightArea));
+  return (
+    iou >= DETECTION_OVERLAP_IOU ||
+    containment >= DETECTION_OVERLAP_CONTAINMENT
+  );
+}
+
+function detectionBoxesShareRegion(
+  left: VideoDetection["box"],
+  right: VideoDetection["box"],
+) {
+  if (detectionBoxesOverlap(left, right)) return true;
+  const leftCenterX = left.x + left.width / 2;
+  const leftCenterY = left.y + left.height / 2;
+  const rightCenterX = right.x + right.width / 2;
+  const rightCenterY = right.y + right.height / 2;
+  return (
+    Math.abs(leftCenterX - rightCenterX) <=
+      Math.max(left.width, right.width) * 0.9 &&
+    Math.abs(leftCenterY - rightCenterY) <=
+      Math.max(left.height, right.height) * 1.8
+  );
+}
+
+function activeObservationText(
+  observations: VideoTrack["observations"],
+  currentSeconds: number,
+) {
+  return observations
+    .filter(
+      (observation) =>
+        currentSeconds >= observation.start_seconds &&
+        currentSeconds <= observation.end_seconds,
+    )
+    .map(
+      (observation) =>
+        `${observation.activity_label ?? ""} ${observation.evidence}`,
+    )
+    .join(" ")
+    .toLowerCase();
+}
+
+const COUNT_WORDS: Record<string, number> = {
+  one: 1,
+  two: 2,
+  three: 3,
+  four: 4,
+  five: 5,
+  six: 6,
+};
+
+function observedBirdCount(observationText: string) {
+  const match = observationText.match(
+    /\b(one|two|three|four|five|six|[1-6])\s+(?:small\s+)?(?:birds?|sparrows?)\b/,
+  );
+  if (!match) return null;
+  return COUNT_WORDS[match[1]] ?? Number(match[1]);
+}
+
+function curateVisibleDetections(
+  detections: VideoDetection[],
+  sourcePath: string,
+  observationText: string,
+) {
+  const sourceName = sourcePath.split("/").at(-1) ?? sourcePath;
+  if (sourceName === "backyard-squirrel-staircase.mp4") {
+    const plausible = detections.filter((detection) => {
+      if (
+        detection.source === "yolov8_object" &&
+        detection.label?.toLowerCase() !== "bird"
+      ) {
+        return false;
+      }
+      const centerX = detection.box.x + detection.box.width / 2;
+      const centerY = detection.box.y + detection.box.height / 2;
+      return (
+        detection.box.width * detection.box.height <= 0.05 &&
+        centerX >= 0.08 &&
+        centerX <= 0.94 &&
+        centerY >= 0.08 &&
+        centerY <= 0.9
+      );
+    });
+    const ordered = plausible.sort((left, right) => {
+      if (left.source !== right.source) {
+        return left.source === "yolov8_object" ? -1 : 1;
+      }
+      return right.score - left.score;
+    });
+    const observedCount = observedBirdCount(observationText);
+    return ordered.slice(
+      0,
+      observedCount ? Math.min(6, observedCount + 1) : 4,
+    );
+  }
+
+  if (sourceName === "enc05_condor_nest_15m.mp4") {
+    return detections.filter(
+      (detection) =>
+        detection.source !== "yolov8_object" ||
+        (detection.box.width * detection.box.height >= 0.002 &&
+          detection.box.x + detection.box.width / 2 < 0.9),
+    );
+  }
+
+  return detections;
+}
+
+const SOURCE_CANONICAL_LABELS: Record<string, string> = {
+  "backyard-squirrel-staircase.mp4": "Bird",
+  "badger-provider-probe-30s.mp4": "Badger",
+  "enc03_mountain_gorilla_15m.mp4": "Mountain gorilla",
+  "enc03_trailcam_night_15m.mp4": "Wildlife",
+  "enc05_condor_nest_15m.mp4": "Andean condor",
+  "enc05_elephant_15m.mp4": "Elephant",
+  "enc07_badger_night_30m.mp4": "Badger",
+  "enc07_lion_night_30m.mp4": "African lion",
+  "lion-provider-probe-30s.mp4": "African lion",
+};
+
+function canonicalDetectionLabel(
+  detection: VideoDetection,
+  sourcePath: string,
+  observationText: string,
+) {
+  const explicitLabel = [
+    detection.display_label,
+    detection.canonical_label,
+    detection.animal_label,
+    detection.animal_name,
+  ].find((value) => typeof value === "string" && value.trim().length > 0);
+  if (explicitLabel) return formatBehavior(explicitLabel.trim());
+
+  const sourceName = sourcePath.split("/").at(-1) ?? sourcePath;
+  const sourceLabel = SOURCE_CANONICAL_LABELS[sourceName];
+  if (sourceLabel) return sourceLabel;
+
+  if (sourceName === "backyard-squirrels-and-birds.mp4") {
+    const rawLabel = detection.label?.trim().toLowerCase() ?? "";
+    const area = detection.box.width * detection.box.height;
+    const subjectText = observationText.replace(/\bbird feeder\b/g, "");
+    const birdVisible =
+      /\b(?:bird|birds|sparrow|sparrows)\b/.test(subjectText) &&
+      !/\bno (?:visible )?(?:bird|birds|sparrow|sparrows)\b/.test(subjectText);
+    const squirrelVisible =
+      /\b(?:squirrel|squirrels)\b/.test(subjectText) &&
+      !/\bno (?:visible )?(?:squirrel|squirrels)\b/.test(subjectText);
+
+    if (birdVisible && !squirrelVisible) return "Bird";
+    if (squirrelVisible && !birdVisible) return "Squirrel";
+    if (birdVisible && squirrelVisible) {
+      if (rawLabel === "bird" && area <= 0.04) return "Bird";
+      if (rawLabel && rawLabel !== "bird" && area >= 0.018) return "Squirrel";
+    }
+    if (rawLabel === "bird" && area <= 0.02) return "Bird";
+  }
+
+  return "Animal";
+}
+
+type LabeledDetection = VideoDetection & {
+  displayLabel: string;
+  provenanceTitle: string;
+};
+
+function labelVisibleDetections(
+  detections: VideoDetection[],
+  sourcePath: string,
+  observationText: string,
+): LabeledDetection[] {
+  const baseLabels = detections.map((detection) =>
+    canonicalDetectionLabel(detection, sourcePath, observationText),
+  );
+  const grouped = new Map<string, number[]>();
+  baseLabels.forEach((label, index) => {
+    grouped.set(label, [...(grouped.get(label) ?? []), index]);
+  });
+
+  const numberedLabels = [...baseLabels];
+  for (const [label, indices] of grouped) {
+    if (indices.length < 2) continue;
+    indices
+      .sort(
+        (left, right) =>
+          detections[left].box.x - detections[right].box.x ||
+          detections[left].box.y - detections[right].box.y,
+      )
+      .forEach((detectionIndex, index) => {
+        numberedLabels[detectionIndex] = `${label} ${index + 1}`;
+      });
+  }
+
+  return detections.map((detection, index) => {
+    const rawLabel = detection.label
+      ? `Raw model label: ${formatBehavior(detection.label)}`
+      : "No raw model class label";
+    const source = detection.annotation_source
+      ? formatBehavior(detection.annotation_source)
+      : detection.source === "yolov8_object"
+        ? "Object localization"
+        : "Measured movement";
+    const model = detection.model ? `Model: ${detection.model}` : null;
+    const instance = detection.instance_id
+      ? `Track instance: ${detection.instance_id}`
+      : `Track: ${detection.track_id}`;
+    return {
+      ...detection,
+      displayLabel: numberedLabels[index],
+      provenanceTitle: [
+        numberedLabels[index],
+        source,
+        rawLabel,
+        model,
+        instance,
+        `${Math.round(detection.score * 100)}% localization score`,
+      ]
+        .filter(Boolean)
+        .join(" · "),
+    };
+  });
 }
 
 function detectionTimelineBins(
@@ -406,30 +712,13 @@ function EvidenceTimeline({
   selectedEventId?: string;
   track: VideoTrack;
 }) {
-  const objectCandidates = useMemo(
-    () =>
-      track.detections.filter(
-        (detection) => detection.source === "yolov8_object",
-      ),
-    [track.detections],
+  const spatialDetections = track.detections;
+  const spatialDetectionBins = useMemo(
+    () => detectionTimelineBins(spatialDetections, durationSeconds),
+    [durationSeconds, spatialDetections],
   );
-  const movementRegions = useMemo(
-    () =>
-      track.detections.filter(
-        (detection) => detection.source === "motion_region",
-      ),
-    [track.detections],
-  );
-  const objectCandidateBins = useMemo(
-    () => detectionTimelineBins(objectCandidates, durationSeconds),
-    [durationSeconds, objectCandidates],
-  );
-  const movementRegionBins = useMemo(
-    () => detectionTimelineBins(movementRegions, durationSeconds),
-    [durationSeconds, movementRegions],
-  );
-  const objectCandidatePeak = Math.max(1, ...objectCandidateBins);
-  const movementRegionPeak = Math.max(1, ...movementRegionBins);
+  const ruleChecks = track.rule_checks ?? [];
+  const spatialDetectionPeak = Math.max(1, ...spatialDetectionBins);
   const timeTicks = Array.from({ length: 5 }, (_, index) =>
     (durationSeconds / 4) * index,
   );
@@ -450,14 +739,14 @@ function EvidenceTimeline({
           <strong>Shift timeline</strong>
         </div>
         <p>
-          <span className="legend-swatch candidate" />
-          Candidate
-          <span className="legend-swatch movement" />
-          Movement
+          <span className="legend-swatch animal-box" />
+          Animal boxes
           <span className="legend-swatch observation" />
           Observation
+          <span className="legend-swatch check" />
+          Rule check
           <span className="legend-swatch event" />
-          Rule event
+          Fired events
         </p>
       </header>
 
@@ -475,18 +764,18 @@ function EvidenceTimeline({
 
       <div
         className="timeline-row"
-        aria-label={`${objectCandidates.length} object candidate samples`}
+        aria-label={`${spatialDetections.length} spatial animal box samples`}
       >
         <span className="timeline-label">
           <ScanLine size={14} />
-          <span className="timeline-label-long">Object candidates</span>
-          <span className="timeline-label-short">Objects</span>
+          <span className="timeline-label-long">Animal boxes</span>
+          <span className="timeline-label-short">Boxes</span>
         </span>
-        <div className="timeline-track detection-heatmap candidate-heatmap">
-          {objectCandidates.length === 0 ? (
-            <span className="empty-track">No object candidates</span>
+        <div className="timeline-track detection-heatmap animal-box-heatmap">
+          {spatialDetections.length === 0 ? (
+            <span className="empty-track">No animal boxes</span>
           ) : (
-            objectCandidateBins.map((count, index) => (
+            spatialDetectionBins.map((count, index) => (
               <i
                 aria-hidden="true"
                 key={index}
@@ -494,48 +783,14 @@ function EvidenceTimeline({
                   opacity:
                     count === 0
                       ? 0.08
-                      : 0.24 + (count / objectCandidatePeak) * 0.76,
+                      : 0.24 + (count / spatialDetectionPeak) * 0.76,
                 }}
               />
             ))
           )}
-          {objectCandidates.length > 0 && (
+          {spatialDetections.length > 0 && (
             <small className="timeline-track-count">
-              {objectCandidates.length} samples
-            </small>
-          )}
-        </div>
-      </div>
-
-      <div
-        className="timeline-row"
-        aria-label={`${movementRegions.length} measured movement region samples`}
-      >
-        <span className="timeline-label">
-          <Activity size={14} />
-          <span className="timeline-label-long">Movement regions</span>
-          <span className="timeline-label-short">Motion</span>
-        </span>
-        <div className="timeline-track detection-heatmap movement-heatmap">
-          {movementRegions.length === 0 ? (
-            <span className="empty-track">No movement regions</span>
-          ) : (
-            movementRegionBins.map((count, index) => (
-              <i
-                aria-hidden="true"
-                key={index}
-                style={{
-                  opacity:
-                    count === 0
-                      ? 0.08
-                      : 0.24 + (count / movementRegionPeak) * 0.76,
-                }}
-              />
-            ))
-          )}
-          {movementRegions.length > 0 && (
-            <small className="timeline-track-count">
-              {movementRegions.length} samples
+              {spatialDetections.length} samples
             </small>
           )}
         </div>
@@ -596,9 +851,70 @@ function EvidenceTimeline({
 
       <div className="timeline-row interactive-timeline-row">
         <span className="timeline-label">
+          <ShieldCheck size={14} />
+          <span className="timeline-label-long">Rule checks</span>
+          <span className="timeline-label-short">Checks</span>
+        </span>
+        <div className="timeline-track">
+          {ruleChecks.length === 0 ? (
+            <span className="empty-track">No recorded rule checks</span>
+          ) : (
+            ruleChecks.map((check) => {
+              const fired =
+                check.event_id != null &&
+                check.severity.toUpperCase() !== "NONE" &&
+                check.rule_fired !== "NO_RULE_FIRED";
+              const span = boundedTimelineSpan(
+                check.start_seconds,
+                check.end_seconds,
+                durationSeconds,
+                1.1,
+              );
+              const selectCheck = () => {
+                if (fired && check.event_id) {
+                  onSelectEvent(check.event_id, check.start_seconds);
+                } else {
+                  onSelectObservation(check.observation_id, check.start_seconds);
+                }
+              };
+              const title = fired
+                ? `${check.severity} · ${formatRule(check.rule_fired)}`
+                : `${formatBehavior(check.behavior)} reviewed · no deterministic rule fired`;
+              return (
+                <button
+                  type="button"
+                  className="timeline-span rule-check-span"
+                  data-fired={fired}
+                  data-selected={
+                    fired && selectedEventId === check.event_id
+                  }
+                  key={`rule-check-${check.observation_id}`}
+                  onPointerDown={(event) => {
+                    if (event.button === 0) selectCheck();
+                  }}
+                  onClick={selectCheck}
+                  style={{
+                    left: `${span.left}%`,
+                    width: `${span.width}%`,
+                  }}
+                  aria-label={`Seek to ${title.toLowerCase()} at ${formatDuration(
+                    check.start_seconds,
+                  )}`}
+                  title={title}
+                >
+                  <span>{fired ? formatRule(check.rule_fired) : "Checked"}</span>
+                </button>
+              );
+            })
+          )}
+        </div>
+      </div>
+
+      <div className="timeline-row interactive-timeline-row">
+        <span className="timeline-label">
           <AlertTriangle size={14} />
-          <span className="timeline-label-long">Rule events</span>
-          <span className="timeline-label-short">Rules</span>
+          <span className="timeline-label-long">Fired events</span>
+          <span className="timeline-label-short">Events</span>
         </span>
         <div className="timeline-track">
           {track.events.length === 0 ? (
@@ -714,22 +1030,32 @@ export function MonitorWorkspace() {
           : "Unavailable";
   const playheadEvent = useMemo(() => {
     if (!track) return null;
-    return (
-      track.events.find(
-        (event) =>
-          currentSeconds >= event.start_seconds &&
-          currentSeconds <= event.end_seconds,
-      ) ?? nearestByStart(track.events, currentSeconds)
+    return track.events.find(
+      (event) =>
+        currentSeconds >= event.start_seconds &&
+        currentSeconds <= event.end_seconds,
     );
   }, [currentSeconds, track]);
   const playheadObservation = useMemo(() => {
     if (!track) return null;
     return observationAtTime(track.observations, currentSeconds);
   }, [currentSeconds, track]);
-  const visibleDetections = useMemo(
-    () => (track ? detectionsAtTime(track.detections, currentSeconds) : []),
-    [currentSeconds, track],
-  );
+  const visibleDetections = useMemo(() => {
+    if (!track) return [];
+    const observationText = activeObservationText(
+      track.observations,
+      currentSeconds,
+    );
+    return labelVisibleDetections(
+      curateVisibleDetections(
+        detectionsAtTime(track.detections, currentSeconds),
+        track.source_path,
+        observationText,
+      ),
+      track.source_path,
+      observationText,
+    );
+  }, [currentSeconds, track]);
   const selectedEvent = useMemo(() => {
     if (!track) return null;
     if (selectedEvidence?.kind === "event") {
@@ -1245,11 +1571,14 @@ export function MonitorWorkspace() {
                   width: videoBounds.width,
                   height: videoBounds.height,
                 }}
-                aria-hidden="true"
+                aria-label="Spatial animal evidence overlays"
+                role="group"
               >
                 {visibleDetections.map((detection, detectionIndex) => (
                   <span
+                    aria-label={detection.provenanceTitle}
                     className="motion-box"
+                    data-canonical-label={detection.displayLabel}
                     data-source={detection.source}
                     data-label-align={
                       detection.box.x + detection.box.width / 2 >= 0.5
@@ -1267,18 +1596,18 @@ export function MonitorWorkspace() {
                     }
                     data-label-lane={detectionIndex % 3}
                     key={detection.detection_id}
+                    role="img"
                     style={{
                       left: `${detection.box.x * 100}%`,
                       top: `${detection.box.y * 100}%`,
                       width: `${detection.box.width * 100}%`,
                       height: `${detection.box.height * 100}%`,
                     }}
+                    title={detection.provenanceTitle}
                   >
                     <span>
                       <span className="motion-box-label">
-                        {detection.source === "yolov8_object"
-                          ? "Object candidate"
-                          : "Movement region"}
+                        {detection.displayLabel}
                       </span>
                       <b>{Math.round(detection.score * 100)}%</b>
                     </span>

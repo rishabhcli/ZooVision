@@ -1,6 +1,6 @@
 """Spatial localization and media probing for fixed-camera welfare footage.
 
-YOLOv8 provides sampled object-candidate boxes while MOG2 supplies a clearly
+YOLO provides sampled object-candidate boxes while MOG2 supplies a clearly
 labeled motion fallback for wildlife outside COCO. TwelveLabs separately
 produces temporal observations. Spatial detections never enter deterministic
 welfare triage.
@@ -77,22 +77,26 @@ class DetectorConfig(BaseModel):
 
     sample_fps: float = Field(default=1.0, gt=0, le=30)
     yolo_enabled: bool = True
-    yolo_model: str = Field(default="yolov8n.pt", min_length=1, max_length=200)
+    yolo_model: str = Field(default="yolo11m.pt", min_length=1, max_length=200)
     yolo_device: str = Field(default="auto", min_length=1, max_length=40)
     yolo_confidence: float = Field(default=0.15, ge=0.01, le=1)
     yolo_iou: float = Field(default=0.45, ge=0, le=1)
     yolo_image_size: int = Field(default=640, ge=320, le=1280, multiple_of=32)
     yolo_batch_size: int = Field(default=8, ge=1, le=64)
     yolo_max_detections: int = Field(default=20, ge=1, le=100)
+    frame_max_edge: int = Field(default=960, ge=320, le=2160)
     # COCO bird through giraffe. Restricting inference prevents people,
     # vehicles, and furniture from being shown as animal candidates.
     yolo_classes: tuple[int, ...] = tuple(range(14, 24))
     motion_enabled: bool = True
-    min_area_ratio: float = Field(default=0.0015, gt=0, le=1)
+    min_area_ratio: float = Field(default=0.0003, gt=0, le=1)
     max_area_ratio: float = Field(default=0.5, gt=0, le=1)
-    max_regions_per_frame: int = Field(default=3, ge=1, le=20)
-    min_fill_ratio: float = Field(default=0.32, ge=0, le=1)
-    warmup_frames: int = Field(default=5, ge=0)
+    max_regions_per_frame: int = Field(default=6, ge=1, le=20)
+    min_fill_ratio: float = Field(default=0.12, ge=0, le=1)
+    motion_box_padding_ratio: float = Field(default=0.5, ge=0, le=4)
+    motion_min_box_width: float = Field(default=0.025, ge=0, le=0.5)
+    motion_min_box_height: float = Field(default=0.04, ge=0, le=0.5)
+    warmup_frames: int = Field(default=2, ge=0)
     history: int = Field(default=90, ge=1)
     var_threshold: float = Field(default=32.0, gt=0)
     #: Explicit MOG2 adaptation rate. OpenCV's automatic rate is derived from
@@ -100,7 +104,7 @@ class DetectorConfig(BaseModel):
     #: and absorbs the body it is supposed to find: a 10-second segment
     #: surfaced 1 of 21 frames where a fixed rate surfaced all 20. Pinning it
     #: makes sensitivity a property of the configuration, not of segment length.
-    learning_rate: float = Field(default=0.01, gt=0, le=1)
+    learning_rate: float = Field(default=0.005, gt=0, le=1)
     iou_match_threshold: float = Field(default=0.15, ge=0, le=1)
     track_gap_tolerance_seconds: float = Field(default=2.0, ge=0)
 
@@ -184,14 +188,15 @@ class MotionRegionDetector:
             fill = contour_area / float(box_width * box_height)
             if fill < config.min_fill_ratio:
                 continue
+            raw_box = BoundingBox(
+                x=_clamp(x / width),
+                y=_clamp(y / height),
+                width=_clamp_span(box_width / width, _clamp(x / width)),
+                height=_clamp_span(box_height / height, _clamp(y / height)),
+            )
             found.append(
                 (
-                    BoundingBox(
-                        x=_clamp(x / width),
-                        y=_clamp(y / height),
-                        width=_clamp_span(box_width / width, _clamp(x / width)),
-                        height=_clamp_span(box_height / height, _clamp(y / height)),
-                    ),
+                    _expand_motion_box(raw_box, config),
                     round(min(max(fill, 0.0), 1.0), 4),
                     contour_area / frame_area,
                 )
@@ -536,6 +541,7 @@ def detections_for_chunk(
                     sample_fps=resolved.sample_fps,
                     start_seconds=start_seconds,
                     duration_seconds=duration_seconds,
+                    max_edge=resolved.frame_max_edge,
                 ),
                 chunk_id=chunk_id,
             )
@@ -548,6 +554,7 @@ def detections_for_chunk(
                     sample_fps=resolved.sample_fps,
                     start_seconds=start_seconds,
                     duration_seconds=duration_seconds,
+                    max_edge=resolved.frame_max_edge,
                 ),
                 chunk_id=chunk_id,
             )
@@ -592,6 +599,36 @@ def _normalized_box(
         y=origin_y,
         width=_clamp_span(x1 - x0, origin_x),
         height=_clamp_span(y1 - y0, origin_y),
+    )
+
+
+def _expand_motion_box(box: BoundingBox, config: DetectorConfig) -> BoundingBox:
+    """Add bounded visual context around a changed-pixel contour.
+
+    Background subtraction often finds only the part of an animal that moved.
+    Optional padding and minimum extents let a reviewed reprocessing pass show
+    the whole small animal while preserving the measured region at its center.
+    """
+    target_width = min(
+        1.0,
+        max(box.width * (1 + 2 * config.motion_box_padding_ratio), config.motion_min_box_width),
+    )
+    target_height = min(
+        1.0,
+        max(
+            box.height * (1 + 2 * config.motion_box_padding_ratio),
+            config.motion_min_box_height,
+        ),
+    )
+    center_x = box.x + box.width / 2
+    center_y = box.y + box.height / 2
+    origin_x = min(max(center_x - target_width / 2, 0.0), 1.0 - target_width)
+    origin_y = min(max(center_y - target_height / 2, 0.0), 1.0 - target_height)
+    return BoundingBox(
+        x=_clamp(origin_x),
+        y=_clamp(origin_y),
+        width=_clamp_span(target_width, _clamp(origin_x)),
+        height=_clamp_span(target_height, _clamp(origin_y)),
     )
 
 

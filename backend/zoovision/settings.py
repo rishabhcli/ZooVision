@@ -19,7 +19,7 @@ class Settings(BaseSettings):
     clip_retention_days: int = Field(default=90, alias="ZOOVISION_CLIP_RETENTION_DAYS")
     alert_ack_minutes: int = Field(default=20, alias="ZOOVISION_ALERT_ACK_MINUTES")
     yolo_enabled: bool = Field(default=True, alias="ZOOVISION_YOLO_ENABLED")
-    yolo_model: str = Field(default="yolov8n.pt", alias="ZOOVISION_YOLO_MODEL")
+    yolo_model: str = Field(default="yolo11m.pt", alias="ZOOVISION_YOLO_MODEL")
     yolo_device: str = Field(default="auto", alias="ZOOVISION_YOLO_DEVICE")
     yolo_sample_fps: float = Field(
         default=1.0,
@@ -45,6 +45,12 @@ class Settings(BaseSettings):
         ge=1,
         le=64,
         alias="ZOOVISION_YOLO_BATCH_SIZE",
+    )
+    detection_frame_max_edge: int = Field(
+        default=960,
+        ge=320,
+        le=2160,
+        alias="ZOOVISION_DETECTION_FRAME_MAX_EDGE",
     )
     openai_api_key: str | None = Field(default=None, alias="OPENAI_API_KEY")
     openai_enrichment_enabled: bool = Field(
@@ -178,6 +184,7 @@ class Settings(BaseSettings):
             yolo_confidence=self.yolo_confidence,
             yolo_image_size=self.yolo_image_size,
             yolo_batch_size=self.yolo_batch_size,
+            frame_max_edge=self.detection_frame_max_edge,
         )
 
     @property
