@@ -873,18 +873,7 @@ export function MonitorWorkspace() {
       .then((payload) => {
         if (cancelled) return;
         setTrack(payload);
-        setSelectedEvidence(
-          (current) =>
-            current ??
-            (payload.events[0]
-              ? { kind: "event", id: payload.events[0].event_id }
-              : payload.observations[0]
-                ? {
-                    kind: "observation",
-                    id: payload.observations[0].observation_id,
-                  }
-                : null),
-        );
+        setSelectedEvidence(null);
         setDurationSeconds(authoritativeSourceDuration(selectedProbeDuration, payload));
       })
       .catch((caught: unknown) => {
@@ -1234,7 +1223,10 @@ export function MonitorWorkspace() {
                     setProgress((video.currentTime / video.duration) * 100);
                   }
                 }}
-                onPlay={() => setPlaying(true)}
+                onPlay={() => {
+                  setPlaying(true);
+                  setSelectedEvidence(null);
+                }}
                 onPause={() => setPlaying(false)}
                 onEnded={() => setPlaying(false)}
                 onError={() =>
