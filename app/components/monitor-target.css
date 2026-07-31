@@ -2345,6 +2345,11 @@
     white-space: normal;
   }
 
+  .monitor-title-group p span {
+    display: inline-block;
+    margin: 0 5px;
+  }
+
   .video-stage {
     aspect-ratio: 16 / 11;
   }
