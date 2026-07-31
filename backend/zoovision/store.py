@@ -1135,55 +1135,71 @@ class SQLiteStore:
                 dict(row)
                 for row in connection.execute(
                     """
-                    SELECT vc.source_path,
-                           min(vc.enclosure_id) AS enclosure_id,
-                           min(vc.camera_id) AS camera_id,
-                           count(DISTINCT vc.chunk_id) AS chunk_count,
-                           count(DISTINCT CASE
-                               WHEN vc.status = 'analyzed' THEN vc.chunk_id
-                           END) AS analyzed_chunk_count,
-                           count(DISTINCT CASE
-                               WHEN vc.status = 'coverage_gap' THEN vc.chunk_id
-                           END) AS gap_chunk_count,
-                           count(DISTINCT CASE
-                               WHEN vc.status = 'analyzing' THEN vc.chunk_id
-                           END) AS analyzing_chunk_count,
-                           (
-                               SELECT coalesce(sum(
-                                   (julianday(analyzed.end_ts)
-                                    - julianday(analyzed.start_ts)) * 86400.0
-                               ), 0)
-                               FROM video_chunks analyzed
-                               WHERE analyzed.source_path = vc.source_path
-                                 AND analyzed.status = 'analyzed'
-                           ) AS stored_analyzed_duration_seconds,
-                           (
-                               SELECT coalesce(sum(
-                                   (julianday(covered.end_ts)
-                                    - julianday(covered.start_ts)) * 86400.0
-                               ), 0)
-                               FROM video_chunks covered
-                               WHERE covered.source_path = vc.source_path
-                           ) AS stored_source_duration_seconds,
-                           min(vc.start_ts) AS first_start_ts,
-                           max(vc.end_ts) AS last_end_ts,
-                           count(DISTINCT d.detection_id) AS detection_count,
-                           count(DISTINCT o.observation_id) AS observation_count,
-                           count(DISTINCT e.event_id) AS event_count,
-                           group_concat(DISTINCT a.animal_id) AS animal_ids,
-                           group_concat(DISTINCT a.name) AS animal_names,
-                           group_concat(DISTINCT a.species) AS animal_species
-                    FROM video_chunks vc
-                    LEFT JOIN detections d ON d.chunk_id = vc.chunk_id
-                    LEFT JOIN observations o ON o.chunk_id = vc.chunk_id
-                    LEFT JOIN events e ON e.event_id IN (
-                        SELECT es.event_id FROM event_sources es
-                        JOIN observations o2 ON o2.observation_id = es.observation_id
-                        WHERE o2.chunk_id = vc.chunk_id
+                    WITH source_chunks AS (
+                        SELECT source_path,
+                               min(enclosure_id) AS enclosure_id,
+                               min(camera_id) AS camera_id,
+                               count(*) AS chunk_count,
+                               sum(CASE WHEN status = 'analyzed' THEN 1 ELSE 0 END)
+                                   AS analyzed_chunk_count,
+                               sum(CASE WHEN status = 'coverage_gap' THEN 1 ELSE 0 END)
+                                   AS gap_chunk_count,
+                               sum(CASE WHEN status = 'analyzing' THEN 1 ELSE 0 END)
+                                   AS analyzing_chunk_count,
+                               coalesce(sum(CASE
+                                   WHEN status = 'analyzed' THEN
+                                       (julianday(end_ts) - julianday(start_ts)) * 86400.0
+                                   ELSE 0
+                               END), 0) AS stored_analyzed_duration_seconds,
+                               coalesce(sum(
+                                   (julianday(end_ts) - julianday(start_ts)) * 86400.0
+                               ), 0) AS stored_source_duration_seconds,
+                               min(start_ts) AS first_start_ts,
+                               max(end_ts) AS last_end_ts
+                        FROM video_chunks
+                        GROUP BY source_path
+                    ),
+                    source_detections AS (
+                        SELECT vc.source_path,
+                               count(d.detection_id) AS detection_count
+                        FROM video_chunks vc
+                        JOIN detections d ON d.chunk_id = vc.chunk_id
+                        GROUP BY vc.source_path
+                    ),
+                    source_observations AS (
+                        SELECT vc.source_path,
+                               count(o.observation_id) AS observation_count,
+                               group_concat(DISTINCT a.animal_id) AS animal_ids,
+                               group_concat(DISTINCT a.name) AS animal_names,
+                               group_concat(DISTINCT a.species) AS animal_species
+                        FROM video_chunks vc
+                        JOIN observations o ON o.chunk_id = vc.chunk_id
+                        LEFT JOIN animals a ON a.animal_id = o.animal_id
+                        GROUP BY vc.source_path
+                    ),
+                    source_events AS (
+                        SELECT vc.source_path,
+                               count(DISTINCT es.event_id) AS event_count
+                        FROM video_chunks vc
+                        JOIN observations o ON o.chunk_id = vc.chunk_id
+                        JOIN event_sources es ON es.observation_id = o.observation_id
+                        GROUP BY vc.source_path
                     )
-                    LEFT JOIN animals a ON a.animal_id = o.animal_id
-                    GROUP BY vc.source_path
-                    ORDER BY vc.source_path
+                    SELECT chunks.*,
+                           coalesce(detections.detection_count, 0) AS detection_count,
+                           coalesce(observations.observation_count, 0) AS observation_count,
+                           coalesce(events.event_count, 0) AS event_count,
+                           observations.animal_ids,
+                           observations.animal_names,
+                           observations.animal_species
+                    FROM source_chunks chunks
+                    LEFT JOIN source_detections detections
+                        ON detections.source_path = chunks.source_path
+                    LEFT JOIN source_observations observations
+                        ON observations.source_path = chunks.source_path
+                    LEFT JOIN source_events events
+                        ON events.source_path = chunks.source_path
+                    ORDER BY chunks.source_path
                     """
                 )
             ]

@@ -756,31 +756,45 @@ export function MonitorWorkspace() {
   useEffect(() => {
     let cancelled = false;
     let hasLoaded = false;
-    const loadVideos = () => {
-      api
-        .videos()
-        .then(({ videos: sources }) => {
-          if (cancelled) return;
-          hasLoaded = true;
-          setVideos(sources);
-          setLoadError(
-            sources.length === 0
-              ? "No analyzed video sources are available."
-              : null,
-          );
-        })
-        .catch((caught: unknown) => {
-          if (cancelled || hasLoaded) return;
+    let refreshTimer: number | null = null;
+
+    const scheduleRefresh = () => {
+      if (cancelled) return;
+      refreshTimer = window.setTimeout(() => void loadVideos(), 30_000);
+    };
+
+    const loadVideos = async () => {
+      if (cancelled) return;
+      if (document.hidden) {
+        scheduleRefresh();
+        return;
+      }
+
+      try {
+        const { videos: sources } = await api.videos();
+        if (cancelled) return;
+        hasLoaded = true;
+        setVideos(sources);
+        setLoadError(
+          sources.length === 0
+            ? "No analyzed video sources are available."
+            : null,
+        );
+      } catch (caught: unknown) {
+        if (!cancelled && !hasLoaded) {
           setLoadError(
             caught instanceof Error ? caught.message : "Unable to load videos.",
           );
-        });
+        }
+      } finally {
+        scheduleRefresh();
+      }
     };
-    loadVideos();
-    const timer = window.setInterval(loadVideos, 5000);
+
+    void loadVideos();
     return () => {
       cancelled = true;
-      window.clearInterval(timer);
+      if (refreshTimer !== null) window.clearTimeout(refreshTimer);
     };
   }, []);
 

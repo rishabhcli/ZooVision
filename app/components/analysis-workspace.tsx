@@ -17,7 +17,14 @@ import {
   Upload,
   Video,
 } from "lucide-react";
-import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
+import {
+  FormEvent,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import {
   api,
   type DashboardPayload,
@@ -115,11 +122,14 @@ export function AnalysisWorkspace() {
   const [submitting, setSubmitting] = useState(false);
   const [ingestError, setIngestError] = useState<string | null>(null);
   const [briefingReady, setBriefingReady] = useState(false);
+  const refreshInFlightRef = useRef(false);
   const [uploadAnimalId] = useState(
     () => `animal-upload-${Math.random().toString(36).slice(2, 9)}`,
   );
 
   const refresh = useCallback(async (quiet = false) => {
+    if (refreshInFlightRef.current) return;
+    refreshInFlightRef.current = true;
     if (!quiet) setRefreshing(true);
     try {
       const [dashboardPayload, videoPayload, jobPayload, readinessPayload] =
@@ -143,13 +153,16 @@ export function AnalysisWorkspace() {
     } catch (caught) {
       setLoadError(caught instanceof Error ? caught.message : "Analysis service unavailable");
     } finally {
+      refreshInFlightRef.current = false;
       if (!quiet) setRefreshing(false);
     }
   }, []);
 
   useEffect(() => {
     const initial = window.setTimeout(() => void refresh(), 0);
-    const timer = window.setInterval(() => void refresh(true), 3_000);
+    const timer = window.setInterval(() => {
+      if (!document.hidden) void refresh(true);
+    }, 30_000);
     return () => {
       window.clearTimeout(initial);
       window.clearInterval(timer);
@@ -300,7 +313,7 @@ export function AnalysisWorkspace() {
         <div>
           <span className="analysis-live-dot" data-active={activeJobs.length > 0} />
           <span>{activeJobs.length ? "Analysis running" : "Analysis records live"}</span>
-          <small>Auto-refreshes every 3 seconds</small>
+          <small>Latest connected evidence</small>
         </div>
         <label className="analysis-source-select">
           <Video size={14} />
