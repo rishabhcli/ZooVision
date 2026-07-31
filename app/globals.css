@@ -3247,7 +3247,7 @@ textarea {
   .app-frame.evidence-layout {
     display: block;
     min-height: 100dvh;
-    overflow-x: hidden;
+    overflow-x: clip;
   }
 
   .evidence-layout .workspace {
@@ -5319,7 +5319,7 @@ textarea {
 html,
 body {
   min-height: 100%;
-  overflow-x: hidden;
+  overflow-x: clip;
   background: var(--canvas);
 }
 
@@ -8416,6 +8416,9 @@ body {
 }
 
 .evidence-layout .topbar {
+  position: sticky;
+  z-index: 80;
+  top: 0;
   min-height: 58px;
   grid-template-columns: minmax(360px, 1fr) auto minmax(170px, 1fr);
   background: rgba(9, 10, 11, 0.98);

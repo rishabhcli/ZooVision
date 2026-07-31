@@ -2337,7 +2337,12 @@
   }
 
   .monitor-title-group p {
+    display: block;
+    flex-wrap: wrap;
+    overflow: visible;
     font-size: 14px;
+    line-height: 1.35;
+    white-space: normal;
   }
 
   .video-stage {
