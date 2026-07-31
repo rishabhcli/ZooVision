@@ -4,7 +4,7 @@ import argparse
 import json
 
 from zoovision.domain import EventRecord, Observation
-from zoovision.graph import GraphEventBundle, Neo4jGraphWriter
+from zoovision.graph import GraphChunkBounds, GraphEventBundle, Neo4jGraphWriter
 from zoovision.settings import get_settings
 from zoovision.store import SQLiteStore
 
@@ -71,6 +71,14 @@ def main() -> None:
                 source_path=source_chunk["source_path"],
                 event=event,
                 sources=source_models,
+                source_chunks=[
+                    GraphChunkBounds(
+                        chunk_id=chunk_id,
+                        start_ts=chunks[chunk_id]["start_ts"],
+                        end_ts=chunks[chunk_id]["end_ts"],
+                    )
+                    for chunk_id in sorted({source.chunk_id for source in source_models})
+                ],
             )
             writer.write_event(bundle)
             writer.write_event(bundle)

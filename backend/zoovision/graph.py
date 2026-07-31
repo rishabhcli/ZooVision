@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any
 
 from neo4j import GraphDatabase
@@ -52,11 +53,13 @@ SET observation.chunk_id = source.chunk_id,
     observation.evidence = source.evidence,
     observation.evidence_kind = source.evidence_kind,
     observation.provider = source.provider,
-    observation.provider_model = source.provider_model
+    observation.provider_model = source.provider_model,
+    observation.provider_item_id = source.provider_item_id,
+    observation.activity_label = source.activity_label
 MERGE (clip:Clip {clip_id: source.chunk_id})
 SET clip.source_path = $source_path,
-    clip.start_ts = datetime(source.start_ts),
-    clip.end_ts = datetime(source.end_ts)
+    clip.start_ts = datetime(source.chunk_start_ts),
+    clip.end_ts = datetime(source.chunk_end_ts)
 MERGE (camera)-[:CAPTURED]->(clip)
 MERGE (clip)-[:RECORDED_IN]->(enclosure)
 MERGE (observation)-[:EVIDENCE_FROM]->(clip)
@@ -83,11 +86,13 @@ SET observation.chunk_id = observation_data.chunk_id,
     observation.evidence = observation_data.evidence,
     observation.evidence_kind = observation_data.evidence_kind,
     observation.provider = observation_data.provider,
-    observation.provider_model = observation_data.provider_model
+    observation.provider_model = observation_data.provider_model,
+    observation.provider_item_id = observation_data.provider_item_id,
+    observation.activity_label = observation_data.activity_label
 MERGE (clip:Clip {clip_id: observation_data.chunk_id})
 SET clip.source_path = $source_path,
-    clip.start_ts = datetime(observation_data.start_ts),
-    clip.end_ts = datetime(observation_data.end_ts)
+    clip.start_ts = datetime($chunk_start_ts),
+    clip.end_ts = datetime($chunk_end_ts)
 MERGE (camera)-[:CAPTURED]->(clip)
 MERGE (clip)-[:RECORDED_IN]->(enclosure)
 MERGE (observation)-[:EVIDENCE_FROM]->(clip)
@@ -134,6 +139,23 @@ MATCH (clip:Clip {clip_id: $clip_id})
 SET clip.embedding = $embedding,
     clip.embedding_model = $embedding_model,
     clip.embedding_dimension = size($embedding)
+"""
+
+RECONCILE_CLIP_PROVENANCE_CYPHER = """
+UNWIND $chunks AS chunk
+MATCH (clip:Clip {clip_id: chunk.chunk_id})
+SET clip.source_path = chunk.source_path,
+    clip.start_ts = datetime(chunk.start_ts),
+    clip.end_ts = datetime(chunk.end_ts)
+RETURN count(clip) AS matched
+"""
+
+RECONCILE_OBSERVATION_PROVENANCE_CYPHER = """
+UNWIND $observations AS observation_data
+MATCH (observation:Observation {observation_id: observation_data.observation_id})
+SET observation.provider_item_id = observation_data.provider_item_id,
+    observation.activity_label = observation_data.activity_label
+RETURN count(observation) AS matched
 """
 
 EVENT_CARDINALITY_CYPHER = """
@@ -207,6 +229,34 @@ RETURN [
 """
 
 
+class GraphChunkBounds(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    chunk_id: str
+    start_ts: datetime
+    end_ts: datetime
+
+    @model_validator(mode="after")
+    def validate_interval(self) -> GraphChunkBounds:
+        if self.start_ts.tzinfo is None or self.end_ts.tzinfo is None:
+            raise ValueError("graph chunk timestamps must be timezone-aware")
+        if self.end_ts <= self.start_ts:
+            raise ValueError("graph chunk end must be after start")
+        return self
+
+
+class GraphClipProvenance(GraphChunkBounds):
+    source_path: str
+
+
+class GraphObservationProvenance(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    observation_id: str
+    provider_item_id: str | None = None
+    activity_label: str | None = None
+
+
 class GraphEventBundle(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -216,6 +266,7 @@ class GraphEventBundle(BaseModel):
     source_path: str
     event: EventRecord
     sources: list[Observation]
+    source_chunks: list[GraphChunkBounds]
 
     @model_validator(mode="after")
     def validate_sources(self) -> GraphEventBundle:
@@ -223,10 +274,15 @@ class GraphEventBundle(BaseModel):
         actual = {source.observation_id for source in self.sources}
         if expected != actual:
             raise ValueError("graph bundle sources must exactly match the event provenance")
+        expected_chunks = {source.chunk_id for source in self.sources}
+        actual_chunks = {chunk.chunk_id for chunk in self.source_chunks}
+        if len(actual_chunks) != len(self.source_chunks) or expected_chunks != actual_chunks:
+            raise ValueError("graph bundle chunk bounds must exactly match the source chunks")
         return self
 
     def parameters(self) -> dict[str, Any]:
         event = self.event
+        chunk_bounds = {chunk.chunk_id: chunk for chunk in self.source_chunks}
         return {
             "animal_id": event.animal_id,
             "animal_name": self.animal_name,
@@ -250,6 +306,8 @@ class GraphEventBundle(BaseModel):
                     **source.model_dump(mode="json"),
                     "behavior": source.behavior.value,
                     "evidence_kind": source.evidence_kind.value,
+                    "chunk_start_ts": chunk_bounds[source.chunk_id].start_ts.isoformat(),
+                    "chunk_end_ts": chunk_bounds[source.chunk_id].end_ts.isoformat(),
                 }
                 for source in self.sources
             ],
@@ -264,6 +322,7 @@ class GraphObservationBundle(BaseModel):
     camera_id: str
     source_path: str
     observations: list[Observation]
+    source_chunk: GraphChunkBounds
 
     @model_validator(mode="after")
     def validate_observations(self) -> GraphObservationBundle:
@@ -279,6 +338,8 @@ class GraphObservationBundle(BaseModel):
         }
         if len(expected) != 1:
             raise ValueError("graph observations must belong to one animal and chunk")
+        if self.source_chunk.chunk_id != self.observations[0].chunk_id:
+            raise ValueError("graph observation chunk bounds must match the observation chunk")
         return self
 
     def parameters(self) -> dict[str, Any]:
@@ -290,6 +351,8 @@ class GraphObservationBundle(BaseModel):
             "camera_id": self.camera_id,
             "source_path": self.source_path,
             "enclosure_id": first.enclosure_id,
+            "chunk_start_ts": self.source_chunk.start_ts.isoformat(),
+            "chunk_end_ts": self.source_chunk.end_ts.isoformat(),
             "observations": [
                 {
                     **observation.model_dump(mode="json"),
@@ -374,6 +437,54 @@ class Neo4jGraphWriter:
 
         with self.driver.session() as session:
             session.execute_write(write)
+
+    def reconcile_provenance(
+        self,
+        *,
+        chunks: list[GraphClipProvenance],
+        observations: list[GraphObservationProvenance],
+    ) -> dict[str, int]:
+        chunk_ids = [chunk.chunk_id for chunk in chunks]
+        observation_ids = [observation.observation_id for observation in observations]
+        if len(set(chunk_ids)) != len(chunk_ids):
+            raise ValueError("reconciliation chunks must be unique")
+        if len(set(observation_ids)) != len(observation_ids):
+            raise ValueError("reconciliation observations must be unique")
+
+        chunk_parameters = [chunk.model_dump(mode="json") for chunk in chunks]
+        observation_parameters = [
+            observation.model_dump(mode="json") for observation in observations
+        ]
+
+        def write(tx: Any) -> dict[str, int]:
+            matched_chunks = 0
+            if chunk_parameters:
+                record = tx.run(
+                    RECONCILE_CLIP_PROVENANCE_CYPHER,
+                    chunks=chunk_parameters,
+                ).single(strict=True)
+                matched_chunks = int(record["matched"])
+                if matched_chunks != len(chunk_parameters):
+                    raise RuntimeError("Neo4j clip provenance reconciliation cardinality mismatch")
+
+            matched_observations = 0
+            if observation_parameters:
+                record = tx.run(
+                    RECONCILE_OBSERVATION_PROVENANCE_CYPHER,
+                    observations=observation_parameters,
+                ).single(strict=True)
+                matched_observations = int(record["matched"])
+                if matched_observations != len(observation_parameters):
+                    raise RuntimeError(
+                        "Neo4j observation provenance reconciliation cardinality mismatch"
+                    )
+            return {
+                "chunks": matched_chunks,
+                "observations": matched_observations,
+            }
+
+        with self.driver.session() as session:
+            return session.execute_write(write)
 
     def event_cardinality(self, event_id: str) -> dict[str, int]:
         def read(tx: Any) -> dict[str, int]:

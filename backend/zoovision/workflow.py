@@ -30,7 +30,12 @@ from .domain import (
     TriageInput,
 )
 from .enrichment import EvidenceMergeRequest, EvidenceSource
-from .graph import GraphEventBundle, GraphObservationBundle, Neo4jGraphWriter
+from .graph import (
+    GraphChunkBounds,
+    GraphEventBundle,
+    GraphObservationBundle,
+    Neo4jGraphWriter,
+)
 from .ids import event_id, stable_id
 from .providers import ProviderAnalysis, VideoChunkContext
 from .stitching import stitch_observations
@@ -360,6 +365,11 @@ class SegmentWorkflow:
                     camera_id=request.camera_id,
                     source_path=request.source_path,
                     observations=analysis.observations,
+                    source_chunk=GraphChunkBounds(
+                        chunk_id=chunk.chunk_id,
+                        start_ts=chunk.start_ts,
+                        end_ts=chunk.end_ts,
+                    ),
                 )
             )
         if self.embedder is not None and self.graph_writer is not None and analysis.observations:
@@ -601,6 +611,13 @@ class SegmentWorkflow:
                     source_path=request.source_path,
                     event=event,
                     sources=[sources[source_id] for source_id in event.source_observation_ids],
+                    source_chunks=[
+                        GraphChunkBounds(
+                            chunk_id=request.chunk.chunk_id,
+                            start_ts=request.chunk.start_ts,
+                            end_ts=request.chunk.end_ts,
+                        )
+                    ],
                 )
             )
 

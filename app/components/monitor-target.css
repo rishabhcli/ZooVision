@@ -246,6 +246,7 @@
   min-width: 0;
   min-height: 68px;
   align-items: center;
+  flex-wrap: wrap;
   justify-content: space-between;
   gap: 24px;
   padding: 0 2px 14px;
@@ -428,6 +429,7 @@
 
 .monitor-title-group {
   display: flex;
+  flex: 1 1 360px;
   min-width: 240px;
   align-items: center;
   gap: 15px;
@@ -478,6 +480,7 @@
 
 .monitor-metrics {
   display: grid;
+  flex: 0 1 auto;
   min-width: 0;
   grid-template-columns: repeat(4, minmax(96px, auto));
   gap: 0;

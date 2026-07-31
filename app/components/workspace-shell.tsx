@@ -294,10 +294,14 @@ export function WorkspaceShell({
       );
   }, []);
 
-  const conversationKey =
-    pathname === "/monitor" && assistantContext.sourcePath
-      ? `${pathname}:${assistantContext.sourcePath}`
-      : pathname;
+  const assistantScopeKey =
+    assistantContext.sourcePath ??
+    assistantContext.animalId ??
+    assistantContext.cameraId ??
+    assistantContext.enclosureId;
+  const conversationKey = assistantScopeKey
+    ? `${pathname}:${assistantScopeKey}`
+    : pathname;
   const storedMessages =
     messagesByRoute[conversationKey] ??
     initialChats[pathname] ??
@@ -315,6 +319,11 @@ export function WorkspaceShell({
   const currentTourStep =
     tourStep === null ? null : onboardingSteps[tourStep];
   const TourIcon = currentTourStep?.icon;
+  const assistantContextLabel = assistantContext.animalName
+    ? assistantContext.cameraId
+      ? `${assistantContext.animalName} · ${assistantContext.cameraId}`
+      : assistantContext.animalName
+    : assistantContext.cameraId ?? assistantContext.enclosureId;
 
   function removeTourQuery() {
     const url = new URL(window.location.href);
@@ -610,11 +619,7 @@ export function WorkspaceShell({
               <div className="chat-context">
                 {!isEvidenceLayout && <span className="status-dot" />}
                 <span>
-                  {pathname === "/monitor" &&
-                  assistantContext.animalName &&
-                  assistantContext.cameraId
-                    ? `${assistantContext.animalName} · ${assistantContext.cameraId}`
-                    : eyebrow}
+                  {assistantContextLabel ?? eyebrow}
                 </span>
               </div>
               <div className="message-list" aria-live="polite">
@@ -704,10 +709,8 @@ export function WorkspaceShell({
                   value={draft}
                   onChange={(event) => setDraft(event.target.value)}
                   placeholder={
-                    pathname === "/monitor" &&
-                    assistantContext.animalName &&
-                    assistantContext.cameraId
-                      ? `Ask about ${assistantContext.animalName} on ${assistantContext.cameraId}…`
+                    assistantContextLabel
+                      ? `Ask about ${assistantContextLabel}…`
                       : "Ask about recorded evidence…"
                   }
                   aria-label="Ask ZooVision Assistant"

@@ -252,12 +252,16 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 export const api = {
   readiness: () => request<ReadinessPayload>("/api/readiness"),
   dashboard: () => request<DashboardPayload>("/api/dashboard"),
-  graph: (enclosureId?: string | null) =>
-    request<GraphPayload>(
-      enclosureId
-        ? `/api/graph?enclosure_id=${encodeURIComponent(enclosureId)}`
-        : "/api/graph",
-    ),
+  graph: (
+    enclosureId?: string | null,
+    includeObservations = false,
+  ) => {
+    const parameters = new URLSearchParams({
+      include_observations: String(includeObservations),
+    });
+    if (enclosureId) parameters.set("enclosure_id", enclosureId);
+    return request<GraphPayload>(`/api/graph?${parameters.toString()}`);
+  },
   videos: () => request<{ videos: VideoSource[] }>("/api/videos"),
   videoTrack: (sourcePath: string, signal?: AbortSignal) =>
     request<VideoTrack>(

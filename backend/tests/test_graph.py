@@ -17,12 +17,17 @@ from zoovision.graph import (
     EVENT_CARDINALITY_CYPHER,
     READ_ENCLOSURES_CYPHER,
     READ_GRAPH_CYPHER,
+    RECONCILE_CLIP_PROVENANCE_CYPHER,
+    RECONCILE_OBSERVATION_PROVENANCE_CYPHER,
     SCHEMA_QUERIES,
     WRITE_CLIP_EMBEDDING_CYPHER,
     WRITE_EVENT_CYPHER,
     WRITE_OBSERVATIONS_CYPHER,
+    GraphChunkBounds,
+    GraphClipProvenance,
     GraphEventBundle,
     GraphObservationBundle,
+    GraphObservationProvenance,
     Neo4jGraphReader,
     Neo4jGraphWriter,
 )
@@ -67,6 +72,10 @@ class FakeTransaction:
                     "relationships": [],
                 }
             )
+        if query == RECONCILE_CLIP_PROVENANCE_CYPHER:
+            return FakeResult({"matched": len(parameters["chunks"])})
+        if query == RECONCILE_OBSERVATION_PROVENANCE_CYPHER:
+            return FakeResult({"matched": len(parameters["observations"])})
         return FakeResult()
 
     @property
@@ -120,7 +129,9 @@ def bundle():
         evidence="Repeated route.",
         provider="fixture",
         provider_model="scenario-v1",
+        provider_item_id="provider-item-1",
         evidence_kind=EvidenceKind.SYNTHETIC_SCENARIO,
+        activity_label="Repeated pacing route",
     )
     event = EventRecord(
         event_id="evt-1",
@@ -146,6 +157,13 @@ def bundle():
         source_path="fixtures/nox.mp4",
         event=event,
         sources=[observation],
+        source_chunks=[
+            GraphChunkBounds(
+                chunk_id="chunk-1",
+                start_ts=start - timedelta(minutes=1),
+                end_ts=start + timedelta(minutes=29),
+            )
+        ],
     )
 
 
@@ -158,6 +176,12 @@ def test_graph_writer_uses_static_idempotent_merge_query():
     assert "MERGE (camera:Camera {camera_id: $camera_id})" in WRITE_EVENT_CYPHER
     assert driver.transaction.parameters["event_id"] == "evt-1"
     assert driver.transaction.parameters["sources"][0]["observation_id"] == "obs-1"
+    assert driver.transaction.parameters["sources"][0]["chunk_start_ts"] == (
+        "2026-07-30T01:59:00+00:00"
+    )
+    assert driver.transaction.parameters["sources"][0]["provider_item_id"] == ("provider-item-1")
+    assert "datetime(source.chunk_start_ts)" in WRITE_EVENT_CYPHER
+    assert "observation.activity_label = source.activity_label" in WRITE_EVENT_CYPHER
 
 
 def test_graph_writer_indexes_observations_without_an_event():
@@ -169,6 +193,7 @@ def test_graph_writer_indexes_observations_without_an_event():
         camera_id=event_bundle.camera_id,
         source_path=event_bundle.source_path,
         observations=event_bundle.sources,
+        source_chunk=event_bundle.source_chunks[0],
     )
 
     Neo4jGraphWriter("unused", "unused", "unused", driver=driver).write_observations(
@@ -184,6 +209,15 @@ def test_graph_writer_indexes_observations_without_an_event():
     assert "MERGE (observation:Observation" in WRITE_OBSERVATIONS_CYPHER
     assert "MERGE (animal)-[:HAS_OBSERVATION]->(observation)" in WRITE_OBSERVATIONS_CYPHER
     assert driver.transaction.parameters["observations"][0]["observation_id"] == "obs-1"
+    assert driver.transaction.parameters["chunk_start_ts"] == "2026-07-30T01:59:00+00:00"
+    assert driver.transaction.parameters["observations"][0]["activity_label"] == (
+        "Repeated pacing route"
+    )
+    assert "datetime($chunk_start_ts)" in WRITE_OBSERVATIONS_CYPHER
+    assert (
+        "observation.provider_item_id = observation_data.provider_item_id"
+        in WRITE_OBSERVATIONS_CYPHER
+    )
 
 
 def test_graph_writer_atomically_replaces_one_source_generation():
@@ -214,11 +248,55 @@ def test_graph_writer_persists_runtime_embedding_dimension():
     assert driver.transaction.parameters["embedding"] == [0.1, 0.2, 0.3]
 
 
+def test_graph_writer_atomically_reconciles_existing_provenance():
+    driver = FakeDriver()
+    start = datetime(2026, 7, 30, 2, tzinfo=UTC)
+    writer = Neo4jGraphWriter("unused", "unused", "unused", driver=driver)
+
+    result = writer.reconcile_provenance(
+        chunks=[
+            GraphClipProvenance(
+                chunk_id="chunk-1",
+                source_path="uploads/sample.mp4",
+                start_ts=start,
+                end_ts=start + timedelta(minutes=15),
+            )
+        ],
+        observations=[
+            GraphObservationProvenance(
+                observation_id="obs-1",
+                provider_item_id="provider-item-1",
+                activity_label="Repeated pacing route",
+            )
+        ],
+    )
+
+    assert result == {"chunks": 1, "observations": 1}
+    assert [query for query, _ in driver.transaction.queries] == [
+        RECONCILE_CLIP_PROVENANCE_CYPHER,
+        RECONCILE_OBSERVATION_PROVENANCE_CYPHER,
+    ]
+    assert driver.transaction.queries[0][1]["chunks"][0]["start_ts"] == ("2026-07-30T02:00:00Z")
+    assert driver.transaction.queries[1][1]["observations"][0] == {
+        "observation_id": "obs-1",
+        "provider_item_id": "provider-item-1",
+        "activity_label": "Repeated pacing route",
+    }
+
+
 def test_graph_bundle_requires_exact_event_sources():
     value = bundle()
     value.event.source_observation_ids = ["obs-other"]
     with pytest.raises(ValueError, match="exactly"):
         GraphEventBundle.model_validate(value.model_dump())
+
+
+def test_graph_bundle_requires_exact_chunk_bounds():
+    value = bundle().model_dump()
+    value["source_chunks"][0]["chunk_id"] = "chunk-other"
+
+    with pytest.raises(ValueError, match="chunk bounds"):
+        GraphEventBundle.model_validate(value)
 
 
 def test_graph_schema_uses_named_constraints_and_runtime_vector_dimension():

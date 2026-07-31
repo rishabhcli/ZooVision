@@ -81,12 +81,160 @@ function nodePickerLabel(node: GraphNodeItem): string {
   return `${node.caption} · ${node.label} · ${node.id}`;
 }
 
+const propertyPriority = [
+  "name",
+  "species",
+  "behavior",
+  "activity_label",
+  "evidence",
+  "severity",
+  "rule_fired",
+  "rule_version",
+  "camera_id",
+  "enclosure_id",
+  "source_path",
+  "start_ts",
+  "end_ts",
+  "provider",
+  "review_state",
+];
+
+function propertyRank(key: string): number {
+  const rank = propertyPriority.indexOf(key);
+  return rank === -1 ? propertyPriority.length : rank;
+}
+
+type GraphMode = "topology" | "clips" | "observations";
+
+type GraphAssistantContext = {
+  animalId: string | null;
+  animalName: string | null;
+  enclosureId: string | null;
+  cameraId: string | null;
+  sourcePath: string | null;
+};
+
+const topologyLabels = new Set([
+  "Enclosure",
+  "Animal",
+  "Camera",
+  "WelfareEvent",
+  "DataGap",
+]);
+
+function graphPayloadForMode(payload: GraphPayload, mode: GraphMode): GraphPayload {
+  if (mode !== "topology") return payload;
+  const nodes = payload.nodes.filter((node) => topologyLabels.has(node.label));
+  const visibleNodeIds = new Set(nodes.map((node) => node.id));
+  const counts: Record<string, number> = {};
+  for (const node of nodes) counts[node.label] = (counts[node.label] ?? 0) + 1;
+  return {
+    ...payload,
+    nodes,
+    relationships: payload.relationships.filter(
+      (relationship) =>
+        visibleNodeIds.has(relationship.from) && visibleNodeIds.has(relationship.to),
+    ),
+    counts,
+  };
+}
+
+function nearbyGraphNodes(
+  payload: GraphPayload,
+  nodeId: string,
+  maxDepth = 2,
+): GraphNodeItem[] {
+  const nodesById = new Map(payload.nodes.map((node) => [node.id, node]));
+  let frontier = new Set([nodeId]);
+  const visited = new Set(frontier);
+  for (let depth = 0; depth < maxDepth; depth += 1) {
+    const next = new Set<string>();
+    for (const relationship of payload.relationships) {
+      if (frontier.has(relationship.from) && !visited.has(relationship.to)) {
+        next.add(relationship.to);
+      }
+      if (frontier.has(relationship.to) && !visited.has(relationship.from)) {
+        next.add(relationship.from);
+      }
+    }
+    next.forEach((id) => visited.add(id));
+    frontier = next;
+  }
+  return [...visited]
+    .map((id) => nodesById.get(id))
+    .filter((node): node is GraphNodeItem => Boolean(node));
+}
+
+function uniqueNodeByProperty(
+  nodes: GraphNodeItem[],
+  label: string,
+  property: string,
+): GraphNodeItem | null {
+  const matches = nodes.filter(
+    (node) => node.label === label && node.properties[property],
+  );
+  const values = new Set(matches.map((node) => String(node.properties[property])));
+  return values.size === 1 ? matches[0] : null;
+}
+
+function publishGraphAssistantContext(
+  payload: GraphPayload,
+  selectedNodeId: string | null,
+) {
+  let context: GraphAssistantContext = {
+    animalId: null,
+    animalName: null,
+    enclosureId: null,
+    cameraId: null,
+    sourcePath: null,
+  };
+  if (selectedNodeId) {
+    const selected = payload.nodes.find((node) => node.id === selectedNodeId) ?? null;
+    const direct = nearbyGraphNodes(payload, selectedNodeId, 1);
+    const nearby = nearbyGraphNodes(payload, selectedNodeId);
+    const animal =
+      (selected?.label === "Animal" ? selected : null) ??
+      uniqueNodeByProperty(direct, "Animal", "animal_id") ??
+      uniqueNodeByProperty(nearby, "Animal", "animal_id");
+    const enclosure =
+      (selected?.label === "Enclosure" ? selected : null) ??
+      uniqueNodeByProperty(direct, "Enclosure", "enclosure_id") ??
+      uniqueNodeByProperty(nearby, "Enclosure", "enclosure_id");
+    const camera =
+      (selected?.label === "Camera" ? selected : null) ??
+      uniqueNodeByProperty(direct, "Camera", "camera_id") ??
+      uniqueNodeByProperty(nearby, "Camera", "camera_id");
+    const clip =
+      (selected?.label === "Clip" ? selected : null) ??
+      uniqueNodeByProperty(direct, "Clip", "source_path") ??
+      uniqueNodeByProperty(nearby, "Clip", "source_path");
+    context = {
+      animalId: animal ? String(animal.properties.animal_id) : null,
+      animalName: animal ? String(animal.properties.name ?? animal.caption) : null,
+      enclosureId: enclosure ? String(enclosure.properties.enclosure_id) : null,
+      cameraId: camera ? String(camera.properties.camera_id) : null,
+      sourcePath: clip ? String(clip.properties.source_path) : null,
+    };
+  }
+  window.sessionStorage.setItem(
+    "zoovision:assistant-context",
+    JSON.stringify(context),
+  );
+  window.dispatchEvent(
+    new CustomEvent("zoovision:assistant-context", { detail: context }),
+  );
+}
+
 function GraphCanvas({
   payload,
-  onRefresh,
+  mode,
+  onChangeScope,
+  onChangeMode,
 }: {
   payload: GraphPayload;
-  onRefresh: (scope: string | null) => void;
+  mode: GraphMode;
+  onChangeScope: (scope: string | null) => void;
+  onChangeMode: (mode: GraphMode) => void;
 }) {
   const nvlRef = useRef<NVL | null>(null);
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
@@ -112,10 +260,30 @@ function GraphCanvas({
     };
   }, []);
 
+  useEffect(() => {
+    publishGraphAssistantContext(payload, null);
+  }, [payload]);
+
   const selected = useMemo(
     () => payload.nodes.find((node) => node.id === selectedNodeId) ?? null,
     [payload.nodes, selectedNodeId],
   );
+
+  const selectedRelationship = useMemo(
+    () =>
+      payload.relationships.find(
+        (relationship) => relationship.id === selectedRelationshipId,
+      ) ?? null,
+    [payload.relationships, selectedRelationshipId],
+  );
+
+  const relationshipEndpoints = useMemo(() => {
+    if (!selectedRelationship) return null;
+    return {
+      from: payload.nodes.find((node) => node.id === selectedRelationship.from) ?? null,
+      to: payload.nodes.find((node) => node.id === selectedRelationship.to) ?? null,
+    };
+  }, [payload.nodes, selectedRelationship]);
 
   const nodeChoices = useMemo(
     () =>
@@ -175,7 +343,13 @@ function GraphCanvas({
   }, [fit, payload.scope]);
 
   const detailProperties = selected
-    ? Object.entries(selected.properties).filter(([, value]) => value !== null).slice(0, 9)
+    ? Object.entries(selected.properties)
+        .filter(([, value]) => value !== null)
+        .sort(([left], [right]) => {
+          const rankDifference = propertyRank(left) - propertyRank(right);
+          return rankDifference || left.localeCompare(right);
+        })
+        .slice(0, 10)
     : [];
 
   return (
@@ -186,10 +360,33 @@ function GraphCanvas({
             <i />
             Live Neo4j NVL
           </span>
+          <div className="graph-mode-control" role="group" aria-label="Graph detail">
+            <button
+              type="button"
+              aria-pressed={mode === "topology"}
+              onClick={() => onChangeMode("topology")}
+            >
+              Topology
+            </button>
+            <button
+              type="button"
+              aria-pressed={mode === "clips"}
+              onClick={() => onChangeMode("clips")}
+            >
+              Clips
+            </button>
+            <button
+              type="button"
+              aria-pressed={mode === "observations"}
+              onClick={() => onChangeMode("observations")}
+            >
+              Observations
+            </button>
+          </div>
           <select
             aria-label="Filter graph by enclosure"
             value={payload.scope ?? ""}
-            onChange={(event) => onRefresh(event.target.value || null)}
+            onChange={(event) => onChangeScope(event.target.value || null)}
           >
             <option value="">All enclosures</option>
             {payload.enclosures.map((enclosure) => (
@@ -212,6 +409,7 @@ function GraphCanvas({
               setNodeQuery(query);
               setSelectedNodeId(nodeId);
               setSelectedRelationshipId(null);
+              publishGraphAssistantContext(payload, nodeId);
               if (nodeId) {
                 window.requestAnimationFrame(() => {
                   const graph = nvlRef.current;
@@ -258,16 +456,19 @@ function GraphCanvas({
                     (candidate) => candidate.id === node.id,
                   );
                   setNodeQuery(payloadNode ? nodePickerLabel(payloadNode) : "");
+                  publishGraphAssistantContext(payload, node.id);
                 },
                 onRelationshipClick: (relationship: NvlRelationship) => {
                   setSelectedRelationshipId(relationship.id);
                   setSelectedNodeId(null);
                   setNodeQuery("");
+                  publishGraphAssistantContext(payload, null);
                 },
                 onCanvasClick: () => {
                   setSelectedNodeId(null);
                   setSelectedRelationshipId(null);
                   setNodeQuery("");
+                  publishGraphAssistantContext(payload, null);
                 },
                 onZoom: true,
                 onPan: true,
@@ -327,6 +528,7 @@ function GraphCanvas({
               setSelectedNodeId(null);
               setSelectedRelationshipId(null);
               setNodeQuery("");
+              publishGraphAssistantContext(payload, null);
             }}
           >
             <X size={15} />
@@ -366,6 +568,39 @@ function GraphCanvas({
               <small>{selected.id}</small>
             </section>
           </>
+        ) : selectedRelationship && relationshipEndpoints ? (
+          <>
+            <div className="node-selected-heading">
+              <span>
+                <Database size={17} strokeWidth={1.7} />
+              </span>
+              <div>
+                <strong>{propertyLabel(selectedRelationship.caption)}</strong>
+                <small>Relationship</small>
+              </div>
+            </div>
+            <dl className="node-detail-list">
+              <div>
+                <dt>From</dt>
+                <dd>
+                  {relationshipEndpoints.from?.caption ?? selectedRelationship.from}
+                </dd>
+              </div>
+              <div>
+                <dt>To</dt>
+                <dd>{relationshipEndpoints.to?.caption ?? selectedRelationship.to}</dd>
+              </div>
+              <div>
+                <dt>Type</dt>
+                <dd>{propertyLabel(selectedRelationship.caption)}</dd>
+              </div>
+            </dl>
+            <section className="node-review-section">
+              <span>Graph source</span>
+              <strong>Neo4j video context graph</strong>
+              <small>{selectedRelationship.id}</small>
+            </section>
+          </>
         ) : (
           <div className="graph-loading" role="status">
             <p>No node selected.</p>
@@ -379,31 +614,52 @@ function GraphCanvas({
 export default function WebGLGraph() {
   const [payload, setPayload] = useState<GraphPayload | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [mode, setMode] = useState<GraphMode>("topology");
+  const requestId = useRef(0);
 
-  const load = useCallback((scope: string | null = null) => {
+  const load = useCallback((scope: string | null, nextMode: GraphMode) => {
+    const currentRequest = requestId.current + 1;
+    requestId.current = currentRequest;
     setError(null);
+    setPayload(null);
     api
-      .graph(scope)
-      .then(setPayload)
-      .catch((caught: unknown) =>
-        setError(caught instanceof Error ? caught.message : "Unable to load Neo4j"),
-      );
+      .graph(scope, nextMode === "observations")
+      .then((nextPayload) => {
+        if (requestId.current === currentRequest) {
+          setPayload(graphPayloadForMode(nextPayload, nextMode));
+        }
+      })
+      .catch((caught: unknown) => {
+        if (requestId.current !== currentRequest) return;
+        setError(caught instanceof Error ? caught.message : "Unable to load Neo4j");
+      });
   }, []);
 
   useEffect(() => {
+    const currentRequest = requestId.current + 1;
+    requestId.current = currentRequest;
     api
-      .graph()
-      .then(setPayload)
-      .catch((caught: unknown) =>
-        setError(caught instanceof Error ? caught.message : "Unable to load Neo4j"),
-      );
+      .graph(null, false)
+      .then((nextPayload) => {
+        if (requestId.current === currentRequest) {
+          setPayload(graphPayloadForMode(nextPayload, "topology"));
+        }
+      })
+      .catch((caught: unknown) => {
+        if (requestId.current !== currentRequest) return;
+        setError(caught instanceof Error ? caught.message : "Unable to load Neo4j");
+      });
   }, []);
 
   if (error) {
     return (
       <div className="graph-loading" role="alert">
         <p>{error}</p>
-        <button type="button" className="secondary-button" onClick={() => load()}>
+        <button
+          type="button"
+          className="secondary-button"
+          onClick={() => load(null, mode)}
+        >
           Retry graph connection
         </button>
       </div>
@@ -417,11 +673,25 @@ export default function WebGLGraph() {
       </div>
     );
   }
+  const graphKey = [
+    payload.scope ?? "all",
+    mode,
+    payload.nodes.length,
+    payload.relationships.length,
+    payload.nodes[0]?.id ?? "empty",
+    payload.nodes.at(-1)?.id ?? "empty",
+  ].join(":");
   return (
     <GraphCanvas
-      key={`${payload.scope ?? "all"}:${payload.nodes.map((node) => node.id).join(",")}`}
+      key={graphKey}
       payload={payload}
-      onRefresh={load}
+      mode={mode}
+      onChangeScope={(scope) => load(scope, mode)}
+      onChangeMode={(nextMode) => {
+        if (nextMode === mode) return;
+        setMode(nextMode);
+        load(payload.scope, nextMode);
+      }}
     />
   );
 }

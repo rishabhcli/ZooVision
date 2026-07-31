@@ -292,6 +292,14 @@ def test_context_scopes_to_the_exact_selected_video(tmp_path: Path) -> None:
     assert [event["event_id"] for event in context["events"]] == ["evt-cross-camera"]
     assert [source["observation_id"] for source in context["events"][0]["sources"]] == ["obs-2"]
     assert context["data_gaps"] == []
+    assert context["recording_summary"] == {
+        "source_path": "fixtures/badger-secondary.mp4",
+        "camera_id": "CAM-07B",
+        "observation_count": 1,
+        "event_count": 1,
+        "coverage_gap_count": 0,
+        "indexing_gap_count": 0,
+    }
 
 
 def test_deterministic_answer_quotes_the_rule_and_cites_the_event(tmp_path: Path) -> None:
@@ -388,6 +396,19 @@ def test_recording_inventory_keeps_late_animal_types_inside_context_cap() -> Non
     assert "obs-birds-late" in selected_ids
     assert any(record_id.startswith("obs-squirrel-") for record_id in selected_ids)
 
+    activity_context = retrieve_context(
+        full_context,
+        [
+            ChatMessage(
+                role="user",
+                content="What does this animal usually do across this recording?",
+            )
+        ],
+    )
+    activity_ids = {moment["observation_id"] for moment in activity_context["moments"]}
+    assert activity_context["retrieval"]["recording_inventory"] is True
+    assert "obs-birds-late" in activity_ids
+
 
 def test_unknown_question_admits_no_matching_record_instead_of_dumping_events(
     tmp_path: Path,
@@ -411,6 +432,48 @@ def test_unknown_animal_does_not_turn_summary_language_into_a_record_dump(
     assert "could not find recorded evidence" in reply.answer
     assert "Nox" not in reply.answer
     assert reply.cited_ids == []
+
+
+def test_scoped_unknown_animal_reports_available_record_without_substitution(
+    tmp_path: Path,
+) -> None:
+    store = _temporal_squirrel_store(tmp_path)
+    reply = GroundedChat(store).reply(
+        ChatRequest(
+            messages=[
+                ChatMessage(role="user", content="What does the giraffe do in this recording?")
+            ],
+            enclosure_id="ENC-BACKYARD",
+            animal_id="animal-backyard",
+            camera_id="CAM-BY1",
+            source_path="uploads/backyard-squirrel-staircase.mp4",
+        )
+    )
+
+    assert "2 structured observations" in reply.answer
+    assert "none match" in reply.answer
+    assert reply.cited_ids == []
+
+
+def test_no_match_bypasses_model_instead_of_inviting_a_hallucination(tmp_path: Path) -> None:
+    client = _StubClient(
+        _Parsed(
+            ChatAnswer(
+                answer="A giraffe was visible.",
+                cited_ids=[],
+                uncertainty=[],
+            )
+        )
+    )
+    chat = GroundedChat(_seeded_store(tmp_path), client=client, model="gpt-test")
+
+    reply = chat.reply(
+        ChatRequest(messages=[ChatMessage(role="user", content="What did the giraffe do?")])
+    )
+
+    assert reply.mode == "deterministic"
+    assert "could not find recorded evidence" in reply.answer
+    assert client.responses.calls == []
 
 
 def test_follow_up_uses_the_previous_animal_subject(tmp_path: Path) -> None:
@@ -566,6 +629,111 @@ def test_model_answer_is_returned_when_citations_are_valid(tmp_path: Path) -> No
     # The record must never be retained by the provider.
     assert client.responses.calls[0]["store"] is False
     assert client.responses.calls[0]["reasoning"] == {"effort": "medium"}
+
+
+def test_chat_answer_bounds_verbose_model_output_before_validation() -> None:
+    answer = ChatAnswer.model_validate(
+        {
+            "answer": "recorded evidence " * 200,
+            "cited_ids": [],
+            "uncertainty": [],
+            "moment_ids": [f"obs-{index}" for index in range(8)],
+        }
+    )
+
+    assert len(answer.answer) <= 1800
+    assert answer.answer.endswith("...")
+    assert answer.moment_ids == [f"obs-{index}" for index in range(5)]
+
+
+def test_safety_refusal_does_not_attach_an_unrelated_moment(tmp_path: Path) -> None:
+    client = _StubClient(
+        _Parsed(
+            ChatAnswer(
+                answer="I cannot diagnose Nox or recommend medication.",
+                cited_ids=["animal-nox"],
+                uncertainty=[],
+                moment_ids=["obs-1"],
+            )
+        )
+    )
+    chat = GroundedChat(_seeded_store(tmp_path), client=client, model="gpt-test")
+
+    reply = chat.reply(
+        ChatRequest(messages=[ChatMessage(role="user", content="What medicine should I give Nox?")])
+    )
+
+    assert reply.mode == "deterministic"
+    assert "cannot diagnose" in reply.answer
+    assert "operate an enclosure" in reply.answer
+    assert reply.moments == []
+    assert client.responses.calls == []
+
+
+def test_recording_count_question_uses_authoritative_summary_without_model(
+    tmp_path: Path,
+) -> None:
+    client = _StubClient(RuntimeError("the model should not be called"))
+    chat = GroundedChat(_temporal_squirrel_store(tmp_path), client=client, model="gpt-test")
+
+    reply = chat.reply(
+        ChatRequest(
+            messages=[
+                ChatMessage(
+                    role="user",
+                    content="How many structured observations are in this recording?",
+                )
+            ],
+            source_path="uploads/backyard-squirrel-staircase.mp4",
+            camera_id="CAM-BY1",
+        )
+    )
+
+    assert reply.mode == "deterministic"
+    assert "2 structured observations" in reply.answer
+    assert "0 deterministic rule events" in reply.answer
+    assert client.responses.calls == []
+
+
+def test_generic_wildlife_profile_does_not_prove_an_animal_appears(
+    tmp_path: Path,
+) -> None:
+    full_context = build_context(
+        _temporal_squirrel_store(tmp_path),
+        source_path="uploads/backyard-squirrel-staircase.mp4",
+        camera_id="CAM-BY1",
+    )
+    full_context["animals"][0]["species"] = "Unassigned wildlife"
+    for moment in full_context["moments"]:
+        moment["activity_label"] = "One squirrel foraging"
+        moment["evidence"] = "One squirrel is visible foraging for seeds."
+
+    context = retrieve_context(
+        full_context,
+        [ChatMessage(role="user", content="When do birds appear in this recording?")],
+    )
+
+    assert context["retrieval"]["undocumented_profile_terms"] == ["bird"]
+    assert context["retrieval"]["no_match"] is True
+    assert context["moments"] == []
+
+
+def test_documented_sparrows_satisfy_a_bird_query(tmp_path: Path) -> None:
+    context = retrieve_context(
+        build_context(
+            _temporal_squirrel_store(tmp_path),
+            source_path="uploads/backyard-squirrel-staircase.mp4",
+            camera_id="CAM-BY1",
+        ),
+        [ChatMessage(role="user", content="When do birds appear in this recording?")],
+    )
+
+    assert context["retrieval"]["undocumented_profile_terms"] == []
+    assert context["retrieval"]["no_match"] is False
+    assert {moment["observation_id"] for moment in context["moments"]} == {
+        "obs-near-33m",
+        "obs-after-33m",
+    }
 
 
 def test_chat_reply_humanizes_raw_video_second_references() -> None:
@@ -810,6 +978,29 @@ def test_time_query_model_failure_answers_from_observation_not_embedding_gap(
     assert all(citation.record_id != "gap-embedding-near-33m" for citation in reply.citations)
 
 
+def test_rule_question_reports_recording_observation_count_without_inventing_event(
+    tmp_path: Path,
+) -> None:
+    store = _temporal_squirrel_store(tmp_path)
+    reply = GroundedChat(store).reply(
+        ChatRequest(
+            messages=[
+                ChatMessage(
+                    role="user",
+                    content="Did any deterministic welfare rule fire in this recording?",
+                )
+            ],
+            enclosure_id="ENC-BACKYARD",
+            animal_id="animal-backyard",
+            camera_id="CAM-BY1",
+            source_path="uploads/backyard-squirrel-staircase.mp4",
+        )
+    )
+
+    assert "2 structured observation(s)" in reply.answer
+    assert "0 rule event(s)" in reply.answer
+
+
 def test_instructions_forbid_severity_and_treatment() -> None:
     from zoovision.chat import CHAT_INSTRUCTIONS
 
@@ -823,6 +1014,9 @@ def test_instructions_forbid_severity_and_treatment() -> None:
     assert "never expose a raw database id" in lowered
     assert "semantic vector indexing failed" in lowered
     assert "never use it to override an available structured observation" in lowered
+    assert "leave moment_ids empty" in lowered
+    assert "never say footage or observations are absent" in lowered
+    assert "keep the answer under 900 characters" in lowered
 
 
 def test_summarize_never_invents_a_severity(tmp_path: Path) -> None:

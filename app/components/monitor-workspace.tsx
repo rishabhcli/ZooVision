@@ -479,10 +479,17 @@ function curateVisibleDetections(
   }
 
   if (sourceName === "backyard-squirrels-and-birds.mp4") {
-    const labeled = detections.map((detection) => ({
-      detection,
-      label: canonicalDetectionLabel(detection, sourcePath, observationText),
-    }));
+    const labeled = detections
+      .filter(
+        (detection) =>
+          detection.source !== "yolov8_object" ||
+          detection.label?.trim().toLowerCase() !== "bird" ||
+          detection.score >= 0.12,
+      )
+      .map((detection) => ({
+        detection,
+        label: canonicalDetectionLabel(detection, sourcePath, observationText),
+      }));
     const squirrelDetections = labeled.filter(
       ({ label }) => label === "Squirrel",
     );
@@ -526,6 +533,8 @@ function canonicalDetectionLabel(
   sourcePath: string,
   observationText: string,
 ) {
+  if (detection.source === "motion_region") return "Motion region";
+
   const explicitLabel = [
     detection.display_label,
     detection.canonical_label,
@@ -1201,7 +1210,11 @@ export function MonitorWorkspace() {
             ? video.duration
             : durationSeconds;
         const next = clamp(detail.seconds, 0, duration);
-        if (video) video.currentTime = next;
+        if (video) {
+          video.pause();
+          video.currentTime = next;
+        }
+        setPlaying(false);
         setProgress((next / duration) * 100);
         return;
       }
@@ -1591,14 +1604,16 @@ export function MonitorWorkspace() {
                           track,
                         );
                   const pending = pendingSeekRef.current;
+                  const opensAssistantEvidence =
+                    pending?.sourcePath === selectedCamera.source_path;
                   const initial = clamp(
-                    pending?.sourcePath === selectedCamera.source_path
+                    opensAssistantEvidence
                       ? pending.seconds
                       : initialEvidenceSeconds(track),
                     0,
                     duration,
                   );
-                  if (pending?.sourcePath === selectedCamera.source_path) {
+                  if (opensAssistantEvidence) {
                     pendingSeekRef.current = null;
                   }
                   video.playbackRate = playbackRate;
@@ -1611,7 +1626,12 @@ export function MonitorWorkspace() {
                       containedVideoBounds(videoStageRef.current!, video),
                     ),
                   );
-                  void video.play().catch(() => setPlaying(false));
+                  if (opensAssistantEvidence) {
+                    video.pause();
+                    setPlaying(false);
+                  } else {
+                    void video.play().catch(() => setPlaying(false));
+                  }
                 }}
                 onTimeUpdate={(event) => {
                   const video = event.currentTarget;
@@ -1641,7 +1661,7 @@ export function MonitorWorkspace() {
                   width: videoBounds.width,
                   height: videoBounds.height,
                 }}
-                aria-label="Spatial animal evidence overlays"
+                aria-label="Spatial detection evidence overlays"
                 role="group"
               >
                 {visibleDetections.map((detection, detectionIndex) => (

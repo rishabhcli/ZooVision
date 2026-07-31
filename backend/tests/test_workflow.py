@@ -154,6 +154,13 @@ def test_night_workflow_uses_deterministic_triage_and_graph_write(tmp_path):
     assert store.dump_table("video_chunks")[0]["status"] == "analyzed"
     assert len(graph_writer.bundles) == 1
     assert len(graph_writer.observation_bundles) == 1
+    assert graph_writer.observation_bundles[0].source_chunk.chunk_id == "chunk-workflow-1"
+    assert graph_writer.observation_bundles[0].source_chunk.end_ts == datetime(
+        2026, 7, 30, 2, 15, tzinfo=UTC
+    )
+    assert graph_writer.bundles[0].source_chunks == [
+        graph_writer.observation_bundles[0].source_chunk
+    ]
 
 
 def test_day_workflow_never_triages_or_creates_alert(tmp_path):

@@ -6555,6 +6555,33 @@ body {
   font-size: 14px;
 }
 
+.graph-mode-control {
+  display: inline-flex;
+  min-height: 30px;
+  padding: 2px;
+  background: rgba(12, 15, 19, 0.94);
+  border: 1px solid #343a43;
+  border-radius: 4px;
+}
+
+.graph-mode-control button {
+  min-width: 72px;
+  padding: 0 9px;
+  color: #aeb5be;
+  border-radius: 2px;
+  font-size: 14px;
+}
+
+.graph-mode-control button:hover {
+  color: #f3f5f7;
+  background: #191d22;
+}
+
+.graph-mode-control button[aria-pressed="true"] {
+  color: #12150f;
+  background: var(--workspace-accent);
+}
+
 .neo4j-graph-controls > span {
   display: inline-flex;
   align-items: center;
@@ -9078,8 +9105,18 @@ html[data-density="compact"] .settings-device-row {
 
   .neo4j-graph-controls > span,
   .neo4j-graph-controls select,
-  .neo4j-graph-controls .node-picker {
+  .neo4j-graph-controls .node-picker,
+  .graph-mode-control {
     min-height: 40px;
+  }
+
+  .graph-mode-control {
+    flex: 1 1 auto;
+  }
+
+  .graph-mode-control button {
+    min-width: 0;
+    flex: 1;
   }
 
   .neo4j-graph-controls .node-picker {

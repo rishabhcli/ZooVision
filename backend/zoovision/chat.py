@@ -31,6 +31,9 @@ Ground every statement in the supplied context JSON. Rules you must follow:
   deterministic rule already recorded it; quote it and name the rule.
 - Never diagnose a condition, suggest a cause of illness, or recommend
   medication, treatment, or any enclosure action.
+- For diagnosis, medication, treatment, or enclosure-action requests, refuse
+  that part directly and leave moment_ids empty unless the user also asks to
+  inspect a specific recorded time or activity.
 - If the context does not answer the question, say so plainly and name the
   missing evidence or the recorded data gap. Never invent an observation,
   timestamp, animal, or event.
@@ -52,9 +55,12 @@ Ground every statement in the supplied context JSON. Rules you must follow:
 - Prefer `provider_structured` moments for footage lookup. Use
   `synthetic_scenario` moments only when the user explicitly asks about a demo
   scenario or the deterministic rule event that cites it.
-- For a recording-wide question about which animals appear and what they do,
-  cover every distinct animal type explicitly documented by the supplied
-  moments. Do not infer an animal from the profile alone.
+- For any recording-wide inventory or activity-pattern question, cover every
+  distinct animal type explicitly documented by the supplied moments. Do not
+  infer an animal from the profile alone.
+- The recording_summary contains authoritative counts for the selected source.
+  For rule or event questions, use those counts and never say footage or
+  observations are absent when observation_count is greater than zero.
 - Answer the user's actual question instead of listing every available tag or
   record. Synthesize the smallest useful answer, connect evidence across records,
   and explain why each cited record is relevant.
@@ -70,7 +76,8 @@ Ground every statement in the supplied context JSON. Rules you must follow:
 - Distinguish absence of a recorded event from proof that nothing happened.
 - Use plain text only. Short hyphen-led lines are fine, but do not emit Markdown
   headings, emphasis markers, tables, or code fences.
-- Be brief and factual. Keeper staff read these during a night shift.
+- Be brief and factual. Keep the answer under 900 characters; keeper staff read
+  these during a night shift.
 """.strip()
 
 _TOKEN_PATTERN = re.compile(r"[a-z0-9]+")
@@ -176,6 +183,20 @@ _GENERIC_ANIMAL_PROFILE_TERMS = {
     "unspecified",
     "wildlife",
 }
+_COMMON_ANIMAL_TYPE_TERMS = {
+    "badger",
+    "bear",
+    "bird",
+    "condor",
+    "deer",
+    "elephant",
+    "giraffe",
+    "gorilla",
+    "lion",
+    "rabbit",
+    "raccoon",
+    "squirrel",
+}
 
 
 class ChatMessage(BaseModel):
@@ -202,6 +223,23 @@ class ChatAnswer(BaseModel):
     cited_ids: list[str]
     uncertainty: list[str]
     moment_ids: list[str] = Field(default_factory=list, max_length=5)
+
+    @field_validator("answer", mode="before")
+    @classmethod
+    def bound_answer_length(cls, value: Any) -> Any:
+        if not isinstance(value, str) or len(value) <= 1800:
+            return value
+        boundary = value.rfind(" ", 0, 1797)
+        if boundary < 1400:
+            boundary = 1797
+        return f"{value[:boundary].rstrip()}..."
+
+    @field_validator("moment_ids", mode="before")
+    @classmethod
+    def bound_moment_count(cls, value: Any) -> Any:
+        if isinstance(value, (list, tuple)):
+            return list(value[:5])
+        return value
 
 
 class ChatMoment(BaseModel):
@@ -279,6 +317,7 @@ def build_context(
     observations = {row["observation_id"]: row for row in store.dump_table("observations")}
     chunks = {row["chunk_id"]: row for row in store.dump_table("video_chunks")}
     trimmed_events = []
+    scoped_event_count = 0
     for event in events:
         detail_sources = []
         for source_id in event.get("source_observation_ids", []):
@@ -310,29 +349,29 @@ def build_context(
             and not any(source["camera_id"] == camera_id for source in detail_sources)
         ):
             continue
-        trimmed_events.append(
-            {
-                "event_id": event["event_id"],
-                "animal_id": event["animal_id"],
-                "animal_name": event["animal_name"],
-                "enclosure_id": event["enclosure_id"],
-                "behavior": event["behavior"],
-                "severity": event["severity"],
-                "rule_fired": event["rule_fired"],
-                "action": event["action"],
-                "shift_mode": event["shift_mode"],
-                "start_ts": event["start_ts"],
-                "end_ts": event["end_ts"],
-                "confidence": event["confidence"],
-                "explanation_facts": event["explanation_facts"],
-                "acknowledgement": event.get("ack_state"),
-                "acknowledged_by": event.get("acknowledged_by"),
-                "delivery_status": event.get("delivery_status"),
-                "sources": detail_sources,
-            }
-        )
-        if len(trimmed_events) >= event_limit:
-            break
+        scoped_event_count += 1
+        if len(trimmed_events) < event_limit:
+            trimmed_events.append(
+                {
+                    "event_id": event["event_id"],
+                    "animal_id": event["animal_id"],
+                    "animal_name": event["animal_name"],
+                    "enclosure_id": event["enclosure_id"],
+                    "behavior": event["behavior"],
+                    "severity": event["severity"],
+                    "rule_fired": event["rule_fired"],
+                    "action": event["action"],
+                    "shift_mode": event["shift_mode"],
+                    "start_ts": event["start_ts"],
+                    "end_ts": event["end_ts"],
+                    "confidence": event["confidence"],
+                    "explanation_facts": event["explanation_facts"],
+                    "acknowledgement": event.get("ack_state"),
+                    "acknowledged_by": event.get("acknowledged_by"),
+                    "delivery_status": event.get("delivery_status"),
+                    "sources": detail_sources,
+                }
+            )
 
     scoped_gaps = []
     for gap in gaps:
@@ -368,6 +407,17 @@ def build_context(
             )
         scoped_gaps.append(scoped_gap)
 
+    recording_summary = None
+    if source_path or camera_id:
+        recording_summary = {
+            "source_path": source_path,
+            "camera_id": camera_id,
+            "observation_count": len(moments),
+            "event_count": scoped_event_count,
+            "coverage_gap_count": sum(not _is_embedding_only_gap(gap) for gap in scoped_gaps),
+            "indexing_gap_count": sum(_is_embedding_only_gap(gap) for gap in scoped_gaps),
+        }
+
     return {
         "scope": {
             "enclosure_id": enclosure_id,
@@ -390,6 +440,7 @@ def build_context(
         "events": trimmed_events,
         "moments": moments,
         "data_gaps": scoped_gaps,
+        "recording_summary": recording_summary,
         "policy": {
             "severity_source": "deterministic Python rules only",
             "night_shift_only_paging": True,
@@ -409,6 +460,7 @@ def context_record_count(context: dict[str, Any]) -> int:
         + len(context.get("events", []))
         + len(context.get("moments", []))
         + len(context.get("data_gaps", []))
+        + int(context.get("recording_summary") is not None)
     )
 
 
@@ -438,6 +490,23 @@ class GroundedChat:
         )
         context = retrieve_context(full_context, request.messages)
         count = context_record_count(context)
+        current_question = request.messages[-1].content
+        if (
+            context.get("retrieval", {}).get("no_match")
+            or _asks_for_prohibited_guidance(current_question)
+            or _asks_for_recording_counts(current_question)
+        ):
+            answer = summarize(context, request.messages)
+            return ChatReply(
+                answer=answer.answer,
+                cited_ids=answer.cited_ids,
+                uncertainty=answer.uncertainty,
+                mode="deterministic",
+                model=None,
+                context_record_count=count,
+                citations=_resolve_citations(context, answer.cited_ids),
+                moments=_resolve_moments(context, answer.moment_ids),
+            )
         if self.client is not None and self.model:
             try:
                 answer = self._ask_model(request, context)
@@ -517,6 +586,12 @@ class GroundedChat:
                 "uncertainty": [
                     _humanize_raw_record_ids(item, context) for item in answer.uncertainty
                 ],
+                "moment_ids": (
+                    []
+                    if context.get("retrieval", {}).get("safety_boundary")
+                    and context.get("retrieval", {}).get("requested_media_offset_seconds") is None
+                    else answer.moment_ids
+                ),
             }
         )
         return answer
@@ -602,6 +677,15 @@ def retrieve_context(
         or moment.get("evidence_kind") != "synthetic_scenario"
         or moment["observation_id"] in event_source_ids
     ]
+    undocumented_profile_terms = (
+        set()
+        if requested_offset_seconds is not None
+        else _undocumented_requested_profile_terms(
+            question,
+            animals,
+            candidate_moments,
+        )
+    )
     ranked_moments = _rank_records(
         candidate_moments,
         terms,
@@ -630,7 +714,11 @@ def retrieve_context(
     recording_inventory = bool(
         requested_offset_seconds is None
         and context.get("scope", {}).get("source_path")
-        and _asks_for_recording_inventory(question)
+        and (
+            _asks_for_recording_inventory(question)
+            or _asks_about_activity_pattern(question)
+            or intents["summary"]
+        )
     )
     if recording_inventory:
         relevant_moments = _select_recording_inventory_moments(
@@ -638,6 +726,8 @@ def retrieve_context(
             animals,
             limit=20,
         )
+    if undocumented_profile_terms:
+        relevant_moments = []
     if intents["summary"] and not content_terms and not relevant_moments:
         relevant_moments = [moment for _, moment in ranked_moments[:5]]
     if matched_animal_ids and _asks_about_activity_pattern(question) and not relevant_moments:
@@ -700,7 +790,10 @@ def retrieve_context(
             "matched_animal_ids": sorted(matched_animal_ids),
             "requested_media_offset_seconds": requested_offset_seconds,
             "recording_inventory": recording_inventory,
+            "safety_boundary": _asks_for_prohibited_guidance(question),
+            "undocumented_profile_terms": sorted(undocumented_profile_terms),
             "no_match": unresolved_scoped_subject
+            or bool(undocumented_profile_terms and not selected_events)
             or bool(
                 animals
                 and content_terms
@@ -708,6 +801,10 @@ def retrieve_context(
                 and not selected_events
                 and not relevant_moments
                 and not gaps
+                and not (
+                    intents["events"]
+                    and (context.get("recording_summary") or {}).get("event_count") == 0
+                )
             ),
         },
     }
@@ -727,6 +824,7 @@ def summarize(
     animals = context.get("animals", [])
     gaps = context.get("data_gaps", [])
     moments = context.get("moments", [])
+    recording_summary = context.get("recording_summary")
     asked = question[-1].content.lower() if isinstance(question, list) else question.lower()
     intents = _query_intents(asked)
     requested_offset_seconds = context.get("retrieval", {}).get("requested_media_offset_seconds")
@@ -735,7 +833,52 @@ def summarize(
     selected = [] if activity_question else events
     selected_moments = moments
 
+    if _asks_for_prohibited_guidance(asked):
+        return ChatAnswer(
+            answer=(
+                "I cannot diagnose an animal, prescribe medication or treatment, "
+                "change a recorded severity, or operate an enclosure. I can summarize "
+                "recorded observations and existing deterministic rule results for "
+                "keeper review."
+            ),
+            cited_ids=[],
+            uncertainty=[],
+            moment_ids=[],
+        )
+
+    if recording_summary and _asks_for_recording_counts(asked):
+        answer = (
+            f"The selected recording contains "
+            f"{recording_summary['observation_count']} structured observations and "
+            f"{recording_summary['event_count']} deterministic rule events."
+        )
+        if "observation id" in asked or "raw observation" in asked:
+            answer += (
+                " The assistant presents timestamped evidence instead of dumping "
+                "internal record IDs; ask for an animal, activity, or time range to "
+                "open the relevant moments."
+            )
+        return ChatAnswer(
+            answer=answer,
+            cited_ids=[],
+            uncertainty=[],
+            moment_ids=[],
+        )
+
     if context.get("retrieval", {}).get("no_match"):
+        if recording_summary and recording_summary["observation_count"] > 0:
+            return ChatAnswer(
+                answer=(
+                    f"The selected recording contains "
+                    f"{recording_summary['observation_count']} structured observations, "
+                    "but none match that question. I did not substitute unrelated animals "
+                    "or moments."
+                ),
+                cited_ids=[],
+                uncertainty=[
+                    "No matching record was found; this is not proof that nothing happened."
+                ],
+            )
         return ChatAnswer(
             answer=(
                 "I could not find recorded evidence that answers that question. "
@@ -781,8 +924,16 @@ def summarize(
                 f"Review state: {event.get('acknowledgement') or 'unknown'}."
             )
             cited.append(event["event_id"])
-    elif not intents["gaps"]:
-        lines.append("No deterministic welfare events are recorded for this view.")
+    elif not intents["gaps"] and not intents["summary"]:
+        if recording_summary and intents["events"]:
+            lines.append(
+                "No deterministic welfare events are recorded for this view. "
+                f"The selected recording contains "
+                f"{recording_summary['observation_count']} structured observation(s) and "
+                f"{recording_summary['event_count']} rule event(s)."
+            )
+        else:
+            lines.append("No deterministic welfare events are recorded for this view.")
 
     if selected_moments and not intents["quiet"]:
         activity_counts: dict[str, int] = {}
@@ -873,7 +1024,7 @@ def summarize(
             "Semantic lookup was incomplete; direct structured observations remain available."
         )
 
-    if not cited and not gaps:
+    if not cited and not gaps and not (recording_summary and intents["events"]):
         if temporal_question:
             lines = [
                 "I could not find a structured footage observation near "
@@ -1073,6 +1224,107 @@ def _asks_about_activity_pattern(question: str) -> bool:
     )
 
 
+def _asks_for_prohibited_guidance(question: str) -> bool:
+    lowered = question.lower()
+    return any(
+        phrase in lowered
+        for phrase in (
+            "diagnos",
+            "medicine",
+            "medication",
+            "prescribe",
+            "treatment",
+            "what drug",
+            "administer",
+            "open the enclosure",
+            "open the gate",
+            "act on the enclosure",
+        )
+    )
+
+
+def _asks_for_recording_counts(question: str) -> bool:
+    lowered = question.lower()
+    record_terms = (
+        "observation",
+        "rule event",
+        "welfare event",
+        "recorded event",
+        "observation id",
+        "raw observation",
+    )
+    return any(term in lowered for term in record_terms) and any(
+        phrase in lowered for phrase in ("how many", "count", "number of", "every raw", "all raw")
+    )
+
+
+def _undocumented_requested_profile_terms(
+    question: str,
+    animals: list[dict[str, Any]],
+    moments: list[dict[str, Any]],
+) -> set[str]:
+    """Reject animal types that exist only in a generic wildlife profile.
+
+    Backyard profiles describe the set of animals a camera may cover. They are
+    not evidence that every listed species appears in every recording.
+    """
+    generic_profiles = [
+        animal
+        for animal in animals
+        if _tokens(str(animal.get("name") or ""))
+        & {"backyard", "unassigned", "unspecified", "wildlife"}
+    ]
+    if not generic_profiles:
+        return set()
+
+    profile_terms: set[str] = set()
+    for animal in generic_profiles:
+        profile_terms.update(_normalized_lexemes(str(animal.get("species") or "")))
+    profile_terms -= _GENERIC_ANIMAL_PROFILE_TERMS
+
+    requested = _normalized_lexemes(question) & (profile_terms | _COMMON_ANIMAL_TYPE_TERMS)
+    if not requested:
+        return set()
+
+    documented: set[str] = set()
+    for moment in moments:
+        documented.update(
+            _normalized_lexemes(
+                " ".join(
+                    str(moment.get(field) or "")
+                    for field in ("activity_label", "evidence", "behavior")
+                )
+            )
+        )
+    return requested - documented
+
+
+def _normalized_lexemes(text: str) -> set[str]:
+    normalized: set[str] = set()
+    for token in _tokens(text):
+        normalized.add(token)
+        base = token
+        if len(token) > 3 and token.endswith("ies"):
+            base = f"{token[:-3]}y"
+            normalized.add(base)
+        elif len(token) > 3 and token.endswith("s") and not token.endswith("ss"):
+            base = token[:-1]
+            normalized.add(base)
+        if base in {
+            "blackbird",
+            "cardinal",
+            "crow",
+            "dove",
+            "finch",
+            "jay",
+            "pigeon",
+            "robin",
+            "sparrow",
+        }:
+            normalized.add("bird")
+    return normalized
+
+
 def _asks_for_recording_inventory(question: str) -> bool:
     """Recognize a broad request to inventory animals across one recording."""
     lowered = question.lower()
@@ -1110,9 +1362,7 @@ def _select_recording_inventory_moments(
     if limit <= 0 or not ranked_moments:
         return []
 
-    score_by_id = {
-        moment["observation_id"]: score for score, moment in ranked_moments
-    }
+    score_by_id = {moment["observation_id"]: score for score, moment in ranked_moments}
     chronological = sorted(
         (moment for _, moment in ranked_moments),
         key=lambda moment: (
@@ -1132,8 +1382,7 @@ def _select_recording_inventory_moments(
     descriptive_tokens = {
         moment["observation_id"]: _tokens(
             " ".join(
-                str(moment.get(field) or "")
-                for field in ("activity_label", "evidence", "behavior")
+                str(moment.get(field) or "") for field in ("activity_label", "evidence", "behavior")
             )
         )
         for moment in chronological
