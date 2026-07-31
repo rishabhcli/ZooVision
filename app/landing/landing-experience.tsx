@@ -319,31 +319,42 @@ export function LandingExperience() {
           <span className="hud-recording">DEMO</span>
         </div>
 
-        <motion.button
+        <motion.div
           className="nox-stage"
-          type="button"
-          aria-label="Hear another tip from Nox"
-          onClick={() =>
-            setTipIndex((index) => (index + 1) % noxTips.length)
-          }
           initial={reduceMotion ? false : { opacity: 0, x: 30 }}
           animate={{ opacity: 1, x: 0 }}
           transition={{ delay: 0.3, duration: 0.65 }}
           whileHover={reduceMotion ? undefined : { y: -5 }}
         >
-          <span className="nox-bubble" key={tipIndex}>
+          <button
+            className="nox-bubble"
+            type="button"
+            aria-label="Hear another tip from Nox"
+            key={tipIndex}
+            onClick={() =>
+              setTipIndex((index) => (index + 1) % noxTips.length)
+            }
+          >
             <span className="nox-name">NOX · NIGHT RANGER</span>
             {noxTips[tipIndex]}
             <span className="nox-next">TAP FOR FIELD NOTE {tipIndex + 1}/3</span>
+          </button>
+          <span className="nox-ground-shadow" aria-hidden="true" />
+          <span className="nox-character">
+            <span className="nox-headlamp-signal" aria-hidden="true">
+              <i />
+              <i />
+              <i />
+            </span>
+            <img
+              src="/landing/nox.png"
+              alt="Nox, ZooVision's pixel-art pangolin night ranger"
+              width={1254}
+              height={1254}
+              className="nox-image"
+            />
           </span>
-          <img
-            src="/landing/nox.png"
-            alt="Nox, ZooVision's pixel-art pangolin night ranger"
-            width={1254}
-            height={1254}
-            className="nox-image"
-          />
-        </motion.button>
+        </motion.div>
 
         <button
           type="button"
