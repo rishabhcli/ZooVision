@@ -465,27 +465,9 @@ function activeObservationText(
     .toLowerCase();
 }
 
-const COUNT_WORDS: Record<string, number> = {
-  one: 1,
-  two: 2,
-  three: 3,
-  four: 4,
-  five: 5,
-  six: 6,
-};
-
-function observedBirdCount(observationText: string) {
-  const match = observationText.match(
-    /\b(one|two|three|four|five|six|[1-6])\s+(?:small\s+)?(?:birds?|sparrows?)\b/,
-  );
-  if (!match) return null;
-  return COUNT_WORDS[match[1]] ?? Number(match[1]);
-}
-
 function curateVisibleDetections(
   detections: VideoDetection[],
   sourcePath: string,
-  observationText: string,
 ) {
   const sourceName = sourcePath.split("/").at(-1) ?? sourcePath;
   if (sourceName === "backyard-squirrel-staircase.mp4") {
@@ -506,17 +488,15 @@ function curateVisibleDetections(
         centerY <= 0.9
       );
     });
-    const ordered = plausible.sort((left, right) => {
-      if (left.source !== right.source) {
-        return left.source === "yolov8_object" ? -1 : 1;
-      }
-      return right.score - left.score;
-    });
-    const observedCount = observedBirdCount(observationText);
-    return ordered.slice(
-      0,
-      observedCount ? Math.min(6, observedCount + 1) : 4,
+    const objectDetections = plausible.filter(
+      (detection) => detection.source === "yolov8_object",
     );
+    if (objectDetections.length > 0) {
+      return objectDetections.sort((left, right) =>
+        left.box.x - right.box.x || left.box.y - right.box.y,
+      );
+    }
+    return plausible.sort((left, right) => right.score - left.score);
   }
 
   if (sourceName === "enc05_condor_nest_15m.mp4") {
@@ -1085,7 +1065,6 @@ export function MonitorWorkspace() {
       curateVisibleDetections(
         detectionsAtTime(track.detections, currentSeconds),
         track.source_path,
-        observationText,
       ),
       track.source_path,
       observationText,
