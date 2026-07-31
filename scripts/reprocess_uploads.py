@@ -22,6 +22,14 @@ def _arguments() -> argparse.Namespace:
         required=True,
         help="Uploaded source name, without the uploads/ prefix. Repeat as needed.",
     )
+    parser.add_argument(
+        "--segment-seconds",
+        type=int,
+        default=120,
+        choices=range(10, 901),
+        metavar="10-900",
+        help="Full-file analysis segment length. Defaults to 120 seconds.",
+    )
     return parser.parse_args()
 
 
@@ -79,14 +87,6 @@ def main() -> None:
         first_start = datetime.fromisoformat(first["start_ts"]) - timedelta(
             seconds=float(first["source_offset_seconds"])
         )
-        durations = [
-            (
-                datetime.fromisoformat(row["end_ts"])
-                - datetime.fromisoformat(row["start_ts"])
-            ).total_seconds()
-            for row in source_chunks[:-1] or source_chunks
-        ]
-        segment_seconds = max(10, min(900, round(sum(durations) / len(durations))))
         shift_mode = (
             ShiftMode.DAY
             if prior_job.get("segments")
@@ -102,7 +102,7 @@ def main() -> None:
             camera_id=first["camera_id"],
             start_ts=first_start,
             shift_mode=shift_mode,
-            segment_seconds=segment_seconds,
+            segment_seconds=arguments.segment_seconds,
             max_segments=240,
         )
         print(
@@ -110,7 +110,7 @@ def main() -> None:
                 {
                     "source": source_name,
                     "status": "processing",
-                    "segment_seconds": segment_seconds,
+                    "segment_seconds": arguments.segment_seconds,
                 }
             ),
             flush=True,
