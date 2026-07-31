@@ -11,6 +11,8 @@ from zoovision.domain import (
     ShiftMode,
 )
 from zoovision.graph import (
+    CLEAR_CHUNK_EVENTS_CYPHER,
+    CLEAR_CHUNK_OBSERVATIONS_CYPHER,
     EVENT_CARDINALITY_CYPHER,
     READ_ENCLOSURES_CYPHER,
     READ_GRAPH_CYPHER,
@@ -173,6 +175,11 @@ def test_graph_writer_indexes_observations_without_an_event():
     )
 
     assert driver.transaction.query == WRITE_OBSERVATIONS_CYPHER
+    assert [query for query, _ in driver.transaction.queries[:2]] == [
+        CLEAR_CHUNK_EVENTS_CYPHER,
+        CLEAR_CHUNK_OBSERVATIONS_CYPHER,
+    ]
+    assert driver.transaction.queries[0][1] == {"chunk_id": "chunk-1"}
     assert "MERGE (observation:Observation" in WRITE_OBSERVATIONS_CYPHER
     assert "MERGE (animal)-[:HAS_OBSERVATION]->(observation)" in WRITE_OBSERVATIONS_CYPHER
     assert driver.transaction.parameters["observations"][0]["observation_id"] == "obs-1"

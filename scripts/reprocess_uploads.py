@@ -6,6 +6,7 @@ import shutil
 from datetime import datetime, timedelta
 
 from zoovision.domain import ShiftMode
+from zoovision.graph import Neo4jGraphWriter
 from zoovision.ingest import IngestRequest, VideoIngestService
 from zoovision.providers import TwelveLabsAnalyzer
 from zoovision.settings import get_settings
@@ -38,9 +39,18 @@ def main() -> None:
     settings = get_settings()
     if not settings.twelvelabs_api_key:
         raise SystemExit("TWELVELABS_API_KEY is not configured")
+    if not (settings.neo4j_uri and settings.neo4j_username and settings.neo4j_password):
+        raise SystemExit("Neo4j writer credentials are not configured")
 
     store = SQLiteStore(settings.database_path)
     store.initialize()
+    graph_writer = Neo4jGraphWriter(
+        settings.neo4j_uri,
+        settings.neo4j_username,
+        settings.neo4j_password,
+    )
+    graph_writer.verify_connectivity()
+    graph_writer.initialize_schema()
     chunks = store.dump_table("video_chunks")
     animals = {row["animal_id"]: row for row in store.dump_table("animals")}
     jobs = store.recent_ingest_jobs(200)
@@ -61,6 +71,7 @@ def main() -> None:
             settings.twelvelabs_api_key,
             model=settings.twelvelabs_model,
         ),
+        graph_writer=graph_writer,
         fixture_mode=settings.fixture_mode,
     )
 

@@ -95,6 +95,17 @@ MERGE (observation)-[:OBSERVED_IN]->(enclosure)
 MERGE (animal)-[:HAS_OBSERVATION]->(observation)
 """
 
+CLEAR_CHUNK_EVENTS_CYPHER = """
+MATCH (observation:Observation {chunk_id: $chunk_id})-[:SOURCE_FOR]->(event:WelfareEvent)
+WITH DISTINCT event
+DETACH DELETE event
+"""
+
+CLEAR_CHUNK_OBSERVATIONS_CYPHER = """
+MATCH (observation:Observation {chunk_id: $chunk_id})
+DETACH DELETE observation
+"""
+
 WRITE_CLIP_EMBEDDING_CYPHER = """
 MATCH (clip:Clip {clip_id: $clip_id})
 SET clip.embedding = $embedding,
@@ -303,6 +314,9 @@ class Neo4jGraphWriter:
 
     def write_observations(self, bundle: GraphObservationBundle) -> None:
         def write(tx: Any) -> None:
+            chunk_id = bundle.observations[0].chunk_id
+            tx.run(CLEAR_CHUNK_EVENTS_CYPHER, chunk_id=chunk_id).consume()
+            tx.run(CLEAR_CHUNK_OBSERVATIONS_CYPHER, chunk_id=chunk_id).consume()
             tx.run(WRITE_OBSERVATIONS_CYPHER, **bundle.parameters()).consume()
 
         with self.driver.session() as session:
