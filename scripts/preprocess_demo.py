@@ -104,9 +104,7 @@ def main() -> None:
     total_observations = 0
     total_events = 0
     total_gaps = 0
-    chunk_statuses = {
-        row["chunk_id"]: row["status"] for row in store.dump_table("video_chunks")
-    }
+    chunk_statuses = {row["chunk_id"]: row["status"] for row in store.dump_table("video_chunks")}
 
     for item in selected:
         source_path = item["source_path"]
@@ -145,26 +143,26 @@ def main() -> None:
                     continue
                 analyzable = _provider_ready(piece)
                 request = SegmentWorkflowInput(
-                        chunk=VideoChunkContext(
-                            chunk_id=chunk_id,
-                            animal_id=item["animal_id"],
-                            enclosure_id=item["enclosure_id"],
-                            start_ts=start_ts + timedelta(seconds=offset),
-                            end_ts=start_ts + timedelta(seconds=offset + duration),
-                        ),
-                        animal_name=item["animal_name"],
-                        species=item["species"],
-                        camera_id=item["camera_id"],
-                        source_path=source_path,
-                        content_sha256=content_sha256,
-                        source_offset_seconds=offset,
-                        local_video_path=analyzable,
-                        shift_mode=ShiftMode.NIGHT,
-                        baseline_state=BaselineState.SHADOW,
-                        fixture_mode=True,
-                        delivery_enabled=False,
-                        webhook_configured=False,
-                    )
+                    chunk=VideoChunkContext(
+                        chunk_id=chunk_id,
+                        animal_id=item["animal_id"],
+                        enclosure_id=item["enclosure_id"],
+                        start_ts=start_ts + timedelta(seconds=offset),
+                        end_ts=start_ts + timedelta(seconds=offset + duration),
+                    ),
+                    animal_name=item["animal_name"],
+                    species=item["species"],
+                    camera_id=item["camera_id"],
+                    source_path=source_path,
+                    content_sha256=content_sha256,
+                    source_offset_seconds=offset,
+                    local_video_path=analyzable,
+                    shift_mode=ShiftMode.NIGHT,
+                    baseline_state=BaselineState.SHADOW,
+                    fixture_mode=True,
+                    delivery_enabled=False,
+                    webhook_configured=False,
+                )
                 result = SegmentWorkflow(analyzer=analyzer, store=store).run(request)
                 if result.data_gap_id is not None:
                     result = SegmentWorkflow(analyzer=analyzer, store=store).run(request)

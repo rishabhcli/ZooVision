@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import csv
 import hmac
+import io
 import shutil
 from datetime import UTC, datetime
 from functools import lru_cache
@@ -9,9 +11,9 @@ from typing import Literal
 from uuid import UUID
 
 import boto3
-from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from starlette.middleware.gzip import GZipMiddleware
@@ -45,6 +47,7 @@ UPLOAD_NAME_FORM = Form(..., min_length=1, max_length=255)
 UPLOAD_CHUNK_INDEX_FORM = Form(..., ge=0, lt=MAX_UPLOAD_CHUNKS)
 UPLOAD_CHUNK_COUNT_FORM = Form(..., ge=1, le=MAX_UPLOAD_CHUNKS)
 UPLOAD_TOTAL_BYTES_FORM = Form(..., ge=1, le=MAX_UPLOAD_BYTES)
+MAX_OPERATOR_IDENTITY_LENGTH = 160
 
 
 def _sqlite_revision(database_path: Path) -> tuple[int, int, int, int]:
@@ -64,6 +67,7 @@ def _source_analysis_metadata(source: dict, job: dict | None) -> dict:
     """Describe whether a visible source is still partial or fully analyzed."""
     if job is not None:
         segments = job.get("segments") or []
+        analyzed_segments = sum(1 for segment in segments if not segment.get("data_gap_id"))
         analyzed_duration = sum(
             float(segment.get("duration_seconds") or 0)
             for segment in segments
@@ -95,6 +99,7 @@ def _source_analysis_metadata(source: dict, job: dict | None) -> dict:
             "analysis_status": analysis_status,
             "is_fully_analyzed": analysis_status == "complete",
             "latest_job_status": job_status,
+            "analyzed_chunk_count": analyzed_segments,
             "completed_segments": completed_segments,
             "total_segments": total_segments,
             "data_gap_count": data_gap_count,
@@ -107,24 +112,38 @@ def _source_analysis_metadata(source: dict, job: dict | None) -> dict:
     analyzed_chunks = int(source.get("analyzed_chunk_count") or 0)
     gap_chunks = int(source.get("gap_chunk_count") or 0)
     analyzing_chunks = int(source.get("analyzing_chunk_count") or 0)
-    if analyzing_chunks:
-        analysis_status = "analyzing"
-    elif chunk_count > 0 and analyzed_chunks == chunk_count and gap_chunks == 0:
-        analysis_status = "complete"
-    else:
-        analysis_status = "incomplete"
     analyzed_duration = max(0.0, float(source.get("stored_analyzed_duration_seconds") or 0))
     source_duration = max(0.0, float(source.get("stored_source_duration_seconds") or 0))
     coverage_percent = (
         min(100.0, analyzed_duration / source_duration * 100) if source_duration > 0 else 0.0
     )
+    if analyzing_chunks:
+        analysis_status = "analyzing"
+    elif (
+        chunk_count > 0
+        and gap_chunks == 0
+        and source_duration > 0
+        and analyzed_duration / source_duration >= 0.99
+    ):
+        analysis_status = "complete"
+    else:
+        analysis_status = "incomplete"
+    reported_completed_segments = analyzed_chunks + gap_chunks
+    reported_total_segments = chunk_count
+    if analysis_status == "complete":
+        # A legacy annotation chunk can overlap a fully analyzed provider
+        # segment. Report the analyzed set rather than counting that duplicate
+        # as unfinished coverage.
+        reported_completed_segments = analyzed_chunks
+        reported_total_segments = analyzed_chunks
     reported_coverage = 100.0 if analysis_status == "complete" else coverage_percent
     return {
         "analysis_status": analysis_status,
         "is_fully_analyzed": analysis_status == "complete",
         "latest_job_status": None,
-        "completed_segments": analyzed_chunks + gap_chunks,
-        "total_segments": chunk_count,
+        "analyzed_chunk_count": analyzed_chunks,
+        "completed_segments": reported_completed_segments,
+        "total_segments": reported_total_segments,
         "data_gap_count": gap_chunks,
         "analyzed_duration_seconds": round(analyzed_duration, 3),
         "probe_duration_seconds": round(source_duration, 3),
@@ -152,6 +171,11 @@ class BaselineRequest(BaseModel):
     state: Literal["shadow", "active", "paused"]
 
 
+class ReportCreateRequest(BaseModel):
+    shift_label: str = Field(min_length=1, max_length=120)
+    generated_by: str = Field(default="ZooVision operator", min_length=1, max_length=80)
+
+
 class IngestStartRequest(BaseModel):
     source_name: str = Field(min_length=1, max_length=255)
     animal_id: str = Field(min_length=1, max_length=120)
@@ -165,6 +189,83 @@ class IngestStartRequest(BaseModel):
     max_segments: int = Field(default=240, ge=1, le=240)
 
 
+def _review_csv(events: list[dict]) -> str:
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(
+        [
+            "event_id",
+            "animal",
+            "species",
+            "enclosure",
+            "behavior",
+            "severity",
+            "rule_fired",
+            "review_state",
+            "ack_state",
+            "action",
+            "start_ts",
+            "end_ts",
+            "camera_id",
+            "outcome_count",
+        ]
+    )
+    for event in events:
+        writer.writerow(
+            [
+                event["event_id"],
+                event["animal_name"],
+                event["species"],
+                event["enclosure_id"],
+                event["behavior"],
+                event["severity"],
+                event["rule_fired"],
+                event["review_state"],
+                event.get("ack_state") or "",
+                event.get("action") or "",
+                event["start_ts"],
+                event["end_ts"],
+                event.get("camera_id") or "",
+                event.get("outcome_count", 0),
+            ]
+        )
+    return output.getvalue()
+
+
+def _report_csv(report: dict) -> str:
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(["animal_id", "animal", "species", "enclosure", "events", "data_gaps"])
+    gap_counts: dict[str, int] = {}
+    for gap in report.get("data_gaps", []):
+        gap_counts[gap["enclosure_id"]] = gap_counts.get(gap["enclosure_id"], 0) + 1
+    for animal in report.get("animals", []):
+        writer.writerow(
+            [
+                animal["animal_id"],
+                animal["name"],
+                animal["species"],
+                animal["enclosure_id"],
+                len(animal.get("events", [])),
+                gap_counts.get(animal["enclosure_id"], 0),
+            ]
+        )
+    return output.getvalue()
+
+
+def _trusted_operator_identity(value: str | None) -> str | None:
+    candidate = (value or "").strip()
+    if not candidate or len(candidate) > MAX_OPERATOR_IDENTITY_LENGTH:
+        return None
+    if any(ord(character) < 32 or ord(character) == 127 for character in candidate):
+        return None
+    return candidate
+
+
+def _operator_name(request: Request, fallback: str) -> str:
+    return str(getattr(request.state, "operator_identity", None) or fallback)
+
+
 @lru_cache
 def _services() -> tuple[Settings, SQLiteStore]:
     settings = get_settings()
@@ -176,10 +277,11 @@ def _services() -> tuple[Settings, SQLiteStore]:
 
 
 def build_chat_service(settings: Settings, store: SQLiteStore) -> GroundedChat:
-    """Wire the assistant to OpenAI when configured, or to the grounded summarizer.
+    """Wire the assistant to OpenAI with an explicit environment boundary.
 
-    The console always has a working chat: without a key, answers are assembled
-    from the shift record itself rather than failing.
+    Development and fixture mode may use the deterministic summarizer when a
+    provider is absent or unavailable. Production must fail closed so a local
+    fallback is never presented as a live provider answer.
     """
     if not settings.openai_api_key:
         if settings.production_mode:
@@ -192,7 +294,7 @@ def build_chat_service(settings: Settings, store: SQLiteStore) -> GroundedChat:
             store,
             client=OpenAI(api_key=settings.openai_api_key),
             model=settings.openai_merge_model,
-            allow_fallback=True,
+            allow_fallback=not settings.production_mode,
         )
     except Exception:  # noqa: BLE001 - a missing client must not break startup
         if settings.production_mode:
@@ -211,12 +313,16 @@ def build_ingest_service(
     escalation_scheduler: EventBridgeEscalationScheduler | None = None,
 ) -> VideoIngestService:
     def analyzer_factory():
-        from .providers import TwelveLabsAnalyzer
+        if settings.twelvelabs_api_key:
+            from .providers import TwelveLabsAnalyzer
 
-        return TwelveLabsAnalyzer(
-            settings.twelvelabs_api_key,
-            model=settings.twelvelabs_model,
-        )
+            return TwelveLabsAnalyzer(
+                settings.twelvelabs_api_key,
+                model=settings.twelvelabs_model,
+            )
+        from .providers import LocalMotionAnalyzer
+
+        return LocalMotionAnalyzer()
 
     def fallback_analyzer_factory():
         from .providers import OpenAIFrameAnalyzer
@@ -229,7 +335,9 @@ def build_ingest_service(
     return VideoIngestService(
         store=store,
         raw_root=raw_root,
-        analyzer_factory=analyzer_factory if settings.twelvelabs_api_key else None,
+        analyzer_factory=(
+            analyzer_factory if settings.twelvelabs_api_key or settings.fixture_mode else None
+        ),
         fallback_analyzer_factory=(fallback_analyzer_factory if settings.openai_api_key else None),
         detector_config=settings.detector_config,
         fixture_mode=settings.fixture_mode,
@@ -241,6 +349,7 @@ def build_ingest_service(
         evidence_enricher=evidence_enricher,
         escalation_scheduler=escalation_scheduler,
         alert_ack_minutes=settings.alert_ack_minutes,
+        analyzer_label=("twelvelabs+yolo" if settings.twelvelabs_api_key else "local-motion-demo"),
     )
 
 
@@ -361,7 +470,7 @@ def create_app(
     )
 
     @app.middleware("http")
-    async def require_trusted_proxy(request, call_next):
+    async def require_trusted_proxy(request: Request, call_next):
         protected = request.url.path.startswith(("/api/", "/media/"))
         health_check = request.url.path == "/api/health"
         if protected and not health_check and settings.proxy_shared_secret:
@@ -372,6 +481,23 @@ def create_app(
                     content={"detail": "trusted frontend proxy required"},
                     headers={"cache-control": "no-store"},
                 )
+        if settings.operator_identity_required and protected and not health_check:
+            operator_identity = _trusted_operator_identity(
+                request.headers.get("x-zoovision-operator")
+            )
+            if operator_identity is None:
+                return JSONResponse(
+                    status_code=401,
+                    content={"detail": "operator identity required"},
+                    headers={"cache-control": "no-store"},
+                )
+            request.state.operator_identity = operator_identity
+        elif settings.proxy_shared_secret:
+            operator_identity = _trusted_operator_identity(
+                request.headers.get("x-zoovision-operator")
+            )
+            if operator_identity is not None:
+                request.state.operator_identity = operator_identity
         return await call_next(request)
 
     raw_root = settings.storage_root / "raw"
@@ -424,6 +550,10 @@ def create_app(
                 configured=bool(settings.twelvelabs_api_key),
                 enabled=not settings.fixture_mode,
             ),
+            "local_motion": _integration_state(
+                configured=settings.fixture_mode and not bool(settings.twelvelabs_api_key),
+                enabled=settings.fixture_mode and not bool(settings.twelvelabs_api_key),
+            ),
             "yolo": _integration_state(
                 configured=bool(settings.yolo_model),
                 enabled=settings.yolo_enabled,
@@ -463,6 +593,10 @@ def create_app(
                 and provider_states["slack"]["status"] == "enabled_unverified"
             ),
             "providers": provider_states,
+            "operator_identity": {
+                "required": settings.operator_identity_required,
+                "status": "required" if settings.operator_identity_required else "disabled",
+            },
             "spatial_review": {
                 "configured_sample_fps": settings.yolo_sample_fps,
                 "frame_max_edge": settings.detection_frame_max_edge,
@@ -505,6 +639,52 @@ def create_app(
                 detections.extend(store.detections_for_chunk(source["chunk_id"]))
         result["detections"] = detections
         return result
+
+    @app.get("/api/review/events")
+    def review_events(
+        query: str | None = Query(default=None, max_length=120),
+        severity: Literal["all", "CRITICAL", "HIGH", "MODERATE", "LOW"] = Query(default="all"),
+        review_state: Literal["all", "unreviewed", "confirmed", "dismissed"] = Query(default="all"),
+        animal_id: str | None = Query(default=None, max_length=120),
+        limit: int = Query(default=100, ge=1, le=200),
+    ) -> dict:
+        events = store.search_events(
+            query=query,
+            severity=severity,
+            review_state=review_state,
+            animal_id=animal_id,
+            limit=limit,
+        )
+        return {
+            "events": events,
+            "counts": store.review_counts(),
+            "filters": {
+                "query": query or "",
+                "severity": severity,
+                "review_state": review_state,
+                "animal_id": animal_id or "all",
+            },
+        }
+
+    @app.get("/api/review/events.csv")
+    def review_events_csv(
+        query: str | None = Query(default=None, max_length=120),
+        severity: Literal["all", "CRITICAL", "HIGH", "MODERATE", "LOW"] = Query(default="all"),
+        review_state: Literal["all", "unreviewed", "confirmed", "dismissed"] = Query(default="all"),
+        animal_id: str | None = Query(default=None, max_length=120),
+    ) -> Response:
+        events = store.search_events(
+            query=query,
+            severity=severity,
+            review_state=review_state,
+            animal_id=animal_id,
+            limit=200,
+        )
+        return Response(
+            content=_review_csv(events),
+            media_type="text/csv",
+            headers={"Content-Disposition": 'attachment; filename="zoovision-review.csv"'},
+        )
 
     @app.get("/api/graph", response_model=GraphView)
     def graph(
@@ -674,10 +854,10 @@ def create_app(
             ingest_service.resolve_source(payload.source_name)
         except FileNotFoundError as error:
             raise HTTPException(status_code=404, detail=str(error)) from error
-        if not settings.twelvelabs_api_key:
+        if not settings.twelvelabs_api_key and not settings.fixture_mode:
             raise HTTPException(
                 status_code=503,
-                detail="TwelveLabs is required for video ingestion but is not configured",
+                detail="A configured video analyzer is required for video ingestion",
             )
         start_ts = payload.start_ts or datetime.now(settings.timezone)
         if start_ts.tzinfo is None:
@@ -717,10 +897,10 @@ def create_app(
         job_id: str,
         payload: IngestRequest | None = None,
     ) -> IngestJob:
-        if not settings.twelvelabs_api_key:
+        if not settings.twelvelabs_api_key and not settings.fixture_mode:
             raise HTTPException(
                 status_code=503,
-                detail="TwelveLabs is required for provider gap retries",
+                detail="A configured video analyzer is required for provider gap retries",
             )
         try:
             return ingest_service.start_gap_retry(job_id, payload)
@@ -730,11 +910,11 @@ def create_app(
             raise HTTPException(status_code=409, detail=str(error)) from error
 
     @app.post("/api/alerts/{alert_id}/ack")
-    def acknowledge(alert_id: str, payload: AckRequest) -> dict:
+    def acknowledge(request: Request, alert_id: str, payload: AckRequest) -> dict:
         schedule_name = store.alert_schedule_name(alert_id)
         changed = store.acknowledge_alert(
             alert_id,
-            keeper=payload.keeper,
+            keeper=_operator_name(request, payload.keeper),
             acknowledged_at=datetime.now(UTC).isoformat(),
         )
         if not changed:
@@ -753,15 +933,16 @@ def create_app(
         }
 
     @app.post("/api/events/{event_id}/outcomes")
-    def outcome(event_id: str, payload: OutcomeRequest) -> dict:
+    def outcome(request: Request, event_id: str, payload: OutcomeRequest) -> dict:
         if store.event_detail(event_id) is None:
             raise HTTPException(status_code=404, detail="event not found")
         now = datetime.now(UTC)
+        operator_name = _operator_name(request, payload.entered_by)
         outcome_id = stable_id(
             "out",
             event_id,
             payload.resolution,
-            payload.entered_by,
+            operator_name,
             now.isoformat(),
         )
         store.record_outcome(
@@ -769,17 +950,19 @@ def create_app(
             event_id=event_id,
             resolution=payload.resolution,
             note=payload.note,
-            entered_by=payload.entered_by,
+            entered_by=operator_name,
             created_at=now.isoformat(),
         )
         return {"status": "recorded", "outcome_id": outcome_id}
 
     @app.post("/api/animals/{animal_id}/baseline")
-    def update_baseline(animal_id: str, payload: BaselineRequest) -> dict:
+    def update_baseline(request: Request, animal_id: str, payload: BaselineRequest) -> dict:
         animals = {row["animal_id"]: row for row in store.dump_table("animals")}
         animal = animals.get(animal_id)
         if animal is None:
             raise HTTPException(status_code=404, detail="animal not found")
+        if animal["baseline_state"] == payload.state:
+            raise HTTPException(status_code=409, detail="baseline is already in that state")
         profiles = [
             row for row in store.dump_table("baseline_profiles") if row["animal_id"] == animal_id
         ]
@@ -794,8 +977,44 @@ def create_app(
                     status_code=409,
                     detail="at least seven daytime shifts are required",
                 )
-        store.set_baseline_state(animal_id, payload.state)
-        return {"animal_id": animal_id, "baseline_state": payload.state}
+        operator_name = _operator_name(request, "ZooVision operator")
+        changed_at = datetime.now(UTC).isoformat()
+        change_id = stable_id(
+            "baseline",
+            animal_id,
+            animal["baseline_state"],
+            payload.state,
+            operator_name,
+            changed_at,
+        )
+        changed = store.set_baseline_state(
+            animal_id,
+            payload.state,
+            change_id=change_id,
+            changed_by=operator_name,
+            changed_at=changed_at,
+        )
+        if not changed:
+            raise HTTPException(status_code=404, detail="animal not found")
+        return {
+            "animal_id": animal_id,
+            "baseline_state": payload.state,
+            "change_id": change_id,
+            "changed_by": operator_name,
+            "changed_at": changed_at,
+        }
+
+    @app.get("/api/animals/{animal_id}/baseline/history")
+    def baseline_history(
+        animal_id: str,
+        limit: int = Query(default=20, ge=1, le=100),
+    ) -> dict:
+        if not any(row["animal_id"] == animal_id for row in store.dump_table("animals")):
+            raise HTTPException(status_code=404, detail="animal not found")
+        return {
+            "animal_id": animal_id,
+            "changes": store.baseline_state_changes(animal_id, limit),
+        }
 
     @app.get("/api/morning-report")
     def morning_report() -> dict:
@@ -832,6 +1051,54 @@ def create_app(
             "narrative": narrative.model_dump(mode="json"),
             "narrative_mode": "strands_openai",
         }
+
+    @app.get("/api/reports")
+    def reports(limit: int = Query(default=20, ge=1, le=100)) -> dict:
+        return {"reports": store.recent_report_runs(limit)}
+
+    @app.post("/api/reports")
+    def create_report(request: Request, payload: ReportCreateRequest) -> dict:
+        now = datetime.now(UTC)
+        report = store.morning_report()
+        operator_name = _operator_name(request, payload.generated_by)
+        report_id = stable_id(
+            "report",
+            payload.shift_label,
+            operator_name,
+            now.isoformat(),
+        )
+        store.save_report_run(
+            report_id=report_id,
+            shift_label=payload.shift_label,
+            generated_by=operator_name,
+            created_at=now.isoformat(),
+            payload=report,
+        )
+        return {
+            "report_id": report_id,
+            "shift_label": payload.shift_label,
+            "generated_by": operator_name,
+            "created_at": now.isoformat(),
+            "report": report,
+        }
+
+    @app.get("/api/reports/{report_id}")
+    def report_detail(report_id: str) -> dict:
+        report = store.report_run(report_id)
+        if report is None:
+            raise HTTPException(status_code=404, detail="report not found")
+        return report
+
+    @app.get("/api/reports/{report_id}/export.csv")
+    def report_csv(report_id: str) -> Response:
+        report = store.report_run(report_id)
+        if report is None:
+            raise HTTPException(status_code=404, detail="report not found")
+        return Response(
+            content=_report_csv(report["report"]),
+            media_type="text/csv",
+            headers={"Content-Disposition": f'attachment; filename="{report_id}.csv"'},
+        )
 
     @app.post("/api/demo/reset")
     def reset_demo() -> dict:

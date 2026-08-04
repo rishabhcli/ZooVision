@@ -28,6 +28,10 @@ The repository now contains a working fixture-mode product:
 - a keeper workspace with an interactive knowledge graph, a playable camera
   feed with provider observations and an event timeline, an analysis pane, an
   ingest console, and a grounded chat rail;
+- a review inbox for searching routed events, acknowledging alerts, recording
+  keeper outcomes, and exporting the evidence queue;
+- persisted morning-report snapshots that include every monitored animal,
+  quiet coverage, routed events, and explicit camera or provider gaps;
 - checksum-pinned, freely licensed fixed-camera video fixtures;
 - schema-constrained TwelveLabs and OpenAI adapters behind opt-in gates;
 - explicit Slack delivery gates and configurable retention enforcement;
@@ -65,6 +69,8 @@ npm run dev:all
 
 This starts the API and imported monitoring workspace together, selects free
 ports automatically, and prints the URL to open. Press Ctrl+C once to stop both.
+The launcher forces development fixture mode and the local-motion adapter, so an
+ignored production `.env` cannot silently change the local workflow.
 
 To run the two processes separately:
 
@@ -132,11 +138,23 @@ apart. That interpolation improves display continuity; it is not a continuous
 localization claim or behavior ground truth. TwelveLabs observations remain a
 separate temporal evidence source.
 
-Pegasus 1.5 is required for uploaded-video analysis. ZooVision does not claim
+Production uploaded-video analysis uses Pegasus 1.5. ZooVision does not claim
 that Pegasus returns spatial object tracks or bounding boxes: the console shows
 its temporal observations on the recording timeline and requires keeper
 verification. A failed or incomplete provider call is recorded as a `DataGap`;
 it is never replaced with a motion-only behavioral conclusion.
+
+Development and fixture mode can exercise the complete upload, persistence,
+review, and report workflow without an external video-provider key. In that
+mode, the explicit `local-motion-demo` adapter samples real frames and records
+mean pixel change as `Measured Motion` evidence. It does not assign semantic
+behavior, species, audio meaning, severity, or a welfare rule. The UI labels
+this evidence as local and keeper-review-only. Production startup and ingest
+remain fail-closed when TwelveLabs is not configured.
+
+The `/review` route is the operator queue for routed events and outcomes. The
+`/reports` route saves a point-in-time morning brief and exports it as CSV.
+Both records are persisted in SQLite and remain available after a page reload.
 
 ## Analyzing any video
 
@@ -152,8 +170,8 @@ curl -X POST http://127.0.0.1:8000/api/ingest/jobs \
 
 The job probes the container with ffprobe, splits it with ffmpeg's segment
 muxer, re-probes each piece so wall-clock placement uses true durations rather
-than the nominal segment length, asks TwelveLabs for structured behavior
-semantics, and routes
+than the nominal segment length, asks the configured video analyzer for
+structured observations, and routes
 every segment through the same
 deterministic triage as fixture footage. Segments larger than the provider's
 base64 ceiling are transcoded to a reduced proxy so coverage is analyzed instead
@@ -343,7 +361,15 @@ enablement, and an active human-reviewed baseline.
 The production UI runs as a public Sites worker and proxies `/api` and `/media`
 to the Python service. `ZOOVISION_PROXY_SHARED_SECRET` is removed from incoming
 requests, injected by the worker, and required by FastAPI for every API and
-media request except the minimal health check.
+media request except the minimal health check. Production also requires
+`ZOOVISION_OPERATOR_IDENTITY_REQUIRED=true`: protect the staff-facing hostname
+with Cloudflare Access, and let the worker forward its
+`cf-access-authenticated-user-email` value as the trusted operator identity.
+The API uses that identity for acknowledgement, outcome, and report audit
+fields; browser-supplied names are only a development fallback. Manual baseline
+state transitions also persist the previous state, next state, operator, time,
+and review reason. The history is available at
+`GET /api/animals/{animal_id}/baseline/history`.
 
 Store these values as managed deployment secrets. Do not put them in Git or DNS.
 The same proxy secret must be configured in Sites and in the API service.
@@ -366,10 +392,11 @@ ZOOVISION_PROXY_SHARED_SECRET=<same managed secret as the API>
 ZOOVISION_API_ORIGIN=https://api.example.com
 ```
 
-The staff-facing site hostname, such as `app.example.com`, is attached to Sites.
-The backend hostname is not intended for browser use: direct API and media
-requests are rejected without the proxy credential. Production API docs are
-disabled.
+The staff-facing site hostname, such as `app.example.com`, is attached to Sites
+and protected by Cloudflare Access for the authorized staff group. The backend
+hostname is not intended for browser use: direct API and media requests are
+rejected without the proxy credential or the required operator identity.
+Production API docs are disabled.
 
 The original architecture brief remains available in
 [`compass_artifact_wf-8953096d-23a5-5284-a231-458dcee08d71_text_markdown.md`](compass_artifact_wf-8953096d-23a5-5284-a231-458dcee08d71_text_markdown.md).

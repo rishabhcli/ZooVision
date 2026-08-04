@@ -11,7 +11,90 @@ from zoovision.domain import (
     Severity,
     ShiftMode,
 )
-from zoovision.store import SQLiteStore
+from zoovision.store import (
+    SQLiteStore,
+    _envelope_duration,
+    _merged_duration,
+    _seconds_between,
+    _timestamp_interval,
+)
+
+
+def test_video_source_coverage_deduplicates_overlapping_chunks(tmp_path):
+    store = SQLiteStore(tmp_path / "zoovision.db")
+    store.initialize()
+    common = {
+        "enclosure_id": "ENC-01",
+        "camera_id": "CAM-01",
+        "source_path": "uploads/overlapping.mp4",
+        "content_sha256": "sha",
+    }
+    store.upsert_video_chunk(
+        chunk_id="provider-1",
+        start_ts="2026-07-30T02:00:00+00:00",
+        end_ts="2026-07-30T02:15:00+00:00",
+        source_offset_seconds=0,
+        status="analyzed",
+        **common,
+    )
+    store.upsert_video_chunk(
+        chunk_id="fixture-1",
+        start_ts="2026-07-30T02:00:00+00:00",
+        end_ts="2026-07-30T02:15:00+00:00",
+        source_offset_seconds=0,
+        status="ready",
+        **common,
+    )
+    store.upsert_video_chunk(
+        chunk_id="provider-2",
+        start_ts="2026-07-30T02:15:00+00:00",
+        end_ts="2026-07-30T02:30:00+00:00",
+        source_offset_seconds=900,
+        status="analyzed",
+        **common,
+    )
+
+    source = store.video_sources()[0]
+
+    assert source["chunk_count"] == 3
+    assert source["analyzed_chunk_count"] == 2
+    assert source["stored_source_duration_seconds"] == pytest.approx(1800)
+    assert source["stored_analyzed_duration_seconds"] == pytest.approx(1800)
+
+
+def test_video_source_coverage_handles_malformed_and_empty_intervals(tmp_path):
+    store = SQLiteStore(tmp_path / "zoovision.db")
+    store.initialize()
+    store.upsert_video_chunk(
+        chunk_id="invalid",
+        enclosure_id="ENC-01",
+        camera_id="CAM-01",
+        start_ts="not-a-timestamp",
+        end_ts="also-not-a-timestamp",
+        source_path="uploads/invalid.mp4",
+        source_offset_seconds=0,
+        content_sha256="sha",
+        status="ready",
+    )
+
+    source = store.video_sources()[0]
+
+    assert source["stored_source_duration_seconds"] == 0
+    assert source["stored_analyzed_duration_seconds"] == 0
+    assert _timestamp_interval("2026-07-30T02:00:00+00:00", "2026-07-30T01:00:00+00:00") is None
+    assert _timestamp_interval("bad", "timestamp") is None
+    assert _envelope_duration([]) == 0
+    assert _merged_duration([]) == 0
+    assert _merged_duration([(0, 10), (20, 30)]) == 20
+    assert _seconds_between("bad", "timestamp") == 0
+
+
+def test_dump_table_rejects_unknown_tables(tmp_path):
+    store = SQLiteStore(tmp_path / "zoovision.db")
+    store.initialize()
+
+    with pytest.raises(ValueError, match="unsupported table"):
+        store.dump_table("secrets")
 
 
 def test_repeat_event_write_is_idempotent(tmp_path):

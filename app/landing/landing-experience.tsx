@@ -11,8 +11,10 @@ import {
   Bot,
   Check,
   CircleCheck,
+  CircleHelp,
   ClipboardCheck,
   Eye,
+  FileText,
   Footprints,
   MousePointerClick,
   Moon,
@@ -152,6 +154,51 @@ const explorationSteps = [
   },
 ] as const;
 
+const operationsPaths = [
+  {
+    label: "01 · REVIEW",
+    title: "Keep the decision human",
+    description:
+      "Search routed events, open the source moment, acknowledge alerts, and preserve the keeper outcome.",
+    href: "/review",
+    action: "Open review queue",
+    icon: ClipboardCheck,
+  },
+  {
+    label: "02 · HANDOFF",
+    title: "Save the morning brief",
+    description:
+      "Capture every monitored animal, deterministic event, and camera gap in a point-in-time report.",
+    href: "/reports",
+    action: "Open report history",
+    icon: FileText,
+  },
+  {
+    label: "03 · INGEST",
+    title: "Bring a real clip into evidence",
+    description:
+      "Upload a video, see segment progress, and keep local pixel-only analysis visibly separate from provider semantics.",
+    href: "/analysis",
+    action: "Open analysis",
+    icon: BarChart3,
+  },
+] as const;
+
+const faqItems = [
+  [
+    "Does ZooVision diagnose animals?",
+    "No. It records observations, applies deterministic welfare-support rules, and routes constrained human checks. It does not diagnose, prescribe, or control an enclosure.",
+  ],
+  [
+    "What happens when evidence is missing?",
+    "The system records a visible data gap or uncertainty. It does not fill an unavailable camera interval with an invented conclusion.",
+  ],
+  [
+    "Can a night event change the baseline?",
+    "No. Baselines are calculated from prior daytime-only shifts. Night observations are evaluated against that context and do not rewrite their own night.",
+  ],
+] as const;
+
 function scrollToExplore() {
   document
     .getElementById("explore")
@@ -254,8 +301,11 @@ export function LandingExperience() {
           </Link>
           <div className="landing-nav-actions">
             <span className="preview-flag">
-              INTERACTIVE EVIDENCE DEMO
+              EVIDENCE WORKSPACE
             </span>
+            <a className="nav-secondary" href="/review">
+              Review queue
+            </a>
             <a
               className="nav-try"
               href="/monitor?tour=1"
@@ -604,6 +654,7 @@ export function LandingExperience() {
                   max="100"
                   value={timeline}
                   aria-label="Evidence timeline"
+                  style={{ accentColor: "var(--amber)" }}
                   onChange={(event) => setTimeline(Number(event.target.value))}
                 />
               </div>
@@ -791,6 +842,53 @@ export function LandingExperience() {
         </div>
       </section>
 
+      <section className="operations-band" aria-labelledby="operations-title">
+        <div className="operations-heading">
+          <span className="section-index">04 · OPERATIONS LOOP</span>
+          <h2 id="operations-title">From signal to morning handoff.</h2>
+          <p>
+            The product is built for repeated keeper work: inspect evidence, record
+            the human outcome, then leave a durable brief for the next shift.
+          </p>
+        </div>
+        <div className="operations-paths">
+          {operationsPaths.map((path) => {
+            const Icon = path.icon;
+            return (
+              <a href={path.href} className="operations-path" key={path.label}>
+                <span className="operations-path-icon"><Icon size={20} /></span>
+                <span className="operations-path-copy">
+                  <small>{path.label}</small>
+                  <strong>{path.title}</strong>
+                  <span>{path.description}</span>
+                </span>
+                <ArrowRight size={17} />
+                <em>{path.action}</em>
+              </a>
+            );
+          })}
+        </div>
+      </section>
+
+      <section className="faq-band" aria-labelledby="faq-title">
+        <div className="faq-heading">
+          <span className="section-index">05 · FIELD NOTES</span>
+          <h2 id="faq-title">The useful boundaries stay visible.</h2>
+        </div>
+        <div className="faq-list">
+          {faqItems.map(([question, answer]) => (
+            <details key={question}>
+              <summary>
+                <CircleHelp size={17} />
+                <span>{question}</span>
+                <ArrowDown size={15} />
+              </summary>
+              <p>{answer}</p>
+            </details>
+          ))}
+        </div>
+      </section>
+
       <footer className="landing-footer">
         <div className="footer-mascot">
           <img
@@ -804,8 +902,8 @@ export function LandingExperience() {
           <span>NIGHT WATCH IS READY</span>
           <h2>Every alert should earn attention.</h2>
           <p>
-            Explore the interactive keeper demo here, or scan the field pass to
-            open its evidence workspace on another device.
+            Explore the evidence workspace, review routed events, or save a morning
+            brief. ZooVision keeps uncertainty and human review in the record.
           </p>
           <a className="footer-enter" href="/monitor?tour=1">
             Try Out
@@ -814,9 +912,7 @@ export function LandingExperience() {
         </div>
         <div className="qr-pass footer-qr-pass">
           <a
-            href="https://zoovision.tech/monitor"
-            target="_blank"
-            rel="noreferrer"
+            href="/monitor?tour=1"
             aria-label="Click or scan to open the ZooVision monitor"
           >
             <span className="qr-pass-head">
@@ -836,7 +932,7 @@ export function LandingExperience() {
             </span>
             <span className="qr-caption">
               <strong>CLICK OR SCAN</strong>
-              <small>ZOOVISION.TECH/MONITOR</small>
+              <small>LOCAL WORKSPACE / MONITOR</small>
             </span>
             <span className="qr-action">
               <MousePointerClick size={16} />
@@ -854,6 +950,10 @@ export function LandingExperience() {
         <p className="footer-legal">
           ZooVision is an evidence-led welfare-support tool with keeper judgment
           at the center.
+          <span className="footer-legal-links">
+            <a href="/privacy">Privacy</a>
+            <a href="/terms">Terms</a>
+          </span>
         </p>
       </footer>
     </main>

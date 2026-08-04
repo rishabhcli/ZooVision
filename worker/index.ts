@@ -38,11 +38,11 @@ function configurationUnavailable(): Response {
 // const imageConfig: ImageConfig = { dangerouslyAllowSVG: true };
 
 const worker = {
-  async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
+  async fetch(request: Request, env: Env | undefined, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
 
     if (url.pathname.startsWith("/api/") || url.pathname.startsWith("/media/")) {
-      if (!env.ZOOVISION_API_ORIGIN || !env.ZOOVISION_PROXY_SHARED_SECRET) {
+      if (!env?.ZOOVISION_API_ORIGIN || !env.ZOOVISION_PROXY_SHARED_SECRET) {
         return configurationUnavailable();
       }
       const upstream = new URL(`${url.pathname}${url.search}`, env.ZOOVISION_API_ORIGIN);
@@ -50,11 +50,24 @@ const worker = {
       headers.delete("authorization");
       headers.delete("host");
       headers.delete("x-zoovision-proxy-secret");
+      const accessIdentity = headers.get("cf-access-authenticated-user-email")?.trim();
+      headers.delete("cf-access-authenticated-user-email");
+      headers.delete("x-zoovision-operator");
+      if (
+        accessIdentity &&
+        accessIdentity.length <= 160 &&
+        !/[\u0000-\u001f\u007f]/.test(accessIdentity)
+      ) {
+        headers.set("x-zoovision-operator", accessIdentity);
+      }
       headers.set("x-zoovision-proxy-secret", env.ZOOVISION_PROXY_SHARED_SECRET);
       return fetch(new Request(upstream, { method: request.method, headers, body: request.body }));
     }
 
     if (url.pathname === "/_vinext/image") {
+      if (!env?.ASSETS || !env.IMAGES) {
+        return configurationUnavailable();
+      }
       const allowedWidths = [...DEFAULT_DEVICE_SIZES, ...DEFAULT_IMAGE_SIZES];
       return handleImageOptimization(request, {
         fetchAsset: (path) => env.ASSETS.fetch(new Request(new URL(path, request.url))),

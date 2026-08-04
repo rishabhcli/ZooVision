@@ -198,6 +198,100 @@ def _is_retryable_provider_error(error: BaseException) -> bool:
     return isinstance(error, ApiError) and (status == 429 or status >= 500)
 
 
+class LocalMotionAnalyzer:
+    """Deterministic local adapter for development-only upload verification.
+
+    This adapter measures frame-to-frame pixel change and deliberately emits an
+    "other" observation. It never claims semantic behavior, species identity,
+    audio evidence, severity, or a welfare event. Production always uses a
+    configured provider instead.
+    """
+
+    model = "local-motion-adapter-v1"
+
+    def safe_analyze_url(self, video_url: str, chunk: VideoChunkContext) -> ProviderAnalysis:
+        del video_url
+        return ProviderAnalysis(
+            observations=[],
+            data_gap=_provider_gap(
+                chunk,
+                "local_demo_requires_file",
+                detail="Local motion analysis only accepts an uploaded file.",
+            ),
+        )
+
+    def safe_analyze_file(
+        self,
+        path: str | Path,
+        chunk: VideoChunkContext,
+    ) -> ProviderAnalysis:
+        try:
+            frames = list(
+                sample_video_frames(
+                    path,
+                    sample_fps=1.0,
+                    duration_seconds=chunk.duration_seconds,
+                    max_frames=24,
+                    max_edge=320,
+                )
+            )
+            if len(frames) < 2:
+                raise ValueError("at least two decodable frames are required")
+            changes = []
+            previous = cv2.cvtColor(frames[0].image, cv2.COLOR_BGR2GRAY)
+            for frame in frames[1:]:
+                current = cv2.cvtColor(frame.image, cv2.COLOR_BGR2GRAY)
+                changes.append(float(cv2.absdiff(previous, current).mean()) / 255.0)
+                previous = current
+            motion_score = sum(changes) / len(changes)
+            activity_label = (
+                "Measured visual movement" if motion_score >= 0.035 else "Low visible frame change"
+            )
+            evidence = (
+                f"Local development adapter measured {motion_score:.3f} mean frame change "
+                f"across {len(frames)} sampled frames. This is pixel evidence only; "
+                "keeper review is required for any interpretation."
+            )
+            return ProviderAnalysis(
+                observations=[
+                    Observation(
+                        observation_id=observation_id(
+                            chunk.chunk_id,
+                            Behavior.OTHER,
+                            provider_item_id="local-motion",
+                            ordinal=0,
+                        ),
+                        animal_id=chunk.animal_id,
+                        enclosure_id=chunk.enclosure_id,
+                        chunk_id=chunk.chunk_id,
+                        behavior=Behavior.OTHER,
+                        start_ts=chunk.start_ts,
+                        end_ts=chunk.end_ts,
+                        confidence=0.5,
+                        evidence=evidence,
+                        provider="local-demo",
+                        provider_model=self.model,
+                        provider_item_id="local-motion",
+                        evidence_kind=EvidenceKind.MEASURED_MOTION,
+                        activity_label=activity_label,
+                    )
+                ],
+                uncertainty=[
+                    "Local development mode measured pixel change only; semantic behavior "
+                    "was not classified."
+                ],
+            )
+        except Exception as error:  # noqa: BLE001 - convert decode failures into a visible data gap
+            return ProviderAnalysis(
+                observations=[],
+                data_gap=_provider_gap(
+                    chunk,
+                    "local_demo_analysis_failed",
+                    detail=f"{type(error).__name__}: local motion analysis unavailable",
+                ),
+            )
+
+
 class TwelveLabsAnalyzer:
     def __init__(
         self,

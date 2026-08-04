@@ -117,7 +117,16 @@ try {
     host,
     "--port",
     String(apiPort),
-  ]);
+  ], {
+    env: {
+      // dev:all must stay a local fixture workflow even when the checkout's
+      // ignored .env contains production credentials and policies.
+      ZOOVISION_ENV: "development",
+      ZOOVISION_FIXTURE_MODE: "true",
+      ZOOVISION_OPERATOR_IDENTITY_REQUIRED: "false",
+      TWELVELABS_API_KEY: "",
+    },
+  });
   await waitFor(`${apiOrigin}/api/health`, "ZooVision API");
 
   start(

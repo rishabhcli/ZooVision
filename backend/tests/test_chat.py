@@ -1236,8 +1236,7 @@ def test_multi_animal_timing_without_copresence_marker_retains_any_match() -> No
     assert context["retrieval"]["animal_timing_match_mode"] == "any"
     assert context["retrieval"]["animal_timing_match_count"] == 41
     assert any(
-        moment["observation_id"].startswith("obs-squirrel-")
-        for moment in context["moments"]
+        moment["observation_id"].startswith("obs-squirrel-") for moment in context["moments"]
     )
 
 

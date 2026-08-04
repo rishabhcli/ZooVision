@@ -1,0 +1,143 @@
+.legal-page {
+  min-height: 100dvh;
+  padding: 28px max(22px, calc((100vw - 1120px) / 2)) 80px;
+  color: #e9eee7;
+  background:
+    linear-gradient(180deg, rgba(196, 223, 108, 0.05), transparent 24%),
+    #090a0b;
+}
+
+.legal-nav {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  min-height: 48px;
+  border-bottom: 1px solid #29302d;
+}
+
+.legal-nav a {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  color: #c4df6c;
+  font-size: 12px;
+  font-weight: 700;
+  text-decoration: none;
+}
+
+.legal-nav a:hover {
+  color: #e2ef9d;
+}
+
+.legal-kicker {
+  color: #a6ba70;
+  font-family: var(--font-mono), monospace;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.legal-hero {
+  max-width: 760px;
+  padding: 82px 0 46px;
+}
+
+.legal-hero h1 {
+  margin-top: 10px;
+  font-size: clamp(34px, 5vw, 62px);
+  font-weight: 650;
+  letter-spacing: -0.03em;
+  line-height: 1;
+}
+
+.legal-hero p {
+  margin-top: 18px;
+  color: #9aa69f;
+  font-size: 15px;
+  line-height: 1.7;
+}
+
+.legal-content {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 240px;
+  gap: 60px;
+  align-items: start;
+  padding-top: 28px;
+  border-top: 1px solid #29302d;
+}
+
+.legal-sections {
+  display: grid;
+  gap: 34px;
+}
+
+.legal-sections section {
+  display: grid;
+  gap: 9px;
+}
+
+.legal-sections h2 {
+  color: #e9eee7;
+  font-size: 20px;
+  font-weight: 650;
+}
+
+.legal-sections p,
+.legal-sections li {
+  color: #a4afa8;
+  font-size: 13px;
+  line-height: 1.75;
+}
+
+.legal-sections ul {
+  display: grid;
+  gap: 7px;
+  margin: 0;
+  padding-left: 19px;
+}
+
+.legal-aside {
+  position: sticky;
+  top: 20px;
+  padding: 15px;
+  background: #111617;
+  border: 1px solid #2b3230;
+  border-radius: 5px;
+}
+
+.legal-aside strong {
+  display: block;
+  color: #d9ee91;
+  font-family: var(--font-mono), monospace;
+  font-size: 11px;
+  text-transform: uppercase;
+}
+
+.legal-aside p {
+  margin-top: 8px;
+  color: #89958e;
+  font-size: 11px;
+  line-height: 1.6;
+}
+
+@media (max-width: 760px) {
+  .legal-page {
+    padding-right: 16px;
+    padding-left: 16px;
+  }
+
+  .legal-hero {
+    padding-top: 60px;
+  }
+
+  .legal-content {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 32px;
+  }
+
+  .legal-aside {
+    position: static;
+  }
+}

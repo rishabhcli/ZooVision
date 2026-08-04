@@ -102,6 +102,7 @@ def test_production_accepts_complete_live_configuration():
         ZOOVISION_S3_ANALYSIS_BUCKET="analysis",
         ZOOVISION_S3_CLIPS_BUCKET="clips",
         ZOOVISION_PROXY_SHARED_SECRET="p" * 32,
+        ZOOVISION_OPERATOR_IDENTITY_REQUIRED=True,
         _env_file=None,
     )
 
@@ -122,5 +123,27 @@ def test_production_requires_a_proxy_shared_secret():
             ZOOVISION_S3_RAW_BUCKET="raw",
             ZOOVISION_S3_ANALYSIS_BUCKET="analysis",
             ZOOVISION_S3_CLIPS_BUCKET="clips",
+            ZOOVISION_OPERATOR_IDENTITY_REQUIRED=True,
+            _env_file=None,
+        )
+
+
+def test_production_requires_an_operator_identity_boundary():
+    with pytest.raises(ValidationError, match="ZOOVISION_OPERATOR_IDENTITY_REQUIRED"):
+        Settings(
+            ZOOVISION_ENV="production",
+            ZOOVISION_FIXTURE_MODE=False,
+            OPENAI_API_KEY="test-openai",
+            TWELVELABS_API_KEY="test-twelve",
+            NEO4J_URI="neo4j+s://example.databases.neo4j.io",
+            NEO4J_USERNAME="test-user",
+            NEO4J_PASSWORD="test-password",
+            ZOOVISION_AWS_STORAGE_ENABLED=True,
+            ZOOVISION_BEDROCK_EMBEDDING_ENABLED=True,
+            ZOOVISION_OPENAI_ENRICHMENT_ENABLED=True,
+            ZOOVISION_S3_RAW_BUCKET="raw",
+            ZOOVISION_S3_ANALYSIS_BUCKET="analysis",
+            ZOOVISION_S3_CLIPS_BUCKET="clips",
+            ZOOVISION_PROXY_SHARED_SECRET="p" * 32,
             _env_file=None,
         )

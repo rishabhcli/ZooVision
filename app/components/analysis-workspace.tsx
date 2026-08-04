@@ -108,6 +108,10 @@ function jobProgress(job: IngestJob) {
   return Math.max(3, Math.round((job.completed_segments / job.total_segments) * 100));
 }
 
+function analyzedChunkCount(video: VideoSource) {
+  return Math.max(0, Math.round(video.analyzed_chunk_count ?? video.chunk_count));
+}
+
 export function AnalysisWorkspace() {
   const [dashboard, setDashboard] = useState<DashboardPayload | null>(null);
   const [videos, setVideos] = useState<VideoSource[]>([]);
@@ -120,6 +124,7 @@ export function AnalysisWorkspace() {
   const [refreshing, setRefreshing] = useState(false);
   const [showIngest, setShowIngest] = useState(false);
   const [submitting, setSubmitting] = useState(false);
+  const [retryingJobId, setRetryingJobId] = useState<string | null>(null);
   const [ingestError, setIngestError] = useState<string | null>(null);
   const [briefingReady, setBriefingReady] = useState(false);
   const refreshInFlightRef = useRef(false);
@@ -236,6 +241,11 @@ export function AnalysisWorkspace() {
     readiness?.providers.twelvelabs?.configured &&
       readiness?.providers.twelvelabs?.enabled,
   );
+  const localDemoReady = Boolean(
+    readiness?.providers.local_motion?.configured &&
+      readiness?.providers.local_motion?.enabled,
+  );
+  const ingestReady = providerReady || localDemoReady;
 
   async function submitIngest(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -271,13 +281,26 @@ export function AnalysisWorkspace() {
     }
   }
 
+  async function retryJob(job: IngestJob) {
+    if (!job.request || !job.data_gap_ids.length) return;
+    setRetryingJobId(job.job_id);
+    setIngestError(null);
+    try {
+      await api.retryIngestGaps(job.job_id, job.request);
+      await refresh();
+    } catch (caught) {
+      setIngestError(caught instanceof Error ? caught.message : "Retry could not start");
+    } finally {
+      setRetryingJobId(null);
+    }
+  }
+
   function openInMonitor(seconds: number) {
     if (!sourcePath) return;
     sessionStorage.setItem(
       "zoovision:pending-moment",
       JSON.stringify({ sourcePath, seconds }),
     );
-    window.location.assign("/monitor");
   }
 
   if (!dashboard && loadError) {
@@ -406,11 +429,13 @@ export function AnalysisWorkspace() {
           <footer>
             <div className="analysis-provider-toggle">
               <span>
-                <strong>TwelveLabs Pegasus 1.5</strong>
+                <strong>{providerReady ? "TwelveLabs Pegasus 1.5" : "Local motion adapter"}</strong>
                 <small>
                   {providerReady
                     ? "Required and ready for structured video analysis."
-                    : "Required for video ingestion; configure it before starting."}
+                    : localDemoReady
+                      ? "Development-only pixel evidence. No semantic behavior or severity is assigned."
+                      : "A configured video analyzer is required before starting."}
                 </small>
               </span>
             </div>
@@ -418,7 +443,7 @@ export function AnalysisWorkspace() {
             <button
               type="submit"
               className="primary-button"
-              disabled={submitting || !providerReady}
+              disabled={submitting || !ingestReady}
             >
               {submitting ? <LoaderCircle className="spin" size={14} /> : <Play size={14} />}
               {submitting ? "Uploading…" : "Start analysis"}
@@ -488,6 +513,21 @@ export function AnalysisWorkspace() {
                   </span>
                   <i><b style={{ width: `${jobProgress(job)}%` }} /></i>
                   {job.error && <small>{job.error}</small>}
+                  {job.data_gap_ids.length > 0 && job.request && (
+                    <button
+                      type="button"
+                      className="job-retry"
+                      disabled={retryingJobId === job.job_id}
+                      onClick={() => void retryJob(job)}
+                    >
+                      {retryingJobId === job.job_id ? (
+                        <LoaderCircle className="spin" size={12} />
+                      ) : (
+                        <RefreshCw size={12} />
+                      )}
+                      Retry gapped segments
+                    </button>
+                  )}
                 </div>
               </article>
             ))}
@@ -544,7 +584,7 @@ export function AnalysisWorkspace() {
             </div>
             <small>
               {selectedVideo
-                ? `${selectedVideo.chunk_count} video sections · ${selectedVideo.observation_count} recorded moments`
+                ? `${analyzedChunkCount(selectedVideo)} analyzed sections · ${selectedVideo.observation_count} recorded moments`
                 : "Upload a video to begin"}
             </small>
           </header>
@@ -602,14 +642,14 @@ export function AnalysisWorkspace() {
                   <div><dt>Camera</dt><dd>{selectedVideo?.camera_id ?? "Not recorded"}</dd></div>
                   <div><dt>Animal</dt><dd>{selectedVideo?.animal_names.join(", ") || "Unassigned"}</dd></div>
                 </dl>
-                <button
-                  type="button"
+                <a
+                  href="/monitor"
                   className="primary-button"
                   onClick={() => openInMonitor(selectedItem.start)}
                 >
                   <Play size={14} />
                   Open this moment in Monitor
-                </button>
+                </a>
               </>
             ) : (
               <div className="analysis-empty compact">

@@ -104,6 +104,19 @@ CREATE TABLE IF NOT EXISTS baseline_profiles (
     PRIMARY KEY (animal_id, behavior)
 );
 
+CREATE TABLE IF NOT EXISTS baseline_state_changes (
+    change_id TEXT PRIMARY KEY,
+    animal_id TEXT NOT NULL REFERENCES animals(animal_id) ON DELETE CASCADE,
+    previous_state TEXT NOT NULL,
+    next_state TEXT NOT NULL,
+    changed_by TEXT NOT NULL,
+    changed_at TEXT NOT NULL,
+    reason TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_baseline_state_changes_animal
+    ON baseline_state_changes(animal_id, changed_at DESC);
+
 CREATE TABLE IF NOT EXISTS alerts (
     alert_id TEXT PRIMARY KEY,
     event_id TEXT NOT NULL REFERENCES events(event_id),
@@ -151,6 +164,16 @@ CREATE TABLE IF NOT EXISTS ingest_jobs (
 
 CREATE INDEX IF NOT EXISTS idx_ingest_jobs_created ON ingest_jobs(created_at DESC);
 
+CREATE TABLE IF NOT EXISTS report_runs (
+    report_id TEXT PRIMARY KEY,
+    shift_label TEXT NOT NULL,
+    generated_by TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    payload_json TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_report_runs_created ON report_runs(created_at DESC);
+
 CREATE TABLE IF NOT EXISTS detections (
     detection_id TEXT PRIMARY KEY,
     chunk_id TEXT NOT NULL REFERENCES video_chunks(chunk_id) ON DELETE CASCADE,
@@ -171,6 +194,9 @@ CREATE INDEX IF NOT EXISTS idx_detections_chunk_time
     ON detections(chunk_id, relative_seconds);
 CREATE INDEX IF NOT EXISTS idx_events_animal_start ON events(animal_id, start_ts);
 CREATE INDEX IF NOT EXISTS idx_events_severity ON events(severity);
+CREATE INDEX IF NOT EXISTS idx_events_review_state ON events(review_state);
+CREATE INDEX IF NOT EXISTS idx_event_sources_event ON event_sources(event_id);
+CREATE INDEX IF NOT EXISTS idx_outcomes_event ON outcomes(event_id);
 CREATE INDEX IF NOT EXISTS idx_observations_chunk ON observations(chunk_id);
 """
 
@@ -1042,6 +1068,8 @@ class SQLiteStore:
     def reset_demo(self) -> None:
         with self.connect() as connection:
             for table in (
+                "report_runs",
+                "baseline_state_changes",
                 "outcomes",
                 "alerts",
                 "event_narratives",
@@ -1055,6 +1083,171 @@ class SQLiteStore:
                 "animals",
             ):
                 connection.execute(f"DELETE FROM {table}")
+
+    def search_events(
+        self,
+        *,
+        query: str | None = None,
+        severity: str | None = None,
+        review_state: str | None = None,
+        animal_id: str | None = None,
+        limit: int = 100,
+    ) -> list[dict]:
+        """Return auditable welfare events for the operator review queue."""
+        conditions = ["e.severity != 'NONE'"]
+        parameters: list[object] = []
+        if query:
+            term = f"%{query.strip().lower()}%"
+            conditions.append(
+                "("
+                "lower(a.name) LIKE ? OR lower(a.species) LIKE ? OR "
+                "lower(e.behavior) LIKE ? OR lower(e.rule_fired) LIKE ? OR "
+                "lower(e.action) LIKE ? OR EXISTS ("
+                "SELECT 1 FROM event_sources search_es "
+                "JOIN observations search_o ON search_o.observation_id = search_es.observation_id "
+                "WHERE search_es.event_id = e.event_id AND lower(search_o.evidence) LIKE ?"
+                "))"
+            )
+            parameters.extend([term] * 6)
+        if severity and severity != "all":
+            conditions.append("e.severity = ?")
+            parameters.append(severity)
+        if review_state and review_state != "all":
+            conditions.append("e.review_state = ?")
+            parameters.append(review_state)
+        if animal_id and animal_id != "all":
+            conditions.append("e.animal_id = ?")
+            parameters.append(animal_id)
+        bounded_limit = max(1, min(limit, 200))
+        parameters.append(bounded_limit)
+        with self.connect() as connection:
+            rows = connection.execute(
+                f"""
+                SELECT e.*, a.name AS animal_name, a.species,
+                       a.baseline_state, al.alert_id, al.delivery_status,
+                       al.ack_state, al.acknowledged_at, al.acknowledged_by,
+                       count(DISTINCT o.outcome_id) AS outcome_count
+                FROM events e
+                JOIN animals a ON a.animal_id = e.animal_id
+                LEFT JOIN alerts al ON al.event_id = e.event_id
+                LEFT JOIN outcomes o ON o.event_id = e.event_id
+                WHERE {" AND ".join(conditions)}
+                GROUP BY e.event_id
+                ORDER BY
+                  CASE e.severity
+                    WHEN 'CRITICAL' THEN 1 WHEN 'HIGH' THEN 2
+                    WHEN 'MODERATE' THEN 3 WHEN 'LOW' THEN 4 ELSE 5
+                  END,
+                  e.start_ts DESC
+                LIMIT ?
+                """,
+                parameters,
+            ).fetchall()
+            events = []
+            for row in rows:
+                item = self._event_dict(connection, row)
+                item["outcome_count"] = row["outcome_count"]
+                source = connection.execute(
+                    """
+                    SELECT vc.source_path, vc.source_offset_seconds, vc.camera_id
+                    FROM event_sources es
+                    JOIN observations o ON o.observation_id = es.observation_id
+                    JOIN video_chunks vc ON vc.chunk_id = o.chunk_id
+                    WHERE es.event_id = ?
+                    ORDER BY o.start_ts
+                    LIMIT 1
+                    """,
+                    (row["event_id"],),
+                ).fetchone()
+                if source:
+                    item["source_path"] = source["source_path"]
+                    item["media_url"] = f"/media/{source['source_path']}"
+                    item["media_offset_seconds"] = source["source_offset_seconds"]
+                    item["camera_id"] = source["camera_id"]
+                events.append(item)
+            return events
+
+    def review_counts(self) -> dict[str, int]:
+        with self.connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT review_state, count(*) AS count
+                FROM events
+                WHERE severity != 'NONE'
+                GROUP BY review_state
+                """
+            ).fetchall()
+        counts = {"unreviewed": 0, "confirmed": 0, "dismissed": 0}
+        counts.update({row["review_state"]: row["count"] for row in rows})
+        counts["all"] = sum(counts.values())
+        return counts
+
+    def save_report_run(
+        self,
+        *,
+        report_id: str,
+        shift_label: str,
+        generated_by: str,
+        created_at: str,
+        payload: dict,
+    ) -> None:
+        with self.connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO report_runs(
+                    report_id, shift_label, generated_by, created_at, payload_json
+                ) VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(report_id) DO UPDATE SET
+                    shift_label = excluded.shift_label,
+                    generated_by = excluded.generated_by,
+                    created_at = excluded.created_at,
+                    payload_json = excluded.payload_json
+                """,
+                (
+                    report_id,
+                    shift_label,
+                    generated_by,
+                    created_at,
+                    json.dumps(payload),
+                ),
+            )
+
+    def recent_report_runs(self, limit: int = 20) -> list[dict]:
+        bounded = max(1, min(limit, 100))
+        with self.connect() as connection:
+            return [
+                {
+                    "report_id": row["report_id"],
+                    "shift_label": row["shift_label"],
+                    "generated_by": row["generated_by"],
+                    "created_at": row["created_at"],
+                }
+                for row in connection.execute(
+                    """
+                    SELECT report_id, shift_label, generated_by, created_at
+                    FROM report_runs
+                    ORDER BY created_at DESC
+                    LIMIT ?
+                    """,
+                    (bounded,),
+                )
+            ]
+
+    def report_run(self, report_id: str) -> dict | None:
+        with self.connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM report_runs WHERE report_id = ?",
+                (report_id,),
+            ).fetchone()
+            if row is None:
+                return None
+            return {
+                "report_id": row["report_id"],
+                "shift_label": row["shift_label"],
+                "generated_by": row["generated_by"],
+                "created_at": row["created_at"],
+                "report": json.loads(row["payload_json"]),
+            }
 
     def acknowledge_alert(self, alert_id: str, *, keeper: str, acknowledged_at: str) -> bool:
         with self.connect() as connection:
@@ -1094,8 +1287,24 @@ class SQLiteStore:
                 (event_id,),
             )
 
-    def set_baseline_state(self, animal_id: str, state: str) -> bool:
+    def set_baseline_state(
+        self,
+        animal_id: str,
+        state: str,
+        *,
+        change_id: str | None = None,
+        changed_by: str | None = None,
+        changed_at: str | None = None,
+        reason: str = "manual_review",
+    ) -> bool:
         with self.connect() as connection:
+            current = connection.execute(
+                "SELECT baseline_state FROM animals WHERE animal_id = ?",
+                (animal_id,),
+            ).fetchone()
+            if current is None:
+                return False
+            previous_state = current["baseline_state"]
             cursor = connection.execute(
                 "UPDATE animals SET baseline_state = ? WHERE animal_id = ?",
                 (state, animal_id),
@@ -1104,7 +1313,43 @@ class SQLiteStore:
                 "UPDATE baseline_profiles SET state = ? WHERE animal_id = ?",
                 (state, animal_id),
             )
+            if previous_state != state and change_id and changed_by and changed_at:
+                connection.execute(
+                    """
+                    INSERT INTO baseline_state_changes(
+                        change_id, animal_id, previous_state, next_state,
+                        changed_by, changed_at, reason
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        change_id,
+                        animal_id,
+                        previous_state,
+                        state,
+                        changed_by,
+                        changed_at,
+                        reason,
+                    ),
+                )
             return cursor.rowcount == 1
+
+    def baseline_state_changes(self, animal_id: str, limit: int = 20) -> list[dict]:
+        bounded = max(1, min(limit, 100))
+        with self.connect() as connection:
+            return [
+                dict(row)
+                for row in connection.execute(
+                    """
+                    SELECT change_id, animal_id, previous_state, next_state,
+                           changed_by, changed_at, reason
+                    FROM baseline_state_changes
+                    WHERE animal_id = ?
+                    ORDER BY changed_at DESC
+                    LIMIT ?
+                    """,
+                    (animal_id, bounded),
+                )
+            ]
 
     def dashboard(self) -> dict:
         with self.connect() as connection:
@@ -1115,7 +1360,21 @@ class SQLiteStore:
                     SELECT a.*,
                            count(DISTINCT e.event_id) AS event_count,
                            max(e.severity) AS latest_severity,
-                           coalesce(max(bp.n_day_shifts), 0) AS baseline_days
+                           coalesce(max(bp.n_day_shifts), 0) AS baseline_days,
+                           (
+                               SELECT bsc.changed_at
+                               FROM baseline_state_changes bsc
+                               WHERE bsc.animal_id = a.animal_id
+                               ORDER BY bsc.changed_at DESC
+                               LIMIT 1
+                           ) AS baseline_last_changed_at,
+                           (
+                               SELECT bsc.changed_by
+                               FROM baseline_state_changes bsc
+                               WHERE bsc.animal_id = a.animal_id
+                               ORDER BY bsc.changed_at DESC
+                               LIMIT 1
+                           ) AS baseline_last_changed_by
                     FROM animals a
                     LEFT JOIN events e ON e.animal_id = a.animal_id
                     LEFT JOIN baseline_profiles bp ON bp.animal_id = a.animal_id
@@ -1206,7 +1465,7 @@ class SQLiteStore:
     def video_sources(self) -> list[dict]:
         """One row per distinct media file, with what was recorded against it."""
         with self.connect() as connection:
-            return [
+            sources = [
                 dict(row)
                 for row in connection.execute(
                     """
@@ -1221,14 +1480,6 @@ class SQLiteStore:
                                    AS gap_chunk_count,
                                sum(CASE WHEN status = 'analyzing' THEN 1 ELSE 0 END)
                                    AS analyzing_chunk_count,
-                               coalesce(sum(CASE
-                                   WHEN status = 'analyzed' THEN
-                                       (julianday(end_ts) - julianday(start_ts)) * 86400.0
-                                   ELSE 0
-                               END), 0) AS stored_analyzed_duration_seconds,
-                               coalesce(sum(
-                                   (julianday(end_ts) - julianday(start_ts)) * 86400.0
-                               ), 0) AS stored_source_duration_seconds,
                                min(start_ts) AS first_start_ts,
                                max(end_ts) AS last_end_ts
                         FROM video_chunks
@@ -1278,6 +1529,31 @@ class SQLiteStore:
                     """
                 )
             ]
+            interval_rows = connection.execute(
+                """
+                SELECT source_path, start_ts, end_ts, status
+                FROM video_chunks
+                ORDER BY source_path, start_ts, end_ts
+                """
+            ).fetchall()
+
+        intervals_by_source: dict[str, list[tuple[float, float, str]]] = {}
+        for row in interval_rows:
+            interval = _timestamp_interval(row["start_ts"], row["end_ts"])
+            if interval is None:
+                continue
+            intervals_by_source.setdefault(row["source_path"], []).append(
+                (*interval, str(row["status"]))
+            )
+
+        for source in sources:
+            intervals = intervals_by_source.get(source["source_path"], [])
+            source["stored_source_duration_seconds"] = _envelope_duration(intervals)
+            source["stored_analyzed_duration_seconds"] = _merged_duration(
+                (start, end) for start, end, status in intervals if status == "analyzed"
+            )
+
+        return sources
 
     def video_track(self, source_path: str) -> dict:
         """Detections and events for one media file, placed on that file's timeline.
@@ -1615,6 +1891,7 @@ class SQLiteStore:
             "event_sources",
             "event_narratives",
             "baseline_profiles",
+            "baseline_state_changes",
             "alerts",
             "outcomes",
             "data_gaps",
@@ -1637,3 +1914,44 @@ def _seconds_between(start_iso: str, end_iso: str) -> float:
         return (datetime.fromisoformat(end_iso) - datetime.fromisoformat(start_iso)).total_seconds()
     except (TypeError, ValueError):
         return 0.0
+
+
+def _timestamp_interval(start_iso: str, end_iso: str) -> tuple[float, float] | None:
+    """Return a valid wall-clock interval as epoch seconds.
+
+    A source can have overlapping rows when a fixture annotation and a provider
+    analysis cover the same media. Coverage must be measured from the timeline,
+    not by summing those rows, or the UI will report impossible durations.
+    """
+    try:
+        start = datetime.fromisoformat(start_iso).timestamp()
+        end = datetime.fromisoformat(end_iso).timestamp()
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if end <= start:
+        return None
+    return start, end
+
+
+def _envelope_duration(intervals: list[tuple[float, float, str]]) -> float:
+    if not intervals:
+        return 0.0
+    start = min(item[0] for item in intervals)
+    end = max(item[1] for item in intervals)
+    return max(0.0, end - start)
+
+
+def _merged_duration(intervals: Iterable[tuple[float, float]]) -> float:
+    ordered = sorted((start, end) for start, end in intervals if end > start)
+    if not ordered:
+        return 0.0
+
+    total = 0.0
+    current_start, current_end = ordered[0]
+    for start, end in ordered[1:]:
+        if start <= current_end:
+            current_end = max(current_end, end)
+            continue
+        total += current_end - current_start
+        current_start, current_end = start, end
+    return max(0.0, total + current_end - current_start)

@@ -208,6 +208,12 @@ function sourceDurationLabel(source: VideoSource) {
     : `${source.chunk_count} evidence chunk${source.chunk_count === 1 ? "" : "s"}`;
 }
 
+function analyzedChunkLabel(source: VideoSource) {
+  const analyzed = finiteMetric(source.analyzed_chunk_count);
+  const count = analyzed !== null ? Math.max(0, Math.round(analyzed)) : source.chunk_count;
+  return `${count} analyzed chunk${count === 1 ? "" : "s"}`;
+}
+
 function sourceIsFullyAnalyzed(source: VideoSource) {
   return typeof source.is_fully_analyzed === "boolean"
     ? source.is_fully_analyzed
@@ -2036,7 +2042,7 @@ export function MonitorWorkspace() {
               </div>
               <div className="video-source-label">
                 <Video size={14} />
-                <span>{selectedCamera.chunk_count} analyzed chunks</span>
+                <span>{analyzedChunkLabel(selectedCamera)}</span>
               </div>
             </header>
 
@@ -2448,7 +2454,7 @@ export function MonitorWorkspace() {
                 {track.observations.length} structured observations
               </span>
               <span>
-                {selectedCamera.chunk_count} analyzed chunks
+                {analyzedChunkLabel(selectedCamera)}
               </span>
             </div>
 

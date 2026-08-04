@@ -160,6 +160,7 @@ export interface VideoSource {
   analysis_status?: "analyzing" | "complete" | "incomplete";
   is_fully_analyzed?: boolean;
   latest_job_status?: string | null;
+  analyzed_chunk_count?: number;
   completed_segments?: number;
   total_segments?: number;
   data_gap_count?: number;

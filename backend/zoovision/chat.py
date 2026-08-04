@@ -839,9 +839,7 @@ def retrieve_context(
             "referenced_media_offsets_seconds": referenced_offsets_seconds,
             "recording_inventory": recording_inventory,
             "animal_timing_terms": sorted(animal_timing_terms),
-            "animal_timing_match_mode": (
-                "all" if animal_timing_requires_joint_presence else "any"
-            ),
+            "animal_timing_match_mode": ("all" if animal_timing_requires_joint_presence else "any"),
             "animal_timing_match_count": len(animal_timing_matches),
             "animal_timing_all_matches_included": len(animal_timing_matches) <= 20,
             "safety_boundary": _asks_for_prohibited_guidance(question),

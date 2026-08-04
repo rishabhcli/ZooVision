@@ -28,15 +28,30 @@ export type DashboardAnimal = {
   name: string;
   species: string;
   enclosure_id: string;
-  baseline_state: string;
+  baseline_state: BaselineState;
   baseline_days: number;
+  baseline_last_changed_at?: string | null;
+  baseline_last_changed_by?: string | null;
   event_count: number;
+};
+
+export type BaselineState = "learning" | "shadow" | "active" | "paused";
+
+export type BaselineStateChange = {
+  change_id: string;
+  animal_id: string;
+  previous_state: BaselineState;
+  next_state: BaselineState;
+  changed_by: string;
+  changed_at: string;
+  reason: string;
 };
 
 export type DashboardEvent = {
   event_id: string;
   animal_id: string;
   animal_name: string;
+  species: string;
   enclosure_id: string;
   behavior: string;
   severity: string;
@@ -54,6 +69,84 @@ export type DashboardEvent = {
   media_url?: string;
   media_offset_seconds?: number;
   evidence_kind?: string;
+};
+
+export type EventSource = {
+  observation_id: string;
+  chunk_id: string;
+  animal_id: string;
+  behavior: string;
+  start_ts: string;
+  end_ts: string;
+  confidence: number;
+  evidence: string;
+  provider: string;
+  provider_model: string;
+  provider_item_id: string | null;
+  evidence_kind: string;
+  activity_label: string | null;
+  source_path: string;
+  source_offset_seconds: number;
+  camera_id: string;
+  media_url?: string;
+};
+
+export type EventOutcome = {
+  outcome_id: string;
+  event_id: string;
+  resolution: string;
+  note: string | null;
+  entered_by: string;
+  created_at: string;
+};
+
+export type EventDetail = DashboardEvent & {
+  sources: EventSource[];
+  outcomes: EventOutcome[];
+  narrative: Record<string, unknown> | null;
+  detections: VideoDetection[];
+};
+
+export type ReviewEvent = DashboardEvent & {
+  species: string;
+  explanation_facts: string[];
+  source_observation_ids: string[];
+  outcome_count: number;
+  camera_id?: string;
+  source_path?: string;
+};
+
+export type ReviewPayload = {
+  events: ReviewEvent[];
+  counts: Record<"all" | "unreviewed" | "confirmed" | "dismissed", number>;
+  filters: {
+    query: string;
+    severity: string;
+    review_state: string;
+    animal_id: string;
+  };
+};
+
+export type ReportSnapshot = {
+  animals: Array<
+    DashboardAnimal & {
+      events: DashboardEvent[];
+    }
+  >;
+  data_gaps: Array<Record<string, unknown>>;
+  summary: {
+    animals_monitored: number;
+    events: number;
+    data_gaps: number;
+  };
+};
+
+export type ReportRun = {
+  report_id: string;
+  shift_label: string;
+  generated_by: string;
+  created_at: string;
+  report?: ReportSnapshot;
 };
 
 export type DashboardPayload = {
@@ -80,6 +173,7 @@ export type VideoSource = {
   analysis_status?: "analyzing" | "complete" | "incomplete";
   is_fully_analyzed?: boolean;
   latest_job_status?: string | null;
+  analyzed_chunk_count?: number;
   completed_segments?: number;
   total_segments?: number;
   data_gap_count?: number;
@@ -167,6 +261,10 @@ export type ReadinessPayload = {
   environment: string;
   fixture_mode: boolean;
   delivery_mode: string;
+  operator_identity: {
+    required: boolean;
+    status: string;
+  };
   providers: Record<
     string,
     {
@@ -218,7 +316,32 @@ export type IngestJob = {
     codec: string;
     has_audio: boolean;
   } | null;
+  request?: {
+    source_name: string;
+    animal_id: string;
+    animal_name: string;
+    species: string;
+    enclosure_id: string;
+    camera_id: string;
+    start_ts: string;
+    shift_mode: "day" | "night";
+    segment_seconds: number;
+    max_segments: number;
+  } | null;
   error: string | null;
+};
+
+export type IngestStartPayload = {
+  source_name: string;
+  animal_id: string;
+  animal_name: string;
+  species: string;
+  enclosure_id: string;
+  camera_id: string;
+  shift_mode: "day" | "night";
+  segment_seconds: number;
+  max_segments: number;
+  start_ts?: string;
 };
 
 export type ChatMoment = {
@@ -264,6 +387,7 @@ export function orderVideoSources(sources: VideoSource[]) {
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(path, {
     ...init,
+    cache: init?.cache ?? "no-store",
     headers: {
       "Content-Type": "application/json",
       ...init?.headers,
@@ -300,7 +424,89 @@ export const api = {
       `/api/videos/track?source_path=${encodeURIComponent(sourcePath)}`,
       { signal },
     ),
+  event: (eventId: string) =>
+    request<EventDetail>(`/api/events/${encodeURIComponent(eventId)}`),
   morningReport: () => request<Record<string, unknown>>("/api/morning-report"),
+  reviewEvents: (filters: {
+    query?: string;
+    severity?: string;
+    reviewState?: string;
+    animalId?: string;
+  } = {}) => {
+    const params = new URLSearchParams();
+    if (filters.query) params.set("query", filters.query);
+    if (filters.severity && filters.severity !== "all") {
+      params.set("severity", filters.severity);
+    }
+    if (filters.reviewState && filters.reviewState !== "all") {
+      params.set("review_state", filters.reviewState);
+    }
+    if (filters.animalId && filters.animalId !== "all") {
+      params.set("animal_id", filters.animalId);
+    }
+    const query = params.toString();
+    return request<ReviewPayload>("/api/review/events" + (query ? "?" + query : ""));
+  },
+  reviewExportUrl: (filters: {
+    query?: string;
+    severity?: string;
+    reviewState?: string;
+    animalId?: string;
+  } = {}) => {
+    const params = new URLSearchParams();
+    if (filters.query) params.set("query", filters.query);
+    if (filters.severity && filters.severity !== "all") {
+      params.set("severity", filters.severity);
+    }
+    if (filters.reviewState && filters.reviewState !== "all") {
+      params.set("review_state", filters.reviewState);
+    }
+    if (filters.animalId && filters.animalId !== "all") {
+      params.set("animal_id", filters.animalId);
+    }
+    const query = params.toString();
+    return "/api/review/events.csv" + (query ? "?" + query : "");
+  },
+  reports: (limit = 20) =>
+    request<{ reports: ReportRun[] }>("/api/reports?limit=" + limit),
+  updateBaseline: (animalId: string, state: Exclude<BaselineState, "learning">) =>
+    request<{
+      animal_id: string;
+      baseline_state: BaselineState;
+      change_id: string;
+      changed_by: string;
+      changed_at: string;
+    }>(
+      "/api/animals/" + encodeURIComponent(animalId) + "/baseline",
+      {
+        method: "POST",
+        body: JSON.stringify({ state }),
+      },
+    ),
+  baselineHistory: (animalId: string) =>
+    request<{ animal_id: string; changes: BaselineStateChange[] }>(
+      "/api/animals/" + encodeURIComponent(animalId) + "/baseline/history",
+    ),
+  createReport: (shiftLabel: string, generatedBy = "ZooVision operator") =>
+    request<ReportRun>("/api/reports", {
+      method: "POST",
+      body: JSON.stringify({
+        shift_label: shiftLabel,
+        generated_by: generatedBy,
+      }),
+    }),
+  report: (reportId: string) =>
+    request<ReportRun>("/api/reports/" + encodeURIComponent(reportId)),
+  reportExportUrl: (reportId: string) =>
+    "/api/reports/" + encodeURIComponent(reportId) + "/export.csv",
+  acknowledgeAlert: (alertId: string, keeper = "ZooVision operator") =>
+    request<{ status: string; alert_id: string }>(
+      "/api/alerts/" + encodeURIComponent(alertId) + "/ack",
+      {
+        method: "POST",
+        body: JSON.stringify({ keeper }),
+      },
+    ),
   ingestJobs: () => request<{ jobs: IngestJob[] }>("/api/ingest/jobs"),
   uploadVideo: async (file: File) => {
     const chunkSize = 2 * 1024 * 1024;
@@ -345,20 +551,15 @@ export const api = {
     if (!completed) throw new Error("Upload did not complete");
     return completed;
   },
-  startIngest: (payload: {
-    source_name: string;
-    animal_id: string;
-    animal_name: string;
-    species: string;
-    enclosure_id: string;
-    camera_id: string;
-    shift_mode: "day" | "night";
-    segment_seconds: number;
-    max_segments: number;
-  }) =>
+  startIngest: (payload: IngestStartPayload) =>
     request<IngestJob>("/api/ingest/jobs", {
       method: "POST",
       body: JSON.stringify(payload),
+    }),
+  retryIngestGaps: (jobId: string, payload?: IngestJob["request"]) =>
+    request<IngestJob>(`/api/ingest/jobs/${encodeURIComponent(jobId)}/retry-gaps`, {
+      method: "POST",
+      ...(payload ? { body: JSON.stringify(payload) } : {}),
     }),
   chat: (
     messages: Array<{ role: "user" | "assistant"; content: string }>,
@@ -395,6 +596,7 @@ export const api = {
     eventId: string,
     resolution: string,
     enteredBy = "ZooVision operator",
+    note = "Recorded from the evidence review workspace.",
   ) =>
     request<{ status: string; outcome_id: string }>(
       `/api/events/${encodeURIComponent(eventId)}/outcomes`,
@@ -403,7 +605,7 @@ export const api = {
         body: JSON.stringify({
           resolution,
           entered_by: enteredBy,
-          note: "Recorded from the evidence review workspace.",
+          note,
         }),
       },
     ),

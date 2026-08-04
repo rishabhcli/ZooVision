@@ -9,6 +9,8 @@ import {
   ChevronLeft,
   ChevronRight,
   CircleUserRound,
+  ClipboardCheck,
+  FileText,
   MessageSquareText,
   Monitor,
   Moon,
@@ -95,6 +97,8 @@ function formatVideoOffset(seconds: number) {
 
 const routeOptions = [
   { label: "Monitor", href: "/monitor", icon: Monitor },
+  { label: "Review", href: "/review", icon: ClipboardCheck },
+  { label: "Reports", href: "/reports", icon: FileText },
   { label: "Node graph", href: "/graph", icon: Network },
   { label: "Analysis", href: "/analysis", icon: BarChart3 },
   { label: "Settings", href: "/settings", icon: Settings },
@@ -136,6 +140,20 @@ const initialChats: Record<string, ChatMessage[]> = {
       body: "Ask about nodes in the live Neo4j video context graph.",
     },
   ],
+  "/review": [
+    {
+      id: "review-intro",
+      role: "assistant",
+      body: "Search routed events, inspect their source clip, and record the keeper outcome.",
+    },
+  ],
+  "/reports": [
+    {
+      id: "reports-intro",
+      role: "assistant",
+      body: "Save a shift brief from persisted animals, events, and data gaps.",
+    },
+  ],
   "/analysis": [
     {
       id: "analysis-intro",
@@ -164,7 +182,14 @@ export function WorkspaceShell({
 }: WorkspaceShellProps) {
   const pathname = usePathname();
   const router = useRouter();
-  const isEvidenceLayout = ["/monitor", "/graph", "/analysis", "/settings"].includes(
+  const isEvidenceLayout = [
+    "/monitor",
+    "/review",
+    "/reports",
+    "/graph",
+    "/analysis",
+    "/settings",
+  ].includes(
     pathname,
   );
   const profileRef = useRef<HTMLDivElement>(null);
@@ -781,7 +806,7 @@ export function WorkspaceShell({
                     className={isActive ? "active" : undefined}
                     aria-label={option.label}
                     aria-current={isActive ? "page" : undefined}
-                    onClick={() => router.push(option.href)}
+                    onClick={() => window.location.assign(option.href)}
                   >
                     <Icon className="route-tab-icon" size={15} aria-hidden="true" />
                     <span>{option.label}</span>

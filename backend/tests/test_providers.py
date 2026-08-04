@@ -9,6 +9,7 @@ from zoovision.domain import Behavior, EvidenceKind
 from zoovision.providers import (
     OPENAI_FRAME_MAX_IMAGES,
     OPENAI_FRAME_PROMPT,
+    LocalMotionAnalyzer,
     OpenAIFrameAnalyzer,
     ProviderBatch,
     TwelveLabsAnalyzer,
@@ -187,6 +188,52 @@ def test_local_provider_file_enforces_base64_size_limit(tmp_path, chunk):
         handle.truncate(22 * 1024 * 1024 + 1)
     with pytest.raises(ValueError, match="too large"):
         TwelveLabsAnalyzer("unused", client=FailingAnalyzeClient()).analyze_file(path, chunk)
+
+
+def test_local_motion_adapter_returns_measured_pixel_evidence(monkeypatch, tmp_path, chunk):
+    import zoovision.providers as providers
+
+    first = np.zeros((8, 8, 3), dtype=np.uint8)
+    second = first.copy()
+    second[:, 4:] = 255
+    monkeypatch.setattr(
+        providers,
+        "sample_video_frames",
+        lambda *_args, **_kwargs: iter(
+            [
+                SimpleNamespace(image=first),
+                SimpleNamespace(image=second),
+            ]
+        ),
+    )
+
+    result = LocalMotionAnalyzer().safe_analyze_file(tmp_path / "clip.mp4", chunk)
+
+    assert result.data_gap is None
+    assert len(result.observations) == 1
+    observation = result.observations[0]
+    assert observation.behavior is Behavior.OTHER
+    assert observation.provider == "local-demo"
+    assert observation.evidence_kind is EvidenceKind.MEASURED_MOTION
+    assert observation.activity_label == "Measured visual movement"
+    assert "pixel evidence only" in observation.evidence
+    assert result.uncertainty
+
+
+def test_local_motion_adapter_requires_a_decodable_file(chunk):
+    result = LocalMotionAnalyzer().safe_analyze_file("/tmp/not-a-video.mp4", chunk)
+
+    assert result.observations == []
+    assert result.data_gap is not None
+    assert result.data_gap.reason == "local_demo_analysis_failed"
+
+
+def test_local_motion_adapter_url_path_records_a_visible_data_gap(chunk):
+    result = LocalMotionAnalyzer().safe_analyze_url("https://example.com/clip.mp4", chunk)
+
+    assert result.observations == []
+    assert result.data_gap is not None
+    assert result.data_gap.reason == "local_demo_requires_file"
 
 
 class _FakeFrameResponses:

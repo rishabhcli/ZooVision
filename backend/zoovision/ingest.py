@@ -207,6 +207,7 @@ class VideoIngestService:
         evidence_enricher: Any | None = None,
         escalation_scheduler: Any | None = None,
         alert_ack_minutes: int = 20,
+        analyzer_label: str = "twelvelabs+yolo",
         fixture_mode: bool = True,
         delivery_enabled: bool = False,
         webhook_configured: bool = False,
@@ -224,6 +225,7 @@ class VideoIngestService:
         self.evidence_enricher = evidence_enricher
         self.escalation_scheduler = escalation_scheduler
         self.alert_ack_minutes = alert_ack_minutes
+        self.analyzer_label = analyzer_label
         self.fixture_mode = fixture_mode
         self.delivery_enabled = delivery_enabled
         self.webhook_configured = webhook_configured
@@ -300,7 +302,7 @@ class VideoIngestService:
             enclosure_id=request.enclosure_id,
             created_at=moment,
             updated_at=moment,
-            analyzer="twelvelabs+yolo",
+            analyzer=self.analyzer_label,
             request=request,
         )
 
@@ -310,7 +312,7 @@ class VideoIngestService:
         request: IngestRequest | None,
     ) -> IngestJob:
         if self.analyzer_factory is None:
-            raise RuntimeError("TwelveLabs is required for provider gap retries")
+            raise RuntimeError("no video analyzer is configured for provider gap retries")
         with self._lock:
             job = self.status(job_id)
             if job is None:
@@ -551,7 +553,7 @@ class VideoIngestService:
         if job is None:
             raise RuntimeError("ingest job disappeared before it started")
         if self.analyzer_factory is None:
-            raise RuntimeError("TwelveLabs is required for video ingestion")
+            raise RuntimeError("no video analyzer is configured for ingestion")
         source = self.resolve_source(request.source_name)
         job.probe = probe_video(source)
         content_sha256 = _file_fingerprint(source)
@@ -756,7 +758,7 @@ class VideoIngestService:
         analyzer_override: Any | None = None,
     ) -> SegmentWorkflowResult:
         if self.analyzer_factory is None:
-            raise RuntimeError("TwelveLabs is required for video ingestion")
+            raise RuntimeError("no video analyzer is configured for ingestion")
         start_ts = request.start_ts + timedelta(seconds=offset)
         analyzer = analyzer_override or self.analyzer_factory()
         analyzable = _provider_ready(piece)

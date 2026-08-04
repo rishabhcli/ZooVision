@@ -124,6 +124,10 @@ class Settings(BaseSettings):
         min_length=32,
         alias="ZOOVISION_PROXY_SHARED_SECRET",
     )
+    operator_identity_required: bool = Field(
+        default=False,
+        alias="ZOOVISION_OPERATOR_IDENTITY_REQUIRED",
+    )
     slack_webhook_url: str | None = Field(default=None, alias="SLACK_WEBHOOK_URL")
     alert_delivery_enabled: bool = Field(
         default=False,
@@ -154,6 +158,8 @@ class Settings(BaseSettings):
             missing.append("ZOOVISION_BEDROCK_EMBEDDING_ENABLED")
         if not self.proxy_shared_secret:
             missing.append("ZOOVISION_PROXY_SHARED_SECRET")
+        if not self.operator_identity_required:
+            missing.append("ZOOVISION_OPERATOR_IDENTITY_REQUIRED")
         if self.alert_delivery_enabled and not self.eventbridge_scheduler_configured:
             missing.append("ZOOVISION_EVENTBRIDGE_SCHEDULER_ENABLED/target ARN/role ARN")
         if missing:

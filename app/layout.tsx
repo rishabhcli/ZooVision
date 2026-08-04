@@ -3,6 +3,8 @@ import { headers } from "next/headers";
 import "@fontsource-variable/jetbrains-mono";
 import "@fontsource-variable/manrope";
 import "./globals.css";
+import "./legal-pages.css";
+import "./operations.css";
 
 const description =
   "Evidence-led animal welfare monitoring with deterministic triage and human review.";
